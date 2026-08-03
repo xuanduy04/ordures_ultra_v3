@@ -1,0 +1,41 @@
+pytest
+tensorizer==2.10.1
+pytest-forked
+pytest-asyncio
+pytest-rerunfailures
+pytest-shard
+pytest-timeout
+backoff 
+blobfile 
+einops 
+httpx
+librosa 
+vocos 
+peft
+pqdm
+ray[cgraph,default]>=2.48.0 
+sentence-transformers>=5.2.0 
+soundfile 
+jiwer 
+timm 
+transformers_stream_generator 
+matplotlib 
+mistral_common[image,audio] >= 1.9.1 
+num2words 
+opencv-python-headless >= 4.13.0 
+datamodel_code_generator 
+lm-eval[api]>=0.4.11 
+mteb[bm25s]>=2, <3 
+transformers==4.57.5
+tokenizers==0.22.0
+schemathesis>=3.39.15 
+bitsandbytes>=0.49.2
+buildkite-test-collector==0.1.9
+genai_perf>=0.0.8
+tritonclient>=2.51.0
+numba == 0.61.2 
+numpy
+runai-model-streamer[s3,gcs]==0.15.3
+fastsafetensors>=0.2.2
+instanttensor>=0.1.5
+pydantic>=2.12 

@@ -1,0 +1,4 @@
+[submodule "3rdparty/Gym-workspace/Gym"]
+	path = 3rdparty/Gym-workspace/Gym
+	url = git@github.com:xuanduy04/ordures_ultra_v3_gym.git
+	branch = main

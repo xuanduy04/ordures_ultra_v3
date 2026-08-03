@@ -1,0 +1,6 @@
+-r common.txt
+numba == 0.61.2 
+ray[cgraph]>=2.48.0
+flashinfer-python==0.6.4
+nvidia-cutlass-dsl>=4.4.0.dev1
+quack-kernels>=0.2.7

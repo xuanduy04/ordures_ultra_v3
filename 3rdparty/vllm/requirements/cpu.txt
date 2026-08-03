@@ -1,0 +1,5 @@
+-r common.txt
+setuptools==77.0.3 
+numba == 0.61.2; platform_machine != "s390x" 
+intel-openmp==2024.2.1; platform_machine == "x86_64"
+py-cpuinfo; platform_machine == "aarch64"
