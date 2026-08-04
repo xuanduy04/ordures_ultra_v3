@@ -1330,6 +1330,25 @@ async def run_async_nemo_gym_rollout(
                 yield async_nemo_gym_rollout_result
 
 
+def _apply_empty_message_log_mask(
+    results: list[dict],
+    loss_multiplier: torch.Tensor,
+) -> torch.Tensor:
+    """Mask samples whose NeMo-Gym rollout produced an empty message log.
+
+    Returns loss_multiplier with zeroed entries for masked samples.
+    If no samples need masking, returns the original tensor unchanged.
+    """
+    masked = [i for i, result in enumerate(results) if not result["message_log"]]
+
+    if not masked:
+        return loss_multiplier
+
+    lm = loss_multiplier.clone()
+    lm[masked] = 0.0
+    return lm
+
+
 def _postprocess_single_group(
     nemo_gym_rows: list[dict],
     results: list[dict],
@@ -1530,7 +1549,9 @@ def _postprocess_single_group(
             "length": torch.tensor(
                 [len(r["input_message_log"][0]["token_ids"]) for r in results]
             ),
-            "loss_multiplier": input_batch["loss_multiplier"],
+            "loss_multiplier": _apply_empty_message_log_mask(
+                results, input_batch["loss_multiplier"]
+            ),
             # Unnecessary parts of the DatumSpec unused by the GRPO algorithm
             # extra_env_info: dict[str, Any]
             # idx: int

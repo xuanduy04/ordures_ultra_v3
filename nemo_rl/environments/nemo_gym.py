@@ -367,8 +367,11 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
                 output_item_dict["generation_str"] = generation_str
 
         if not nemo_rl_message_log:
-            input_messages = nemo_gym_result["responses_create_params"]["input"]
+            # Return a maskable dummy result so training can continue.
+            # This covers legitimate cases (prompt exceeds vLLM max_model_len)
+            # as well as bugged/malformed samples whose rollout was skipped.
             try:
+                input_messages = nemo_gym_result["responses_create_params"]["input"]
                 prompt_token_ids = tokenizer.apply_chat_template(
                     input_messages, tokenize=True
                 )
@@ -380,7 +383,7 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
             output_item_types = [
                 o.get("type") for o in nemo_gym_result["response"]["output"]
             ]
-            raise ValueError(
+            print(
                 f"NeMo Gym returned a result with no generation data. "
                 f"Possible causes: (1) the prompt for the first turn already exceeds the vLLM max_model_len, "
                 f"so vLLM rejected the request before any tokens could be generated; "
@@ -389,8 +392,20 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
                 f"  response.output item types ({len(output_item_types)} items): {output_item_types}.\n"
                 f"  → If (1): increase `policy.max_total_sequence_length` and `policy.generation.vllm_cfg.max_model_len` "
                 f"above the prompt length above.\n"
-                f"  → If (2): inspect why no assistant content was produced for this rollout."
+                f"  → If (2): inspect why no assistant content was produced for this rollout.\n"
+                f"This sample will be MASKED (loss_multiplier=0)."
             )
+            return {
+                "message_log": [],
+                "input_message_log": [
+                    {
+                        "role": "user",
+                        "content": "",
+                        "token_ids": torch.tensor([], dtype=torch.long),
+                    }
+                ],
+                "full_result": nemo_gym_result if isinstance(nemo_gym_result, dict) else {"reward": 0.0},
+            }
 
         return {
             "message_log": nemo_rl_message_log,
