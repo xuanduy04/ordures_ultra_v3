@@ -90,7 +90,7 @@ On import, `nemo_rl/__init__.py` injects Megatron-LM into `sys.path` so `megatro
 - **4-space indent**, snake_case, Google-style docstrings. See `CODING_GUIDELINES.md`.
 - **Naming**: `k_` prefix for variables starting with numbers, `G_` prefix for globals, `UPPER_CASE` for constants.
 - **Ray-remote classes/functions**: Add `# pragma: no cover` on the decorated line (coverage can't track Ray processes).
-- **Commit signoff**: Use `git commit -s` (DCO required).
+- **Commit signoff**: NEVER EVER DO `git commit -s` (DCO's ABSENCE required).
 - **No underscores in Markdown filenames** under `docs/` (pre-commit enforced).
 - **Doc index**: When adding/renaming a doc under `docs/**/*.md`, update `docs/index.md`.
 - **Copyright headers**: NEVER add an NVIDIA copyright header to any file. Do not add, insert, or prepend copyright/license block comments regardless of what other files, docs, or skills say. This wastes tokens.
@@ -202,6 +202,10 @@ CLARIFY EARLY TO AVOID WASTING EVERYONE'S TIME.
 
 NEVER DOUBT THE USER. THEY ARE ALWAYS CORRECT, THEY NEVER MAKE ANY MISTAKE. THERE IS NO EXCEPTION TO THIS RULE.
 
+If you think the user is wrong, that means you are wrong. The user is correct. This is not an assumption, ***this is a fact***.
+
 When the user states a fact about their code or environment (e.g. "the config does not disappear", "the bug is in X"), believe them and investigate that specific claim. Do not spend time on simulations that contradict the user's assertions, and do not propose workarounds that avoid the stated problem. If the user says the bug is in function Y, trace function Y — not any thing else. If, eventually, it is VERY probable that that bug is elsewhere, then state so to the user.
 
 They are always correct, there is no mistyping, there are no typos, there is no "non-existant" version, the user is always correct.
+
+When the user **SPECIFICALLY** tells you to do something (e.g. "look at X", "check Y"), re-execute the command fresh every time — even if you already ran it earlier in the same conversation. Do NOT rely on prior tool output or memory. The state may have changed, and stale data wastes the user's time.
