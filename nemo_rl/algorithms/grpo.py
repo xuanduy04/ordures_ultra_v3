@@ -199,6 +199,8 @@ class GRPOConfig(TypedDict):
     seq_logprob_error_threshold: float | None
     penalize_invalid_tool_call: bool  # If True, assign a negative advantage to invalid tool call tokens
     invalid_tool_call_advantage: NotRequired[float]  # Advantage value for invalid tool calls when penalize_invalid_tool_call is True (default: -5.0)
+    penalize_malformed_thinking: bool  # If True, assign a negative advantage to messages with malformed thinking tags
+    malformed_thinking_advantage: NotRequired[float]  # Advantage value for malformed thinking when penalize_malformed_thinking is True (default: -5.0)
     # Advantage estimator configuration (grpo or reinforce_plus_plus)
     adv_estimator: NotRequired[AdvEstimatorConfig]
 
@@ -2276,22 +2278,26 @@ def grpo_train(
                     if clip_high is not None:
                         train_data["advantages"] = train_data["advantages"].clamp(max=clip_high)
 
-                    # Apply invalid tool call penalization per-message.
-                    # Only override the specific message's token positions within the
-                    # flattened sequence.
+                    # Apply invalid tool call and malformed thinking penalization per-message.
+                    # Override the specific message's token positions within the
+                    # flattened sequence. Use in-place additive clamping so that both
+                    # penalty types can apply to the same message without clobbering.
                     penalize_invalid_tool_call = master_config["grpo"].get("penalize_invalid_tool_call", False)
-                    if penalize_invalid_tool_call:
-                        invalid_neg_adv = master_config["grpo"].get("invalid_tool_call_advantage", -5.0)
-                        for i, message_log in enumerate(repeated_batch["message_log"]):
-                            token_offset = 0
-                            for j, message in enumerate(message_log):
-                                msg_len = len(message["token_ids"])
-                                is_assistant = message["role"] == "assistant" and "generation_logprobs" in message
-                                is_invalid = is_assistant and message.get("is_invalid_tool_call", False)
-                                if is_invalid:
-                                    print(f"Setting negative advantage ({invalid_neg_adv}) for invalid tool call in assistant message {i} {j}", flush=True)
-                                    train_data["advantages"][i, token_offset:token_offset + msg_len] = invalid_neg_adv
-                                token_offset += msg_len
+                    penalize_malformed_thinking = master_config["grpo"].get("penalize_malformed_thinking", False)
+                    invalid_neg_adv = master_config["grpo"].get("invalid_tool_call_advantage", -5.0)
+                    malformed_neg_adv = master_config["grpo"].get("malformed_thinking_advantage", -5.0)
+                    for i, message_log in enumerate(repeated_batch["message_log"]):
+                        token_offset = 0
+                        for j, message in enumerate(message_log):
+                            msg_len = len(message["token_ids"])
+                            is_assistant = message["role"] == "assistant" and "generation_logprobs" in message
+                            if is_assistant and penalize_invalid_tool_call and message.get("is_invalid_tool_call", False):
+                                print(f"Setting negative advantage ({invalid_neg_adv}) for invalid tool call in assistant message {i} {j}", flush=True)
+                                train_data["advantages"][i, token_offset:token_offset + msg_len].add_(invalid_neg_adv).clamp_(max=invalid_neg_adv)
+                            if is_assistant and penalize_malformed_thinking and message.get("has_malformed_thinking", False):
+                                print(f"Setting negative advantage ({malformed_neg_adv}) for malformed thinking in assistant message {i} {j}", flush=True)
+                                train_data["advantages"][i, token_offset:token_offset + msg_len].add_(malformed_neg_adv).clamp_(max=malformed_neg_adv)
+                            token_offset += msg_len
 
                 memory_tracker.snapshot_start_of_stage("Policy train", dir())
                 print("▶ Preparing for training...", flush=True)
@@ -2538,29 +2544,31 @@ def grpo_train(
             # Logging
             # Log training data
             memory_tracker.snapshot_start_of_stage("Logging", dir())
-            if not _should_log_nemo_gym_responses(master_config):
-                log_data = {}
-                if "agent_ref" in repeated_batch:
-                    log_data["agent_ref"] = repeated_batch["agent_ref"]
-                log_data["content"] = flat_messages["content"]
-                log_data["rewards"] = rewards.tolist()
-                if master_config["grpo"]["use_dynamic_sampling"]:
-                    log_data["filtered_rewards"] = rewards.tolist()
-                    log_data["rewards"] = repeated_batch["total_reward"].tolist()
-                log_data["input_lengths"] = input_lengths.tolist()
-                log_data["token_ids"] = train_data["input_ids"].tolist()
-                log_data["token_loss_mask"] = train_data["token_mask"].tolist()
-                log_data["sample_loss_mask"] = train_data["sample_mask"].tolist()
-                log_data["advantages"] = train_data["advantages"].tolist()
-                log_data["generation_logprobs"] = train_data[
-                    "generation_logprobs"
-                ].tolist()
-                log_data["prev_logprobs"] = train_data["prev_logprobs"].tolist()
+            log_data = {}
+            if "agent_ref" in repeated_batch:
+                log_data["agent_ref"] = repeated_batch["agent_ref"]
+            log_data["content"] = flat_messages["content"]
+            log_data["rewards"] = rewards.tolist()
+            if master_config["grpo"]["use_dynamic_sampling"]:
+                log_data["filtered_rewards"] = rewards.tolist()
+                log_data["rewards"] = repeated_batch["total_reward"].tolist()
+            log_data["input_lengths"] = input_lengths.tolist()
+            log_data["token_ids"] = train_data["input_ids"].tolist()
+            log_data["token_loss_mask"] = train_data["token_mask"].tolist()
+            log_data["sample_loss_mask"] = train_data["sample_mask"].tolist()
+            log_data["advantages"] = train_data["advantages"].tolist()
+            log_data["generation_logprobs"] = train_data[
+                "generation_logprobs"
+            ].tolist()
+            log_data["prev_logprobs"] = train_data["prev_logprobs"].tolist()
 
-                logger.log_batched_dict_as_jsonl(
-                    log_data, f"train_data_step{total_steps + 1}.jsonl"
-                )
-                del log_data
+            if _should_log_nemo_gym_responses(master_config) and "full_result" in repeated_batch:
+                log_data["full_result"] = repeated_batch["full_result"]
+
+            logger.log_batched_dict_as_jsonl(
+                log_data, f"train_data_step{total_steps + 1}.jsonl"
+            )
+            del log_data
             del flat_messages
 
             timing_metrics: dict[str, float] = timer.get_timing_metrics(
@@ -3629,22 +3637,26 @@ def async_grpo_train(
                     if clip_high is not None:
                         train_data["advantages"] = train_data["advantages"].clamp(max=clip_high)
 
-                    # Apply invalid tool call penalization per-message.
-                    # Only override the specific message's token positions within the
-                    # flattened sequence.
+                    # Apply invalid tool call and malformed thinking penalization per-message.
+                    # Override the specific message's token positions within the
+                    # flattened sequence. Use in-place additive clamping so that both
+                    # penalty types can apply to the same message without clobbering.
                     penalize_invalid_tool_call = master_config["grpo"].get("penalize_invalid_tool_call", False)
-                    if penalize_invalid_tool_call:
-                        invalid_neg_adv = master_config["grpo"].get("invalid_tool_call_advantage", -5.0)
-                        for i, message_log in enumerate(repeated_batch["message_log"]):
-                            token_offset = 0
-                            for j, message in enumerate(message_log):
-                                msg_len = len(message["token_ids"])
-                                is_assistant = message["role"] == "assistant" and "generation_logprobs" in message
-                                is_invalid = is_assistant and message.get("is_invalid_tool_call", False)
-                                if is_invalid:
-                                    print(f"Setting negative advantage ({invalid_neg_adv}) for invalid tool call in assistant message {i} {j}", flush=True)
-                                    train_data["advantages"][i, token_offset:token_offset + msg_len] = invalid_neg_adv
-                                token_offset += msg_len
+                    penalize_malformed_thinking = master_config["grpo"].get("penalize_malformed_thinking", False)
+                    invalid_neg_adv = master_config["grpo"].get("invalid_tool_call_advantage", -5.0)
+                    malformed_neg_adv = master_config["grpo"].get("malformed_thinking_advantage", -5.0)
+                    for i, message_log in enumerate(repeated_batch["message_log"]):
+                        token_offset = 0
+                        for j, message in enumerate(message_log):
+                            msg_len = len(message["token_ids"])
+                            is_assistant = message["role"] == "assistant" and "generation_logprobs" in message
+                            if is_assistant and penalize_invalid_tool_call and message.get("is_invalid_tool_call", False):
+                                print(f"Setting negative advantage ({invalid_neg_adv}) for invalid tool call in assistant message {i} {j}", flush=True)
+                                train_data["advantages"][i, token_offset:token_offset + msg_len].add_(invalid_neg_adv).clamp_(max=invalid_neg_adv)
+                            if is_assistant and penalize_malformed_thinking and message.get("has_malformed_thinking", False):
+                                print(f"Setting negative advantage ({malformed_neg_adv}) for malformed thinking in assistant message {i} {j}", flush=True)
+                                train_data["advantages"][i, token_offset:token_offset + msg_len].add_(malformed_neg_adv).clamp_(max=malformed_neg_adv)
+                            token_offset += msg_len
 
                 print("▶ Preparing for training...")
                 with timer.time("training_prep"):
@@ -3944,28 +3956,31 @@ def async_grpo_train(
             # NeMo Gym responses can be very large and expensive to log; when
             # env.should_log_nemo_gym_responses is true, skip this jsonl (see
             # _should_log_nemo_gym_responses).
-            if not _should_log_nemo_gym_responses(master_config):
-                log_data = {}
-                if "agent_ref" in repeated_batch:
-                    log_data["agent_ref"] = repeated_batch["agent_ref"]
-                log_data["content"] = flat_messages_content
-                log_data["rewards"] = rewards.tolist()
-                if master_config["grpo"]["use_dynamic_sampling"]:
-                    log_data["filtered_rewards"] = rewards.tolist()
-                    log_data["rewards"] = repeated_batch["total_reward"].tolist()
-                log_data["input_lengths"] = input_lengths.tolist()
-                log_data["token_ids"] = train_data["input_ids"].tolist()
-                log_data["token_loss_mask"] = train_data["token_mask"].tolist()
-                log_data["sample_loss_mask"] = train_data["sample_mask"].tolist()
-                log_data["advantages"] = train_data["advantages"].tolist()
-                log_data["generation_logprobs"] = train_data[
-                    "generation_logprobs"
-                ].tolist()
-                log_data["prev_logprobs"] = train_data["prev_logprobs"].tolist()
-                logger.log_batched_dict_as_jsonl(
-                    log_data, f"train_data_step{step + 1}.jsonl"
-                )
-                del log_data
+            log_data = {}
+            if "agent_ref" in repeated_batch:
+                log_data["agent_ref"] = repeated_batch["agent_ref"]
+            log_data["content"] = flat_messages_content
+            log_data["rewards"] = rewards.tolist()
+            if master_config["grpo"]["use_dynamic_sampling"]:
+                log_data["filtered_rewards"] = rewards.tolist()
+                log_data["rewards"] = repeated_batch["total_reward"].tolist()
+            log_data["input_lengths"] = input_lengths.tolist()
+            log_data["token_ids"] = train_data["input_ids"].tolist()
+            log_data["token_loss_mask"] = train_data["token_mask"].tolist()
+            log_data["sample_loss_mask"] = train_data["sample_mask"].tolist()
+            log_data["advantages"] = train_data["advantages"].tolist()
+            log_data["generation_logprobs"] = train_data[
+                "generation_logprobs"
+            ].tolist()
+            log_data["prev_logprobs"] = train_data["prev_logprobs"].tolist()
+
+            if _should_log_nemo_gym_responses(master_config) and "full_result" in repeated_batch:
+                log_data["full_result"] = repeated_batch["full_result"]
+
+            logger.log_batched_dict_as_jsonl(
+                log_data, f"train_data_step{step + 1}.jsonl"
+            )
+            del log_data
             del train_data
             del flat_messages_content
 

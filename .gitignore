@@ -24,6 +24,8 @@ coverage.json
 test_assets/
 .nrl_remote_map.json
 .nrl_remote_state.json
+tests/unit/unit_results
+tests/unit/unit_results.json
 # Test biproducts
 tests/functional/*/
 

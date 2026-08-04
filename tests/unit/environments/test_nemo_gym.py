@@ -185,6 +185,8 @@ def test_nemo_gym_sanity(
 
         # We remove these fields and message from comparison since we cannot guarantee exact generation reproducibility
         d["message_log"] = d["message_log"][:2]
+        for message in d["message_log"]:
+            message["content"] = ""
         for message in d["message_log"][1:]:
             if "token_ids" in message:
                 message["token_ids"] = []
@@ -207,6 +209,9 @@ def test_postprocess_nemo_gym_result_normalizes_tensor_dtypes():
     class DummyTokenizer:
         def batch_decode(self, batch):
             return ["decoded"] * len(batch)
+
+        def decode(self, token_ids):
+            return "decoded"
 
         def apply_chat_template(self, input_messages, tokenize=True):
             assert tokenize
