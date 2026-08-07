@@ -3229,7 +3229,7 @@ def async_grpo_train(
             )
 
         wait_iterations += 1
-        time.sleep(1.0)
+        time.sleep(6.7)
 
     timer.stop("init/total")
     print(f"✅ Buffer ready for step {step}! Starting training loop...")
@@ -3329,7 +3329,7 @@ def async_grpo_train(
                             )
 
                         with timer.time("idle/buffer_starvation"):
-                            time.sleep(0.5)
+                            time.sleep(6.7)
                         continue
 
                     # Extract trajectories and metadata from sample result
@@ -3395,7 +3395,7 @@ def async_grpo_train(
                     print(
                         f"❌ Unexpected training batch size: got {repeated_batch.size}, expected {expected_batch_size}. Skipping step and waiting for correct buffer content."
                     )
-                    time.sleep(0.5)
+                    time.sleep(6.7)
                     continue
 
                 # Optional sanity: ensure DP divisibility to avoid sharding issues

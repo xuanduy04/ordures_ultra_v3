@@ -252,7 +252,7 @@ Depending on your data shape, you may want to change these values."""
                 # Only print top 5
                 top_left = counts_left.most_common(5)
                 top_left_str = "\n".join(f"{i + 1}. {k}: {v}" for i, (k, v) in enumerate(top_left))
-                print(f"Top 5 NeMo Gym agent refs left in this rollout batch: {top_left_str}", file=sys.stderr)
+                print(f"Top 5 NeMo Gym agent refs left in this rollout batch:\n{top_left_str}\nTop 5 NeMo Gym agent refs [END].", file=sys.stderr)
 
     def _postprocess_nemo_gym_to_nemo_rl_result(
         self, nemo_gym_result: dict, tokenizer: PreTrainedTokenizerBase
