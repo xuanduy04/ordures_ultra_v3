@@ -228,8 +228,18 @@ Depending on your data shape, you may want to change these values."""
                         and message["generation_logprobs"] is not None
                     ):
                         if torch.isnan(message["generation_logprobs"]).any():
-                            raise RuntimeError(
-                                f"Generation logprobs contain NaN! Failing loudly"
+                            message["generation_logprobs"] = torch.nan_to_num(
+                                message["generation_logprobs"],
+                                nan=0.0,
+                                posinf=0.0,
+                                neginf=0.0,
+                            )
+                            full_result = nemo_rl_result.get("full_result")
+                            if full_result is not None:
+                                full_result.setdefault("instance_config", {})["mask_sample"] = True
+                            print(
+                                f"⚠ Generation logprobs contain NaN! Zeroed out and marked sample for masking.",
+                                flush=True,
                             )
 
             num_results += 1
