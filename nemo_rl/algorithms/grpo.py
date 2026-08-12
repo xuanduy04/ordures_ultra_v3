@@ -1406,6 +1406,9 @@ def _create_advantage_estimator(master_config: MasterConfig):
             "name": "opd",
             "use_orm_advantage": opd_cfg.get("use_orm_advantage", False),
             "orm_advantage_weight": opd_cfg.get("orm_advantage_weight", 0.0),
+            "opd_advantage_weight": opd_cfg.get("opd_advantage_weight", 1.0),
+            "grpo_advantage_weight": opd_cfg.get("grpo_advantage_weight", 0.0),
+            "grpo": opd_cfg.get("grpo", {}),
         }
         adv_estimator = OPDAdvantageEstimator(opd_estimator_config, loss_config)
         print("  ✓ Using OPD advantage estimator")

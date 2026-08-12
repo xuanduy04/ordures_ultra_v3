@@ -18,10 +18,19 @@ import torch
 from nemo_rl.algorithms.advantage_estimator import OPDAdvantageEstimator
 
 
-def _make_estimator(use_orm_advantage=False, orm_advantage_weight=0.0):
+def _make_estimator(
+    use_orm_advantage=False,
+    orm_advantage_weight=0.0,
+    opd_advantage_weight=1.0,
+    grpo_advantage_weight=0.0,
+    grpo=None,
+):
     estimator_config = {
         "use_orm_advantage": use_orm_advantage,
         "orm_advantage_weight": orm_advantage_weight,
+        "opd_advantage_weight": opd_advantage_weight,
+        "grpo_advantage_weight": grpo_advantage_weight,
+        "grpo": grpo or {},
     }
     loss_config = {}
     return OPDAdvantageEstimator(estimator_config, loss_config)
@@ -127,3 +136,82 @@ def test_opd_metrics_returned():
     assert abs(estimator.last_metrics["on_policy_distillation/teacher_student_logprob_gap_mean"] - 1.0) < 1e-5
     assert abs(estimator.last_metrics["on_policy_distillation/adv_mean"] - 1.0) < 1e-5
     assert abs(estimator.last_metrics["on_policy_distillation/adv_std"]) < 1e-5
+
+
+def test_opd_with_grpo_blending():
+    """opd_weight=1.0, grpo_weight=1.0 => blended advantages."""
+    grpo_cfg = {"normalize_rewards": False, "use_leave_one_out_baseline": False}
+    estimator = _make_estimator(grpo_advantage_weight=1.0, grpo=grpo_cfg)
+    B, S = 2, 4
+    teacher_lp = torch.zeros(B, S)
+    student_lp = torch.full((B, S), -2.0)
+    mask = torch.ones(B, S)
+    prompt_ids = torch.tensor([[0], [0]])
+    rewards = torch.tensor([1.0, 3.0])
+
+    adv = estimator.compute_advantage(
+        prompt_ids, rewards, mask, teacher_logprobs=teacher_lp, prev_logprobs=student_lp
+    )
+
+    # distill = 0 - (-2) = 2.0 per token
+    # grpo: baseline = mean([1, 3]) = 2.0, so grpo_adv = [1-2, 3-2] = [-1, 1]
+    # expanded to [B, S] gives [[-1,-1,-1,-1], [1,1,1,1]]
+    # combined = 1.0 * 2.0 + 1.0 * grpo_adv = [[1,1,1,1], [3,3,3,3]]
+    distill = 2.0
+    grpo_adv_0 = -1.0
+    grpo_adv_1 = 1.0
+    expected = torch.tensor([
+        [distill + grpo_adv_0] * S,
+        [distill + grpo_adv_1] * S,
+    ], dtype=torch.float32)
+    torch.testing.assert_close(adv, expected)
+
+    assert "on_policy_distillation/grpo_adv_mean" in estimator.last_metrics
+    assert "on_policy_distillation/grpo_adv_std" in estimator.last_metrics
+
+
+def test_opd_grpo_weight_zero():
+    """grpo_advantage_weight=0 gives identical results to pure OPD."""
+    grpo_cfg = {"normalize_rewards": False, "use_leave_one_out_baseline": False}
+    estimator_blend = _make_estimator(grpo_advantage_weight=0.0, grpo=grpo_cfg)
+    estimator_pure = _make_estimator(grpo_advantage_weight=0.0)
+
+    B, S = 2, 4
+    teacher_lp = torch.zeros(B, S)
+    student_lp = torch.full((B, S), -1.0)
+    mask = torch.ones(B, S)
+    prompt_ids = torch.tensor([[0], [1]])
+    rewards = torch.tensor([0.5, 1.5])
+
+    adv_blend = estimator_blend.compute_advantage(
+        prompt_ids, rewards, mask, teacher_logprobs=teacher_lp, prev_logprobs=student_lp
+    )
+    adv_pure = estimator_pure.compute_advantage(
+        prompt_ids, rewards, mask, teacher_logprobs=teacher_lp, prev_logprobs=student_lp
+    )
+
+    torch.testing.assert_close(adv_blend, adv_pure)
+
+
+def test_opd_pure_grpo():
+    """opd_weight=0, grpo_weight=1.0 recovers plain GRPO from rewards."""
+    grpo_cfg = {"normalize_rewards": False, "use_leave_one_out_baseline": False}
+    estimator = _make_estimator(opd_advantage_weight=0.0, grpo_advantage_weight=1.0, grpo=grpo_cfg)
+
+    B, S = 2, 4
+    teacher_lp = torch.zeros(B, S)
+    student_lp = torch.full((B, S), 0.0)
+    mask = torch.ones(B, S)
+    prompt_ids = torch.tensor([[0], [0]])
+    rewards = torch.tensor([1.0, 5.0])
+
+    adv = estimator.compute_advantage(
+        prompt_ids, rewards, mask, teacher_logprobs=teacher_lp, prev_logprobs=student_lp
+    )
+
+    # baseline = mean([1, 5]) = 3, grpo_adv = [-2, 2] expanded to [B, S]
+    expected = torch.tensor([
+        [-2.0] * S,
+        [2.0] * S,
+    ], dtype=torch.float32)
+    torch.testing.assert_close(adv, expected)

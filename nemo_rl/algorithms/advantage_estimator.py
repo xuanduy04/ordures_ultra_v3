@@ -156,6 +156,9 @@ class OPDAdvantageEstimator:
     hard gate on the training-to-inference ratio) is handled separately by
     ICE-POP mode in ClippedPGLoss — not here.
 
+    Optionally blends in GRPO reward advantages:
+        Â = opd_advantage_weight * Â_MOPD + grpo_advantage_weight * Â_GRPO
+
     The loss function should be configured with:
         disable_ppo_ratio: true               (REINFORCE, no PPO ratio)
         use_importance_sampling_correction: true
@@ -171,8 +174,18 @@ class OPDAdvantageEstimator:
     """
 
     def __init__(self, estimator_config: dict, loss_config: dict):
-        self.use_orm_advantage = bool(estimator_config.get("use_orm_advantage", False))
-        self.orm_advantage_weight = float(estimator_config.get("orm_advantage_weight", 0.0))
+        self.use_orm_advantage = bool(estimator_config["use_orm_advantage"])
+        self.orm_advantage_weight = float(estimator_config["orm_advantage_weight"])
+        self.opd_advantage_weight = float(estimator_config["opd_advantage_weight"])
+        self.grpo_advantage_weight = float(estimator_config["grpo_advantage_weight"])
+        grpo_cfg = estimator_config["grpo"]
+        self.grpo_estimator = GRPOAdvantageEstimator(
+            {
+                "use_leave_one_out_baseline": grpo_cfg.get("use_leave_one_out_baseline", False),
+                "normalize_rewards": grpo_cfg.get("normalize_rewards", True),
+            },
+            loss_config,
+        )
         self.last_metrics: dict[str, float] = {}
 
     def compute_advantage(
@@ -185,18 +198,18 @@ class OPDAdvantageEstimator:
         orm_advantages=None,
         **kwargs,
     ):
-        """Compute OPD distillation advantages.
+        """Compute OPD distillation advantages, optionally blended with GRPO.
 
         Args:
-            prompt_ids: [B] prompt IDs (unused, kept for interface compatibility)
-            rewards: [B] rewards (unused for pure distillation)
-            mask: [B, S] token mask
-            teacher_logprobs: [B, S] teacher model logprobs (required)
-            prev_logprobs: [B, S] student training-engine logprobs (required)
-            orm_advantages: [B, S] ORM advantages (optional, Equation 9)
+            prompt_ids: [B] prompt IDs.
+            rewards: [B] rewards (used only when grpo_advantage_weight > 0).
+            mask: [B, S] token mask.
+            teacher_logprobs: [B, S] teacher model logprobs (required).
+            prev_logprobs: [B, S] student training-engine logprobs (required).
+            orm_advantages: [B, S] ORM advantages (optional, Equation 9).
 
         Returns:
-            [B, S] token-level distillation advantages (stop-gradient)
+            [B, S] token-level advantages (stop-gradient).
         """
         if teacher_logprobs is None:
             raise ValueError("OPD requires teacher_logprobs")
@@ -205,22 +218,28 @@ class OPDAdvantageEstimator:
 
         # Â_MOPD,t = sg[log π_teacher - log π_student]  (Equation 8)
         distill_advantages = (teacher_logprobs - prev_logprobs).detach()
+        combined = self.opd_advantage_weight * distill_advantages
+
+        if self.grpo_advantage_weight > 0:
+            grpo_adv = self.grpo_estimator.compute_advantage(prompt_ids, rewards, mask)
+            combined = combined + self.grpo_advantage_weight * grpo_adv
+        else:
+            grpo_adv = None
 
         # Optional ORM blending (Equation 9)
         if self.use_orm_advantage and orm_advantages is not None:
-            combined = distill_advantages + self.orm_advantage_weight * orm_advantages.detach()
-        else:
-            combined = distill_advantages
+            combined = combined + self.orm_advantage_weight * orm_advantages.detach()
 
         # Apply mask
         advantages = combined * mask
+        advantages = torch.nan_to_num(advantages, nan=0.0, posinf=0.0, neginf=0.0)
 
         # Metrics
-        self._compute_metrics(distill_advantages, advantages, mask)
+        self._compute_metrics(distill_advantages, advantages, mask, grpo_advantages=grpo_adv)
 
         return advantages
 
-    def _compute_metrics(self, distill_advantages, advantages, mask):
+    def _compute_metrics(self, distill_advantages, advantages, mask, grpo_advantages=None):
         """Compute OPD logging metrics and store in self.last_metrics."""
         valid_bool = mask.bool()
         distill_valid = torch.masked_select(distill_advantages, valid_bool)
@@ -235,3 +254,12 @@ class OPDAdvantageEstimator:
             "on_policy_distillation/adv_mean": adv_mean,
             "on_policy_distillation/adv_std": adv_std,
         }
+
+        if grpo_advantages is not None:
+            grpo_valid = torch.masked_select(grpo_advantages, valid_bool)
+            self.last_metrics["on_policy_distillation/grpo_adv_mean"] = (
+                grpo_valid.mean().item() if grpo_valid.numel() > 0 else 0.0
+            )
+            self.last_metrics["on_policy_distillation/grpo_adv_std"] = (
+                grpo_valid.std().item() if grpo_valid.numel() > 1 else 0.0
+            )

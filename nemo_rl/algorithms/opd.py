@@ -35,6 +35,11 @@ class NonColocatedTeachersConfig(TypedDict):
     teacher_overrides: NotRequired[dict[str, dict[str, Any]]]
 
 
+class GrpoBlendConfig(TypedDict):
+    normalize_rewards: NotRequired[bool]
+    use_leave_one_out_baseline: NotRequired[bool]
+
+
 class OnPolicyDistillationConfig(TypedDict):
     enabled: bool
     teacher_model_by_agent_name: NotRequired[dict[str, str]]
@@ -42,6 +47,9 @@ class OnPolicyDistillationConfig(TypedDict):
     strict_agent_name_match: NotRequired[bool]
     deduplicate_shared_teacher_checkpoints: NotRequired[bool]
     non_colocated_teachers: NotRequired[NonColocatedTeachersConfig]
+    opd_advantage_weight: NotRequired[float]
+    grpo_advantage_weight: NotRequired[float]
+    grpo: NotRequired[GrpoBlendConfig]
 
 
 # ---------------------------------------------------------------------------
