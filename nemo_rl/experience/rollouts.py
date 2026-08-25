@@ -1057,11 +1057,17 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
          to produce a final answer. Skipped when the last output item is a
          function_call (model was mid-agentic-loop, not producing an empty answer).
          Data: full_result["response"]["output"] — message items have content[0]["text"].
+         Advantage-level flag (grpo.penalize_empty_final_answer): additionally marks
+         the final assistant message with has_empty_final_answer for the
+         negative-advantage clamp in grpo.py.
 
       3. penalize_eos_token (token-based)
          The EOS token (default id 2, configurable via token_ids.eos) should never
          appear in any assistant generation. Checks message_log assistant entries.
          Data: message_log[i]["token_ids"] where role == "assistant".
+         Advantage-level flag (grpo.penalize_eos_token): additionally marks every
+         assistant message from the first EOS-bearing message to the final message
+         with has_eos_token for the negative-advantage clamp in grpo.py.
 
       4. penalize_malformed_think_tag (token-based + string-based)
          Two complementary checks to catch malformed think tags:
@@ -1094,6 +1100,10 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
         master_config.get(flag, False)
         for flag in ("penalize_duplicated_reasoning", "penalize_empty_final_answer",
                      "penalize_eos_token", "penalize_malformed_think_tag")
+    )
+    any_penalty_enabled = any_penalty_enabled or any(
+        bool((master_config.get("grpo") or {}).get(flag, False))
+        for flag in ("penalize_empty_final_answer", "penalize_eos_token")
     )
     if any_penalty_enabled:
         for result in results:
@@ -1131,7 +1141,8 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
                 counts["duplicated_reasoning"] += 1
 
     # --- Penalty 2: Empty final answer ---
-    if master_config.get("penalize_empty_final_answer", False):
+    grpo_cfg = master_config.get("grpo") or {}
+    if master_config.get("penalize_empty_final_answer", False) or grpo_cfg.get("penalize_empty_final_answer", False):
         for result in results:
             output_items = result["full_result"].get("response", {}).get("output", [])
             # Skip if the last output item is a function_call — it is legit for model to
@@ -1151,24 +1162,37 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
                     final_answer_text = content.strip()
                     break
             if final_answer_text is None or final_answer_text == "":
-                result["full_result"]["reward"] = 0.0
+                if master_config.get("penalize_empty_final_answer", False):
+                    result["full_result"]["reward"] = 0.0
 
-                counts["empty_final_answer"] += 1
+                    counts["empty_final_answer"] += 1
+                if grpo_cfg.get("penalize_empty_final_answer", False):
+                    for msg in reversed(result["message_log"]):
+                        if msg["role"] == "assistant":
+                            msg["has_empty_final_answer"] = True
+                            break
 
     # --- Penalty 3: EOS token in generation ---
-    if master_config.get("penalize_eos_token", False):
+    if master_config.get("penalize_eos_token", False) or grpo_cfg.get("penalize_eos_token", False):
         token_ids_cfg = master_config.get("token_ids", {})
         eos_token_id = token_ids_cfg.get("eos", 2)
         for result in results:
-            has_eos = False
-            for msg in result["message_log"]:
+            first_eos_idx = None
+            for idx, msg in enumerate(result["message_log"]):
                 if msg["role"] == "assistant" and eos_token_id in msg["token_ids"]:
-                    has_eos = True
+                    first_eos_idx = idx
                     break
-            if has_eos:
-                result["full_result"]["reward"] = 0.0
+            if first_eos_idx is not None:
+                if master_config.get("penalize_eos_token", False):
+                    result["full_result"]["reward"] = 0.0
 
-                counts["eos_token"] += 1
+                    counts["eos_token"] += 1
+                if grpo_cfg.get("penalize_eos_token", False):
+                    # Advantage-level flag: punish from the literal first EOS token in
+                    # generation until the final token, assistant turns only.
+                    for msg in result["message_log"][first_eos_idx:]:
+                        if msg["role"] == "assistant":
+                            msg["has_eos_token"] = True
 
     # --- Penalty 4: Malformed think tags (token ID + string) ---
     if master_config.get("penalize_malformed_think_tag", False):

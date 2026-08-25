@@ -479,6 +479,179 @@ class TestPenalizeMultiEndThink:
 
 
 # =====================================================================
+# Advantage-level flags (grpo.penalize_*): message flag attachment
+# =====================================================================
+
+class TestAdvantageLevelEosToken:
+    CFG = {"grpo": {"penalize_eos_token": True}}
+
+    def test_marks_from_first_eos_to_final_message_assistant_only(self):
+        """Punish from the literal first EOS token until the final token,
+        assistant turns only."""
+        result = _make_result(reward=1.0, message_log=[
+            _msg("user", [100]),
+            _msg("assistant", [300, 400]),   # clean turn before first EOS
+            _msg("user", [500]),
+            _msg("assistant", [600, 2]),     # first EOS here
+            _msg("user", [700]),
+            _msg("assistant", [800, 900]),   # after EOS — still flagged
+        ])
+        counts = apply_reward_penalties([result], self.CFG)
+        assert result["full_result"]["reward"] == 1.0
+        assert counts["eos_token"] == 0
+        ml = result["message_log"]
+        assert "has_eos_token" not in ml[0]  # user
+        assert "has_eos_token" not in ml[1]  # assistant before first EOS
+        assert "has_eos_token" not in ml[2]  # user
+        assert ml[3]["has_eos_token"] is True
+        assert "has_eos_token" not in ml[4]  # user after EOS — never flagged
+        assert ml[5]["has_eos_token"] is True
+
+    def test_no_eos_no_flags(self):
+        result = _make_result(reward=1.0, message_log=[
+            _msg("user", [100]),
+            _msg("assistant", [300, 400]),
+        ])
+        counts = apply_reward_penalties([result], self.CFG)
+        assert result["full_result"]["reward"] == 1.0
+        assert "has_eos_token" not in result["message_log"][1]
+
+    def test_eos_in_user_only_no_flags(self):
+        result = _make_result(reward=1.0, message_log=[
+            _msg("user", [100, 2, 200]),
+            _msg("assistant", [300, 400]),
+        ])
+        counts = apply_reward_penalties([result], self.CFG)
+        assert result["full_result"]["reward"] == 1.0
+        assert "has_eos_token" not in result["message_log"][0]
+        assert "has_eos_token" not in result["message_log"][1]
+
+    def test_custom_eos_token_id(self):
+        cfg = {"grpo": {"penalize_eos_token": True}, "token_ids": {"eos": 99}}
+        result = _make_result(reward=1.0, message_log=[
+            _msg("user", [100]),
+            _msg("assistant", [300, 99, 400]),
+        ])
+        counts = apply_reward_penalties([result], cfg)
+        assert result["full_result"]["reward"] == 1.0
+        assert result["message_log"][1]["has_eos_token"] is True
+
+    def test_both_levels_reward_zeroed_and_flagged(self):
+        cfg = {"penalize_eos_token": True, "grpo": {"penalize_eos_token": True}}
+        result = _make_result(reward=1.0, message_log=[
+            _msg("user", [100]),
+            _msg("assistant", [300, 2]),
+        ])
+        counts = apply_reward_penalties([result], cfg)
+        assert result["full_result"]["reward"] == 0.0
+        assert counts["eos_token"] == 1
+        assert result["message_log"][1]["has_eos_token"] is True
+
+    def test_grpo_flag_triggers_roles_guard(self):
+        result = _make_result(reward=1.0, message_log=[
+            _msg("user", [100]),
+            _msg("tool", [300]),
+        ])
+        try:
+            apply_reward_penalties([result], self.CFG)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("expected gym-roles AssertionError")
+
+
+class TestAdvantageLevelEmptyFinalAnswer:
+    CFG = {"grpo": {"penalize_empty_final_answer": True}}
+
+    def test_marks_last_assistant_message(self):
+        result = _make_result(reward=1.0, output_items=[
+            _reasoning_item("thinking"),
+            _message_item(""),
+        ], message_log=[
+            _msg("user", [100]),
+            _msg("assistant", [300, 400]),
+        ])
+        counts = apply_reward_penalties([result], self.CFG)
+        assert result["full_result"]["reward"] == 1.0
+        assert counts["empty_final_answer"] == 0
+        assert "has_empty_final_answer" not in result["message_log"][0]
+        assert result["message_log"][1]["has_empty_final_answer"] is True
+
+    def test_multi_turn_marks_only_last_assistant(self):
+        result = _make_result(reward=1.0, output_items=[
+            _reasoning_item("thinking"),
+            _message_item(""),
+        ], message_log=[
+            _msg("user", [100]),
+            _msg("assistant", [300, 400]),
+            _msg("user", [500]),
+            _msg("assistant", [600, 700]),
+        ])
+        counts = apply_reward_penalties([result], self.CFG)
+        assert "has_empty_final_answer" not in result["message_log"][1]
+        assert result["message_log"][3]["has_empty_final_answer"] is True
+
+    def test_nonempty_answer_not_flagged(self):
+        result = _make_result(reward=1.0, output_items=[
+            _reasoning_item("thinking"),
+            _message_item("The answer is 42"),
+        ], message_log=[
+            _msg("user", [100]),
+            _msg("assistant", [300, 400]),
+        ])
+        counts = apply_reward_penalties([result], self.CFG)
+        assert result["full_result"]["reward"] == 1.0
+        assert "has_empty_final_answer" not in result["message_log"][1]
+
+    def test_function_call_skip_not_flagged(self):
+        result = _make_result(reward=1.0, output_items=[
+            _reasoning_item("thinking"),
+            _function_call_item(),
+        ], message_log=[
+            _msg("user", [100]),
+            _msg("assistant", [300, 400]),
+        ])
+        counts = apply_reward_penalties([result], self.CFG)
+        assert result["full_result"]["reward"] == 1.0
+        assert "has_empty_final_answer" not in result["message_log"][1]
+
+    def test_both_levels_reward_zeroed_and_flagged(self):
+        cfg = {
+            "penalize_empty_final_answer": True,
+            "grpo": {"penalize_empty_final_answer": True},
+        }
+        result = _make_result(reward=1.0, output_items=[
+            _reasoning_item("thinking"),
+            _message_item(""),
+        ], message_log=[
+            _msg("user", [100]),
+            _msg("assistant", [300, 400]),
+        ])
+        counts = apply_reward_penalties([result], cfg)
+        assert result["full_result"]["reward"] == 0.0
+        assert counts["empty_final_answer"] == 1
+        assert result["message_log"][1]["has_empty_final_answer"] is True
+
+    def test_empty_message_log_no_crash(self):
+        result = _make_result(reward=1.0, output_items=[])
+        counts = apply_reward_penalties([result], self.CFG)
+        assert result["full_result"]["reward"] == 1.0
+        assert counts["empty_final_answer"] == 0
+
+    def test_grpo_flag_triggers_roles_guard(self):
+        result = _make_result(reward=1.0, message_log=[
+            _msg("user", [100]),
+            _msg("tool", [300]),
+        ])
+        try:
+            apply_reward_penalties([result], self.CFG)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError("expected gym-roles AssertionError")
+
+
+# =====================================================================
 # Cross-cutting: multiple penalties, config gating, batch behavior
 # =====================================================================
 
@@ -545,6 +718,8 @@ if __name__ == "__main__":
         TestPenalizeEmptyFinalAnswer,
         TestPenalizeEosToken,
         TestPenalizeMultiEndThink,
+        TestAdvantageLevelEosToken,
+        TestAdvantageLevelEmptyFinalAnswer,
         TestCrossCutting,
     ]
 
