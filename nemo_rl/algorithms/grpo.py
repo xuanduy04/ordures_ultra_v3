@@ -1412,6 +1412,10 @@ def _create_advantage_estimator(master_config: MasterConfig):
             "orm_advantage_weight": opd_cfg.get("orm_advantage_weight", 0.0),
             "opd_advantage_weight": opd_cfg.get("opd_advantage_weight", 1.0),
             "grpo_advantage_weight": opd_cfg.get("grpo_advantage_weight", 0.0),
+            "opd_advantage_clip_low": opd_cfg.get("opd_advantage_clip_low", -6767),
+            "opd_advantage_clip_high": opd_cfg.get("opd_advantage_clip_high", 6767),
+            "grpo_advantage_clip_low": opd_cfg.get("grpo_advantage_clip_low", -6767),
+            "grpo_advantage_clip_high": opd_cfg.get("grpo_advantage_clip_high", 6767),
             "grpo": opd_cfg.get("grpo", {}),
         }
         adv_estimator = OPDAdvantageEstimator(opd_estimator_config, loss_config)

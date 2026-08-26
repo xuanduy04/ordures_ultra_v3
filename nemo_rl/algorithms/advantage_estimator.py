@@ -178,6 +178,10 @@ class OPDAdvantageEstimator:
         self.orm_advantage_weight = float(estimator_config["orm_advantage_weight"])
         self.opd_advantage_weight = float(estimator_config["opd_advantage_weight"])
         self.grpo_advantage_weight = float(estimator_config["grpo_advantage_weight"])
+        self.opd_advantage_clip_low = float(estimator_config.get("opd_advantage_clip_low", -6767))
+        self.opd_advantage_clip_high = float(estimator_config.get("opd_advantage_clip_high", 6767))
+        self.grpo_advantage_clip_low = float(estimator_config.get("grpo_advantage_clip_low", -6767))
+        self.grpo_advantage_clip_high = float(estimator_config.get("grpo_advantage_clip_high", 6767))
         grpo_cfg = estimator_config["grpo"]
         self.grpo_estimator = GRPOAdvantageEstimator(
             {
@@ -218,10 +222,16 @@ class OPDAdvantageEstimator:
 
         # Â_MOPD,t = sg[log π_teacher - log π_student]  (Equation 8)
         distill_advantages = (teacher_logprobs - prev_logprobs).detach()
+        distill_advantages = distill_advantages.clamp(
+            min=self.opd_advantage_clip_low, max=self.opd_advantage_clip_high
+        )
         combined = self.opd_advantage_weight * distill_advantages
 
         if self.grpo_advantage_weight > 0:
             grpo_adv = self.grpo_estimator.compute_advantage(prompt_ids, rewards, mask)
+            grpo_adv = grpo_adv.clamp(
+                min=self.grpo_advantage_clip_low, max=self.grpo_advantage_clip_high
+            )
             combined = combined + self.grpo_advantage_weight * grpo_adv
         else:
             grpo_adv = None

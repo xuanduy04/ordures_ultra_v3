@@ -49,6 +49,10 @@ class OnPolicyDistillationConfig(TypedDict):
     non_colocated_teachers: NotRequired[NonColocatedTeachersConfig]
     opd_advantage_weight: NotRequired[float]
     grpo_advantage_weight: NotRequired[float]
+    opd_advantage_clip_low: NotRequired[float]
+    opd_advantage_clip_high: NotRequired[float]
+    grpo_advantage_clip_low: NotRequired[float]
+    grpo_advantage_clip_high: NotRequired[float]
     grpo: NotRequired[GrpoBlendConfig]
 
 

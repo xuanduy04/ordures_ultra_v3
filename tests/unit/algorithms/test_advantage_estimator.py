@@ -24,6 +24,10 @@ def _make_estimator(
     opd_advantage_weight=1.0,
     grpo_advantage_weight=0.0,
     grpo=None,
+    opd_advantage_clip_low=None,
+    opd_advantage_clip_high=None,
+    grpo_advantage_clip_low=None,
+    grpo_advantage_clip_high=None,
 ):
     estimator_config = {
         "use_orm_advantage": use_orm_advantage,
@@ -32,6 +36,14 @@ def _make_estimator(
         "grpo_advantage_weight": grpo_advantage_weight,
         "grpo": grpo or {},
     }
+    if opd_advantage_clip_low is not None:
+        estimator_config["opd_advantage_clip_low"] = opd_advantage_clip_low
+    if opd_advantage_clip_high is not None:
+        estimator_config["opd_advantage_clip_high"] = opd_advantage_clip_high
+    if grpo_advantage_clip_low is not None:
+        estimator_config["grpo_advantage_clip_low"] = grpo_advantage_clip_low
+    if grpo_advantage_clip_high is not None:
+        estimator_config["grpo_advantage_clip_high"] = grpo_advantage_clip_high
     loss_config = {}
     return OPDAdvantageEstimator(estimator_config, loss_config)
 
@@ -214,4 +226,87 @@ def test_opd_pure_grpo():
         [-2.0] * S,
         [2.0] * S,
     ], dtype=torch.float32)
+    torch.testing.assert_close(adv, expected)
+
+
+def test_opd_distill_advantage_clip():
+    """OPD distill advantages are clamped to opd_advantage_clip bounds."""
+    estimator = _make_estimator(opd_advantage_clip_low=-2.0, opd_advantage_clip_high=2.0)
+    B, S = 2, 4
+    teacher_lp = torch.zeros(B, S)
+    student_lp = torch.full((B, S), -5.0)  # gap = 5.0, outside [low, high]
+    mask = torch.ones(B, S)
+    prompt_ids = torch.arange(B)
+    rewards = torch.zeros(B)
+
+    adv = estimator.compute_advantage(
+        prompt_ids, rewards, mask, teacher_logprobs=teacher_lp, prev_logprobs=student_lp
+    )
+
+    expected = torch.full((B, S), 2.0)
+    torch.testing.assert_close(adv, expected)
+
+
+def test_opd_distill_advantage_clip_low():
+    """Negative OPD distill advantages are clamped at the low bound."""
+    estimator = _make_estimator(opd_advantage_clip_low=-2.0, opd_advantage_clip_high=2.0)
+    B, S = 1, 4
+    teacher_lp = torch.full((B, S), -5.0)
+    student_lp = torch.zeros(B, S)  # gap = -5.0
+    mask = torch.ones(B, S)
+    prompt_ids = torch.arange(B)
+    rewards = torch.zeros(B)
+
+    adv = estimator.compute_advantage(
+        prompt_ids, rewards, mask, teacher_logprobs=teacher_lp, prev_logprobs=student_lp
+    )
+
+    expected = torch.full((B, S), -2.0)
+    torch.testing.assert_close(adv, expected)
+
+
+def test_opd_grpo_blend_advantage_clip():
+    """GRPO blend advantages are clamped to grpo_advantage_clip bounds."""
+    grpo_cfg = {"normalize_rewards": False, "use_leave_one_out_baseline": False}
+    estimator = _make_estimator(
+        opd_advantage_weight=0.0,
+        grpo_advantage_weight=1.0,
+        grpo=grpo_cfg,
+        grpo_advantage_clip_low=-1.0,
+        grpo_advantage_clip_high=1.0,
+    )
+    B, S = 2, 4
+    teacher_lp = torch.zeros(B, S)
+    student_lp = torch.zeros(B, S)
+    mask = torch.ones(B, S)
+    prompt_ids = torch.tensor([[0], [0]])
+    rewards = torch.tensor([1.0, 5.0])
+
+    adv = estimator.compute_advantage(
+        prompt_ids, rewards, mask, teacher_logprobs=teacher_lp, prev_logprobs=student_lp
+    )
+
+    # baseline = mean([1, 5]) = 3, grpo_adv = [-2, 2] -> clamped to [-1, 1]
+    expected = torch.tensor([
+        [-1.0] * S,
+        [1.0] * S,
+    ], dtype=torch.float32)
+    torch.testing.assert_close(adv, expected)
+
+
+def test_opd_default_clip_values_are_noop():
+    """Default clip bounds (-6767, 6767) leave large advantages unclipped."""
+    estimator = _make_estimator()
+    B, S = 1, 4
+    teacher_lp = torch.full((B, S), 1000.0)
+    student_lp = torch.zeros(B, S)  # gap = 1000.0, within default bounds
+    mask = torch.ones(B, S)
+    prompt_ids = torch.arange(B)
+    rewards = torch.zeros(B)
+
+    adv = estimator.compute_advantage(
+        prompt_ids, rewards, mask, teacher_logprobs=teacher_lp, prev_logprobs=student_lp
+    )
+
+    expected = torch.full((B, S), 1000.0)
     torch.testing.assert_close(adv, expected)
