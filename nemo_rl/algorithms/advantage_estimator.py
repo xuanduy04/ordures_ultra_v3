@@ -182,6 +182,9 @@ class OPDAdvantageEstimator:
         self.opd_advantage_clip_high = float(estimator_config.get("opd_advantage_clip_high", 6767))
         self.grpo_advantage_clip_low = float(estimator_config.get("grpo_advantage_clip_low", -6767))
         self.grpo_advantage_clip_high = float(estimator_config.get("grpo_advantage_clip_high", 6767))
+        self.zero_out_of_bounds_advantages = bool(
+            estimator_config.get("zero_out_of_bounds_advantages", False)
+        )
         grpo_cfg = estimator_config["grpo"]
         self.grpo_estimator = GRPOAdvantageEstimator(
             {
@@ -222,15 +225,15 @@ class OPDAdvantageEstimator:
 
         # Â_MOPD,t = sg[log π_teacher - log π_student]  (Equation 8)
         distill_advantages = (teacher_logprobs - prev_logprobs).detach()
-        distill_advantages = distill_advantages.clamp(
-            min=self.opd_advantage_clip_low, max=self.opd_advantage_clip_high
+        distill_advantages = self._apply_advantage_bounds(
+            distill_advantages, self.opd_advantage_clip_low, self.opd_advantage_clip_high
         )
         combined = self.opd_advantage_weight * distill_advantages
 
         if self.grpo_advantage_weight > 0:
             grpo_adv = self.grpo_estimator.compute_advantage(prompt_ids, rewards, mask)
-            grpo_adv = grpo_adv.clamp(
-                min=self.grpo_advantage_clip_low, max=self.grpo_advantage_clip_high
+            grpo_adv = self._apply_advantage_bounds(
+                grpo_adv, self.grpo_advantage_clip_low, self.grpo_advantage_clip_high
             )
             combined = combined + self.grpo_advantage_weight * grpo_adv
         else:
@@ -248,6 +251,20 @@ class OPDAdvantageEstimator:
         self._compute_metrics(distill_advantages, advantages, mask, grpo_advantages=grpo_adv)
 
         return advantages
+
+    def _apply_advantage_bounds(self, advantages, clip_low, clip_high):
+        """Apply [clip_low, clip_high] bounds to advantages.
+
+        Clips by default; zeroes out-of-bounds values instead when
+        zero_out_of_bounds_advantages is enabled.
+        """
+        if self.zero_out_of_bounds_advantages:
+            return torch.where(
+                (advantages >= clip_low) & (advantages <= clip_high),
+                advantages,
+                torch.zeros_like(advantages),
+            )
+        return advantages.clamp(min=clip_low, max=clip_high)
 
     def _compute_metrics(self, distill_advantages, advantages, mask, grpo_advantages=None):
         """Compute OPD logging metrics and store in self.last_metrics."""

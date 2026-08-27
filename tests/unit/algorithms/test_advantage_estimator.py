@@ -28,6 +28,7 @@ def _make_estimator(
     opd_advantage_clip_high=None,
     grpo_advantage_clip_low=None,
     grpo_advantage_clip_high=None,
+    zero_out_of_bounds_advantages=False,
 ):
     estimator_config = {
         "use_orm_advantage": use_orm_advantage,
@@ -44,6 +45,8 @@ def _make_estimator(
         estimator_config["grpo_advantage_clip_low"] = grpo_advantage_clip_low
     if grpo_advantage_clip_high is not None:
         estimator_config["grpo_advantage_clip_high"] = grpo_advantage_clip_high
+    if zero_out_of_bounds_advantages:
+        estimator_config["zero_out_of_bounds_advantages"] = zero_out_of_bounds_advantages
     loss_config = {}
     return OPDAdvantageEstimator(estimator_config, loss_config)
 
@@ -309,4 +312,84 @@ def test_opd_default_clip_values_are_noop():
     )
 
     expected = torch.full((B, S), 1000.0)
+    torch.testing.assert_close(adv, expected)
+
+
+def test_opd_zero_out_of_bounds_distill_advantages():
+    """zero_out_of_bounds_advantages: OPD distill values outside bounds become 0."""
+    estimator = _make_estimator(
+        opd_advantage_clip_low=-2.0,
+        opd_advantage_clip_high=2.0,
+        zero_out_of_bounds_advantages=True,
+    )
+    B, S = 1, 6
+    teacher_lp = torch.zeros(B, S)
+    student_lp = torch.tensor([[-3.0, -1.0, 0.0, 1.0, 3.0, 2.0]])  # gaps: 3,1,0,-1,-3,-2
+    mask = torch.ones(B, S)
+    prompt_ids = torch.arange(B)
+    rewards = torch.zeros(B)
+
+    adv = estimator.compute_advantage(
+        prompt_ids, rewards, mask, teacher_logprobs=teacher_lp, prev_logprobs=student_lp
+    )
+
+    # out-of-bounds gaps (3, -3) are zeroed; in-bounds values kept as-is
+    expected = torch.tensor([[0.0, 1.0, 0.0, -1.0, 0.0, -2.0]])
+    torch.testing.assert_close(adv, expected)
+
+
+def test_opd_zero_out_of_bounds_grpo_advantages():
+    """zero_out_of_bounds_advantages: GRPO blend values outside bounds become 0."""
+    grpo_cfg = {"normalize_rewards": False, "use_leave_one_out_baseline": False}
+    estimator = _make_estimator(
+        opd_advantage_weight=0.0,
+        grpo_advantage_weight=1.0,
+        grpo=grpo_cfg,
+        grpo_advantage_clip_low=-1.0,
+        grpo_advantage_clip_high=1.0,
+        zero_out_of_bounds_advantages=True,
+    )
+    B, S = 2, 4
+    teacher_lp = torch.zeros(B, S)
+    student_lp = torch.zeros(B, S)
+    mask = torch.ones(B, S)
+    prompt_ids = torch.tensor([[0], [0]])
+    rewards = torch.tensor([1.0, 5.0])
+
+    adv = estimator.compute_advantage(
+        prompt_ids, rewards, mask, teacher_logprobs=teacher_lp, prev_logprobs=student_lp
+    )
+
+    # baseline = mean([1, 5]) = 3, grpo_adv = [-2, 2] -> both zeroed
+    expected = torch.zeros(B, S)
+    torch.testing.assert_close(adv, expected)
+
+
+def test_opd_zero_out_of_bounds_grpo_keeps_in_bounds():
+    """zero_out_of_bounds_advantages: in-bounds GRPO blend values are kept."""
+    grpo_cfg = {"normalize_rewards": False, "use_leave_one_out_baseline": False}
+    estimator = _make_estimator(
+        opd_advantage_weight=0.0,
+        grpo_advantage_weight=1.0,
+        grpo=grpo_cfg,
+        grpo_advantage_clip_low=-1.0,
+        grpo_advantage_clip_high=1.0,
+        zero_out_of_bounds_advantages=True,
+    )
+    B, S = 2, 4
+    teacher_lp = torch.zeros(B, S)
+    student_lp = torch.zeros(B, S)
+    mask = torch.ones(B, S)
+    prompt_ids = torch.tensor([[0], [0]])
+    rewards = torch.tensor([2.0, 3.0])
+
+    adv = estimator.compute_advantage(
+        prompt_ids, rewards, mask, teacher_logprobs=teacher_lp, prev_logprobs=student_lp
+    )
+
+    # baseline = mean([2, 3]) = 2.5, grpo_adv = [-0.5, 0.5] -> within bounds, kept
+    expected = torch.tensor([
+        [-0.5] * S,
+        [0.5] * S,
+    ], dtype=torch.float32)
     torch.testing.assert_close(adv, expected)

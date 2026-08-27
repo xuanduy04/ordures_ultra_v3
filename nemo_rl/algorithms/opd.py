@@ -53,6 +53,7 @@ class OnPolicyDistillationConfig(TypedDict):
     opd_advantage_clip_high: NotRequired[float]
     grpo_advantage_clip_low: NotRequired[float]
     grpo_advantage_clip_high: NotRequired[float]
+    zero_out_of_bounds_advantages: NotRequired[bool]
     grpo: NotRequired[GrpoBlendConfig]
 
 
