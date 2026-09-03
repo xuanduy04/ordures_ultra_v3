@@ -1,11 +1,11 @@
-"""Convert a JSON/JSONL dataset to general_qa format.
+"""Convert a JSON/JSONL dataset to genrm_compare format.
 
 Each input entry must have a prompt field (a plain string or a chat-template
-list of turns) and an answer field. The output is a JSONL file with entries
-containing ``agent_ref`` (with a ``general_qa_simple_agent`` or
-``general_qa_simple_agent_reasoning_off`` name), ``responses_create_params``,
-``question``, ``expected_answer``, ``should_use_judge``, and an optional
-``dataset`` field.
+list of turns). The output is a JSONL file with entries containing
+``agent_ref`` (with ``responses_api_agents`` type and a ``genrm_simple_agent``
+or ``genrm_simple_agent_reasoning_off`` name), ``responses_create_params``
+(with ``input``, ``tools`` when present, and ``parallel_tool_calls: false``),
+and an optional ``dataset`` field.
 """
 
 from __future__ import annotations
@@ -22,8 +22,9 @@ from tqdm.auto import tqdm
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-AGENT_NAME = "general_qa_simple_agent"
-AGENT_NAME_REASONING_OFF = "general_qa_simple_agent_reasoning_off"
+AGENT_TYPE = "responses_api_agents"
+AGENT_NAME = "genrm_simple_agent"
+AGENT_NAME_REASONING_OFF = "genrm_simple_agent_reasoning_off"
 
 
 def _preprocess_underscore_args(argv: list[str]) -> list[str]:
@@ -100,15 +101,12 @@ def _convert_tools_to_nemo_gym(tools: list[dict]) -> list[dict]:
     return out
 
 
-def _convert_entry(entry: dict, prompt_field: str, answer_field: str, use_judge: bool, no_reasoning: bool, tools_field: str, instruction_prefix: str, dataset: str) -> dict:
-    """Convert one raw entry to the general_qa JSONL schema."""
+def _convert_entry(entry: dict, prompt_field: str, tools_field: str, no_reasoning: bool, dataset: str) -> dict:
+    """Convert one raw entry to the genrm_compare JSONL schema."""
     prompt = entry.get(prompt_field, "")
-    answer = str(entry.get(answer_field, "")).strip()
 
     if not prompt or not str(prompt).strip():
         raise ValueError(f"Entry has empty or missing '{prompt_field}' field")
-    if not answer:
-        raise ValueError(f"Entry has empty or missing '{answer_field}' field")
 
     if isinstance(prompt, dict) or isinstance(prompt, list):
         if isinstance(prompt, dict):
@@ -118,16 +116,8 @@ def _convert_entry(entry: dict, prompt_field: str, answer_field: str, use_judge:
         if any("content" not in prompt[i] for i in range(len(prompt))):
             raise ValueError("Entry has invalid chat template format: missing 'content' field in (at least) 1 turn")
         _input = _convert_chat_template_to_nemo_gym(prompt)
-        question_str = None
-        for i in range(len(prompt) - 1, -1, -1):
-            if prompt[i]["role"] == "user":
-                question_str = str(prompt[i]["content"]).strip()
-                break
-        if question_str is None:
-            raise ValueError("Entry has invalid chat template format: no 'user' turn found")
     else:
-        question_str = str(prompt).strip()
-        _input = [{"role": "user", "content": instruction_prefix + question_str}]
+        _input = [{"role": "user", "content": str(prompt).strip()}]
 
     responses_create_params: dict = {
         "input": _input,
@@ -137,15 +127,14 @@ def _convert_entry(entry: dict, prompt_field: str, answer_field: str, use_judge:
         if not isinstance(tools, list) or not all(isinstance(tool, dict) for tool in tools):
             raise ValueError(f"Entry has invalid '{tools_field}' field: expected a list of dicts")
         responses_create_params["tools"] = _convert_tools_to_nemo_gym(tools)
+    responses_create_params["parallel_tool_calls"] = False
 
     out: dict = {
+        "responses_create_params": responses_create_params,
         "agent_ref": {
+            "type": AGENT_TYPE, 
             "name": AGENT_NAME_REASONING_OFF if no_reasoning else AGENT_NAME
         },
-        "responses_create_params": responses_create_params,
-        "question": question_str,
-        "expected_answer": answer,
-        "should_use_judge": use_judge,
     }
     if dataset:
         out["dataset"] = dataset
@@ -168,7 +157,7 @@ def main() -> None:
     sys.argv = _preprocess_underscore_args(sys.argv)
 
     parser = argparse.ArgumentParser(
-        description="Convert a JSON/JSONL dataset to general_qa format.",
+        description="Convert a JSON/JSONL dataset to genrm_compare format.",
     )
     parser.add_argument(
         "input",
@@ -194,7 +183,7 @@ def main() -> None:
         "--no-reasoning",
         action="store_true",
         default=False,
-        help="Use 'general_qa_simple_agent_reasoning_off' as agent_ref.name instead of 'general_qa_simple_agent' (default: false).",
+        help="Use 'genrm_simple_agent_reasoning_off' as agent_ref.name instead of 'genrm_simple_agent' (default: false).",
     )
     parser.add_argument(
         "--dataset",
@@ -207,22 +196,6 @@ def main() -> None:
         default=False,
         help="Skip invalid entries with a warning instead of aborting (default: false).",
     )
-    parser.add_argument(
-        "--answer-field",
-        default="expected_answer",
-        help="Field name for the expected answer (default: %(default)s).",
-    )
-    parser.add_argument(
-        "--should-use-judge",
-        action="store_true",
-        default=False,
-        help="'should_use_judge: true' in each output entry (default: false).",
-    )
-    parser.add_argument(
-        "--instruction-prefix",
-        default="Answer the following question. Put your final answer inside \\boxed{}.\n\n",
-        help="The instruction prefix for when the sample only has a question",
-    )
 
     args = parser.parse_args()
 
@@ -230,16 +203,13 @@ def main() -> None:
     output_path: Path = (
         args.output
         if args.output is not None
-        else args.input.with_name(args.input.stem + "_general_qa.jsonl")
+        else args.input.with_name(args.input.stem + "_genrm_compare.jsonl")
     )
     prompt_field: str = args.prompt_field
     tools_field: str = args.tools_field
     no_reasoning: bool = args.no_reasoning
     dataset: str = args.dataset.strip()
     skip_on_error: bool = args.skip_on_error
-    answer_field: str = args.answer_field
-    should_use_judge: bool = args.should_use_judge
-    instruction_prefix = args.instruction_prefix.lstrip()
 
     if not dataset:
         logger.info("--dataset is empty; the 'dataset' field will be omitted from all output rows.")
@@ -271,7 +241,7 @@ def main() -> None:
                 continue
             try:
                 entry = json.loads(stripped)
-                converted_entry = _convert_entry(entry, prompt_field, answer_field, should_use_judge, no_reasoning, tools_field, instruction_prefix, dataset)
+                converted_entry = _convert_entry(entry, prompt_field, tools_field, no_reasoning, dataset)
             except Exception as exc:
                 if skip_on_error:
                     logger.warning(f"Skipping line {lineno}: {exc}")
