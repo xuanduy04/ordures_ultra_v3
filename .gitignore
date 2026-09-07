@@ -46,11 +46,12 @@ code_snapshots*/
 .cache/
 
 # Runtime env
+pyrefly.toml
 *runtime_env.yaml
 !default_runtime_env.yaml
 
 super_models/
-data/
+/data/
 
 # Local working files (not part of the release)
 internal_only/
