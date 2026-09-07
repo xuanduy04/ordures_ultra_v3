@@ -216,8 +216,6 @@ The validation set you pass in will directly be used for validation with no addi
             checkpointer,
             grpo_state,
             master_config,
-            teacher_worker_groups,
-            alias_to_group_alias,
         ) = setup(config, tokenizer, train_dataset, val_dataset)
 
     rl_init_timer.record("total", time.perf_counter() - main_start)
@@ -286,8 +284,6 @@ The validation set you pass in will directly be used for validation with no addi
             grpo_save_state=grpo_state,
             master_config=master_config,
             max_trajectory_age_steps=async_config["max_trajectory_age_steps"],
-            teacher_worker_groups=teacher_worker_groups,
-            alias_to_group_alias=alias_to_group_alias,
         )
     else:
         print("🚀 Running synchronous GRPO training")

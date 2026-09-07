@@ -420,28 +420,23 @@ def setup(
     elif rm_nodes:
         policy_nodes -= rm_nodes
 
-    # Reserve nodes for non-colocated OPD teachers so training doesn't claim them
-    opd_teacher_nodes = 0
-    enable_opd_teachers = opd_module.is_non_colocated_teachers_enabled(master_config)
+    # OPD teachers are remote vLLM serves (see on_policy_distillation); they
+    # consume no cluster nodes of their own.
+    enable_opd_teachers = opd_module.is_opd_enabled(master_config)
     if enable_opd_teachers:
         assert _should_use_async_rollouts(master_config), (
-            "Non-colocated OPD teachers require async GRPO (vLLM backend with async_engine enabled)."
+            "OPD teachers require async GRPO (vLLM backend with async_engine enabled)."
         )
-        from nemo_rl.models.policy.teacher_worker_group import create_teacher_configs_from_opd_config
-        opd_cfg = master_config.get("on_policy_distillation", {})
-        teacher_configs = create_teacher_configs_from_opd_config(opd_cfg)
-        for tcfg in teacher_configs:
-            opd_teacher_nodes += tcfg.get("num_nodes", 1)
-        policy_nodes -= opd_teacher_nodes
+        opd_module.validate_teacher_serves(master_config)
 
     print(
-        f"policy_nodes:{policy_nodes} + nemo_gym_nodes:{nemo_gym_num_nodes} + rm_nodes:{rm_nodes} + opd_teacher_nodes:{opd_teacher_nodes} = total_nodes:{total_nodes}",
+        f"policy_nodes:{policy_nodes} + nemo_gym_nodes:{nemo_gym_num_nodes} + rm_nodes:{rm_nodes} = total_nodes:{total_nodes}",
         flush=True,
     )
 
     assert policy_nodes > 0, (
         "policy_nodes must be > 0, but got "
-        f"policy_nodes:{policy_nodes} + nemo_gym_nodes:{nemo_gym_num_nodes} + rm_nodes:{rm_nodes} + opd_teacher_nodes:{opd_teacher_nodes} = total_nodes:{total_nodes}"
+        f"policy_nodes:{policy_nodes} + nemo_gym_nodes:{nemo_gym_num_nodes} + rm_nodes:{rm_nodes} = total_nodes:{total_nodes}"
     )
 
     ray_runtime_ctx = ray.get_runtime_context()
@@ -803,9 +798,6 @@ def setup(
 
         return policy_generation, policy
 
-    teacher_worker_groups: dict[str, Any] = {}
-    alias_to_group_alias: dict[str, str] = {}
-
     # Handle generation-specific setup
     if backend == "megatron":
         # Megatron generation: policy_generation is None, only initialize policy
@@ -951,16 +943,6 @@ def setup(
 
             init_tasks["nemo_gym"] = init_nemo_gym
 
-        if enable_opd_teachers:
-            def init_teachers():
-                t0 = time.perf_counter()
-                twg, a2g = opd_module.create_teacher_worker_groups(
-                    master_config, policy_config, tokenizer
-                )
-                return twg, a2g, time.perf_counter() - t0
-
-            init_tasks["teachers"] = init_teachers
-
         # ---- Execute all tasks ----
         print(
             f"  ⚡ Init tasks: {', '.join(init_tasks.keys())}",
@@ -986,10 +968,6 @@ def setup(
         if enable_nemo_gym:
             nemo_gym_actor, nemo_gym_time = results["nemo_gym"]
             worker_init_timing_metrics["nemo_gym_init_time_s"] = nemo_gym_time
-
-        if enable_opd_teachers:
-            teacher_worker_groups, alias_to_group_alias, teacher_time = results["teachers"]
-            worker_init_timing_metrics["teacher_init_time_s"] = teacher_time
 
         print(
             f"  ✓ Using vLLM backend for generation with {policy_config['model_name']}",
@@ -1069,10 +1047,6 @@ def setup(
         if nemo_gym_time:
             print(f"  NeMo Gym init: {nemo_gym_time:.1f}s (overlapped)")
 
-        teacher_time = worker_init_timing_metrics.get("teacher_init_time_s", 0)
-        if teacher_time:
-            print(f"  Teacher init: {teacher_time:.1f}s (overlapped)")
-
         # Calculate "other" time (time after worker init completes)
         other_time = total_setup - worker_init_complete_time
         worker_init_timing_metrics["other_setup_time_s"] = other_time
@@ -1100,8 +1074,6 @@ def setup(
         checkpointer,
         grpo_save_state,
         master_config,
-        teacher_worker_groups,
-        alias_to_group_alias,
     )
 
 
@@ -2926,8 +2898,6 @@ def async_grpo_train(
     grpo_save_state: GRPOSaveState,
     master_config: MasterConfig,
     max_trajectory_age_steps: int = 1,
-    teacher_worker_groups: Optional[dict[str, Any]] = None,
-    alias_to_group_alias: Optional[dict[str, str]] = None,
 ) -> None:
     """Run asynchronous GRPO training with replay buffer.
 
@@ -2945,8 +2915,6 @@ def async_grpo_train(
         grpo_save_state: Training state
         master_config: Master configuration
         max_trajectory_age_steps: Maximum age (in training steps) for trajectories to be used in training
-        teacher_worker_groups: Teacher worker groups for OPD (optional)
-        alias_to_group_alias: Mapping from agent alias to teacher group alias (optional)
     """
     # Ensure we are running with a compatible async generation backend
     assert _should_use_async_rollouts(master_config), (
@@ -3128,8 +3096,6 @@ def async_grpo_train(
         master_config=master_config,
         replay_buffer=replay_buffer,
         start_step=step,
-        teacher_worker_groups=teacher_worker_groups,
-        alias_to_group_alias=alias_to_group_alias,
         on_policy_distillation_cfg=dict(master_config.get("on_policy_distillation", {})),
         next_ng_task_index=next_ng_task_index,
     )

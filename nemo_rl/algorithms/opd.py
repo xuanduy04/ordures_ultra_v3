@@ -14,7 +14,7 @@
 
 """On-policy distillation (OPD) helpers for async GRPO.
 
-Teacher routing, config helpers, and teacher worker group creation.
+Teacher routing, config helpers, and remote teacher serve resolution.
 Advantage computation lives in advantage_estimator.OPDAdvantageEstimator.
 IS truncation lives in loss_functions.ClippedPGLoss (ICE-POP mode).
 """
@@ -23,16 +23,15 @@ from __future__ import annotations
 
 from typing import Any, NotRequired, Optional, TypedDict
 
+from nemo_rl.algorithms.vllm_teacher_client import (
+    normalize_teacher_serve,
+    probe_teacher_serve,
+)
+
 
 # ---------------------------------------------------------------------------
 # Config TypedDicts
 # ---------------------------------------------------------------------------
-
-
-class NonColocatedTeachersConfig(TypedDict):
-    enabled: bool
-    default_teacher_cfg: NotRequired[dict[str, Any]]
-    teacher_overrides: NotRequired[dict[str, dict[str, Any]]]
 
 
 class GrpoBlendConfig(TypedDict):
@@ -42,11 +41,10 @@ class GrpoBlendConfig(TypedDict):
 
 class OnPolicyDistillationConfig(TypedDict):
     enabled: bool
-    teacher_model_by_agent_name: NotRequired[dict[str, str]]
+    # Values are `_teachers.<alias>` entries: {url, model} serve specs.
+    teacher_model_by_agent_name: NotRequired[dict[str, Any]]
     default_teacher_alias: NotRequired[Optional[str]]
     strict_agent_name_match: NotRequired[bool]
-    deduplicate_shared_teacher_checkpoints: NotRequired[bool]
-    non_colocated_teachers: NotRequired[NonColocatedTeachersConfig]
     opd_advantage_weight: NotRequired[float]
     grpo_advantage_weight: NotRequired[float]
     opd_advantage_clip_low: NotRequired[float]
@@ -66,13 +64,6 @@ def is_opd_enabled(master_config: dict[str, Any]) -> bool:
     return bool(master_config.get("on_policy_distillation", {}).get("enabled", False))
 
 
-def is_non_colocated_teachers_enabled(master_config: dict[str, Any]) -> bool:
-    if not is_opd_enabled(master_config):
-        return False
-    opd_cfg = master_config.get("on_policy_distillation", {})
-    return bool(opd_cfg.get("non_colocated_teachers", {}).get("enabled", False))
-
-
 # ---------------------------------------------------------------------------
 # Teacher routing
 # ---------------------------------------------------------------------------
@@ -80,7 +71,7 @@ def is_non_colocated_teachers_enabled(master_config: dict[str, Any]) -> bool:
 
 def resolve_reference_aliases(
     agent_refs: list[dict],
-    teacher_model_by_agent_name: dict[str, str],
+    teacher_model_by_agent_name: dict[str, Any],
     default_teacher_alias: Optional[str] = None,
     strict_agent_name_match: bool = False,
 ) -> list[str]:
@@ -104,100 +95,33 @@ def resolve_reference_aliases(
     return aliases
 
 
-def get_teacher_routing_metrics(
-    reference_aliases: list[str],
-    teacher_model_by_agent_name: dict[str, str],
-) -> dict[str, float]:
-    alias_unique = len(set(reference_aliases))
-    unique_models: set[str] = set()
-    for alias in reference_aliases:
+def resolve_teacher_specs(
+    aliases: list[str],
+    teacher_model_by_agent_name: dict[str, Any],
+) -> list[dict[str, str]]:
+    """Resolve agent aliases to normalized ``{url, model}`` serve specs."""
+    specs: list[dict[str, str]] = []
+    for alias in aliases:
         if alias not in teacher_model_by_agent_name:
-            raise KeyError(f"Alias '{alias}' not found in teacher_model_by_agent_name")
-        unique_models.add(teacher_model_by_agent_name[alias])
-    model_unique = len(unique_models)
-    return {
-        "on_policy_distillation/teacher_alias_unique": float(alias_unique),
-        "on_policy_distillation/teacher_model_unique": float(model_unique),
-        "on_policy_distillation/teacher_alias_to_model_compression": float(
-            model_unique / max(alias_unique, 1)
-        ),
-    }
+            raise KeyError(
+                f"Agent alias '{alias}' has no teacher serve mapping. "
+                f"Available: {sorted(teacher_model_by_agent_name.keys())}"
+            )
+        specs.append(normalize_teacher_serve(teacher_model_by_agent_name[alias]))
+    return specs
 
 
-# ---------------------------------------------------------------------------
-# Setup helper — teacher worker group creation
-# ---------------------------------------------------------------------------
+def validate_teacher_serves(master_config: dict[str, Any]) -> None:
+    """Fail fast if any OPD teacher mapping is not a ``{url, model}`` serve.
 
-
-def create_teacher_worker_groups(
-    master_config: dict[str, Any],
-    policy_config: dict[str, Any],
-    tokenizer: Any,
-) -> tuple[dict[str, Any], dict[str, str]]:
-    """Create TeacherWorkerGroup instances for non-colocated teachers.
-
-    Returns (teacher_worker_groups, alias_to_group_alias).
+    Also probes each unique serve URL (``GET {url}/models``) so a bad URL or
+    model name fails at setup, before any rollout is collected.
     """
-    from nemo_rl.distributed.virtual_cluster import RayVirtualCluster
-    from nemo_rl.models.policy.teacher_worker_group import (
-        TeacherWorkerGroup,
-        create_teacher_configs_from_opd_config,
-    )
-
-    opd_cfg = master_config.get("on_policy_distillation", {})
-    non_coloc_cfg = opd_cfg.get("non_colocated_teachers", {})
-    teacher_configs = create_teacher_configs_from_opd_config(opd_cfg)
-
-    teacher_worker_groups: dict[str, Any] = {}
-    for tcfg in teacher_configs:
-        alias = tcfg["alias"]
-        num_nodes = tcfg.get("num_nodes", 1)
-        gpus_per_node = tcfg.get("gpus_per_node", 8)
-
-        teacher_cluster = RayVirtualCluster(
-            name=f"teacher_{alias}",
-            bundle_ct_per_node_list=[gpus_per_node] * num_nodes,
-            use_gpus=True,
-            num_gpus_per_node=gpus_per_node,
-            max_colocated_worker_groups=1,
-        )
-        twg = TeacherWorkerGroup(
-            teacher_cfg=tcfg,
-            cluster=teacher_cluster,
-            policy_config=policy_config,
-            tokenizer=tokenizer,
-        )
-        teacher_worker_groups[alias] = twg
-        print(
-            f"  ✓ Teacher '{alias}' cluster: {num_nodes} node(s), {gpus_per_node} GPUs/node",
-            flush=True,
-        )
-
-    # Verify all teacher workers are alive (actor __init__ runs async and
-    # failures are otherwise silent until the first remote call).
-    import ray
-
-    print("  Verifying teacher workers are healthy...", flush=True)
-    for alias, twg in teacher_worker_groups.items():
-        try:
-            refs = [w.__ray_ready__.remote() for w in twg.worker_group.workers]
-            ray.get(refs, timeout=1800)
-        except Exception as e:
-            raise RuntimeError(
-                f"Teacher '{alias}' worker(s) failed during initialization. "
-                f"This often means a stale cached mcore checkpoint — try deleting "
-                f"the cached checkpoint under $HF_HOME/nemo_rl/ and rerunning.\n"
-                f"Original error: {e}"
-            ) from e
-    print("  ✓ All teacher workers healthy", flush=True)
-
-    # Build alias -> group_alias mapping for deduplication
-    teacher_model_by_agent_name = dict(opd_cfg.get("teacher_model_by_agent_name", {}))
-    alias_to_group_alias: dict[str, str] = {}
-    model_to_primary: dict[str, str] = {}
-    for tcfg in teacher_configs:
-        model_to_primary[tcfg["model_name"]] = tcfg["alias"]
-    for alias, model_name in teacher_model_by_agent_name.items():
-        alias_to_group_alias[alias] = model_to_primary.get(model_name, alias)
-
-    return teacher_worker_groups, alias_to_group_alias
+    opd_cfg = master_config["on_policy_distillation"]
+    teacher_model_by_agent_name = opd_cfg["teacher_model_by_agent_name"]
+    models_by_url: dict[str, set[str]] = {}
+    for raw in teacher_model_by_agent_name.values():
+        spec = normalize_teacher_serve(raw)
+        models_by_url.setdefault(spec["url"], set()).add(spec["model"])
+    for url, models in models_by_url.items():
+        probe_teacher_serve(url, models)

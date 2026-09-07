@@ -224,7 +224,11 @@ class OPDAdvantageEstimator:
             raise ValueError("OPD requires prev_logprobs")
 
         # Â_MOPD,t = sg[log π_teacher - log π_student]  (Equation 8)
-        distill_advantages = (teacher_logprobs - prev_logprobs).detach()
+        # NaN = collection-time context-length sentinel → zero OPD contribution for
+        # those rows; GRPO/ORM blending below is unaffected.
+        distill_advantages = torch.nan_to_num(
+            (teacher_logprobs - prev_logprobs).detach(), nan=0.0
+        )
         distill_advantages = self._apply_advantage_bounds(
             distill_advantages, self.opd_advantage_clip_low, self.opd_advantage_clip_high
         )

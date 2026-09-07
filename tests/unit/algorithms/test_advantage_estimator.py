@@ -315,6 +315,68 @@ def test_opd_default_clip_values_are_noop():
     torch.testing.assert_close(adv, expected)
 
 
+def test_opd_nan_teacher_rows_preserve_grpo_and_orm():
+    """NaN teacher rows zero the distill contribution; GRPO/ORM are preserved."""
+    grpo_cfg = {"normalize_rewards": False, "use_leave_one_out_baseline": False}
+    estimator = _make_estimator(
+        use_orm_advantage=True,
+        orm_advantage_weight=1.0,
+        opd_advantage_weight=1.0,
+        grpo_advantage_weight=1.0,
+        grpo=grpo_cfg,
+    )
+    B, S = 4, 4
+    teacher_lp = torch.tensor(
+        [
+            [0.0, 0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0, 1.0],
+            [float("nan"), float("nan"), float("nan"), float("nan")],
+            [2.0, 2.0, 2.0, 2.0],
+        ]
+    )
+    student_lp = torch.full((B, S), -2.0)
+    mask = torch.ones(B, S)
+    prompt_ids = torch.tensor([[0], [0], [0], [0]])
+    rewards = torch.tensor([1.0, 3.0, 5.0, 7.0])
+    orm_adv = torch.full((B, S), 4.0)
+
+    adv = estimator.compute_advantage(
+        prompt_ids,
+        rewards,
+        mask,
+        teacher_logprobs=teacher_lp,
+        prev_logprobs=student_lp,
+        orm_advantages=orm_adv,
+    )
+
+    # GRPO baseline = mean([1, 3, 5, 7]) = 4.0
+    grpo_adv = rewards - 4.0  # [-3, -1, 1, 3]
+    # distill = teacher - student = [2, 3, NaN->0, 4]
+    distill = torch.tensor([2.0, 3.0, 0.0, 4.0])
+    expected = torch.stack(
+        [torch.full((S,), float(d) + float(g) + 4.0) for d, g in zip(distill, grpo_adv)]
+    )
+
+    torch.testing.assert_close(adv, expected)
+    assert not torch.isnan(adv).any()
+
+    # GRPO and ORM contributions are fully preserved on the NaN row:
+    # adv = 0 (distill) + grpo_adv + orm_adv = 1.0 + 4.0 = 5.0
+    assert torch.allclose(adv[2], torch.full((S,), 5.0))
+
+    # Finite rows match the all-finite baseline exactly.
+    baseline = estimator.compute_advantage(
+        prompt_ids,
+        rewards,
+        mask,
+        teacher_logprobs=torch.nan_to_num(teacher_lp, nan=0.0),
+        prev_logprobs=student_lp,
+        orm_advantages=orm_adv,
+    )
+    finite_rows = torch.tensor([True, True, False, True])
+    torch.testing.assert_close(adv[finite_rows], baseline[finite_rows])
+
+
 def test_opd_zero_out_of_bounds_distill_advantages():
     """zero_out_of_bounds_advantages: OPD distill values outside bounds become 0."""
     estimator = _make_estimator(
