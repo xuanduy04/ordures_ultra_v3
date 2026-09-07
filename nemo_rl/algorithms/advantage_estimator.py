@@ -1,35 +1,51 @@
-# Copyright (c) 2025, NVIDIA CORPORATION.  All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
 """Advantage Estimators for RL algorithms.
 
 This module provides different advantage estimation strategies:
 - GRPOAdvantageEstimator: Standard GRPO advantage with leave-one-out baseline
-- ReinforcePlusPlusAdvantageEstimator: Reinforce++ with optional baseline subtraction (minus_baseline) and KL penalty in reward
+- ReinforcePlusPlusAdvantageEstimator: REINFORCE++ with optional baseline subtraction (minus_baseline) and KL penalty in reward
 - OPDAdvantageEstimator: On-Policy Distillation (MOPD) token-level distillation advantages
 Reference papers:
 - ProRLv2: https://developer.nvidia.com/blog/scaling-llm-reinforcement-learning-with-prolonged-training-using-prorl-v2/
-- Reinforce++: https://arxiv.org/abs/2501.03262
+- REINFORCE++: https://arxiv.org/abs/2501.03262
 - MOPD: https://arxiv.org/abs/2601.02780
 """
+
+from __future__ import annotations
+
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 import torch
 
 from nemo_rl.algorithms.utils import calculate_baseline_and_std_per_prompt, calculate_kl
 
+if TYPE_CHECKING:
+    from torch import Tensor
 
-class GRPOAdvantageEstimator:
+
+class BaseAdvantageEstimator(ABC):
+    def __init__(self, estimator_config: dict | None = None, loss_config: dict | None = None):
+        pass
+
+    @abstractmethod
+    def compute_advantage(self, prompt_ids: Tensor, rewards: "Tensor", mask: "Tensor", **kwargs) -> "Tensor":
+        """Compute advantages.
+
+        Args:
+            prompt_ids: Tensor of shape [batch_size] identifying which prompt each sample belongs to.
+            rewards: Tensor of shape [batch_size] containing reward for each sample.
+            mask: Response token mask of shape [batch_size, seq_len], 1 for valid response tokens, 0 for padding.
+                    Used for: (1) expanding advantages to token-level shape, (2) global normalization
+                    that only considers valid tokens.
+            **kwargs: Additional arguments.
+
+        Returns:
+            Advantages tensor of shape [batch_size, seq_len], globally normalized across valid tokens.
+        """
+        ...
+
+
+class GRPOAdvantageEstimator(BaseAdvantageEstimator):
     """GRPO-style advantage estimator with leave-one-out baseline.
 
     Note: GRPO computes advantages over all responses for each prompt.
@@ -71,8 +87,58 @@ class GRPOAdvantageEstimator:
         return advantages.expand(mask.shape)
 
 
-class ReinforcePlusPlusAdvantageEstimator:
-    """Reinforce++ advantage estimator with optional baseline subtraction and KL penalty in reward.
+class ReinforceAdvantageEstimator(BaseAdvantageEstimator):
+    """Traditional REINFORCE advantage estimator.
+
+    Args:
+        minus_baseline (Optional, default False): If True, subtract the per-prompt mean reward baseline.
+    """
+
+    def __init__(self, estimator_config: dict, loss_config: dict | None = None):
+        # We allow .get() here, this is an exception.
+        self.minus_baseline = estimator_config.get("minus_baseline", False)
+
+    def compute_advantage(
+        self,
+        prompt_ids,
+        rewards,
+        mask,
+        **kwargs,
+    ):
+        """Compute traditional REINFORCE advantages.
+
+        Args:
+            prompt_ids: Tensor of shape [batch_size] identifying which prompt
+                each sample belongs to.
+            rewards: Tensor of shape [batch_size] containing the sequence reward
+                for each sample.
+            mask: Response token mask of shape [batch_size, seq_len], with 1 for
+                valid response tokens and 0 for padding.
+            **kwargs: Additional arguments (unused).
+
+        Returns:
+            Tensor of shape [batch_size, seq_len].
+        """
+        if self.minus_baseline:
+            baseline, _ = calculate_baseline_and_std_per_prompt(
+                prompt_ids,
+                rewards,
+                torch.ones_like(rewards),
+                leave_one_out_baseline=False,
+            )
+            advantages = rewards - baseline
+        else:
+            advantages = rewards
+
+        # In sequence-level REINFORCE, every action/token in the sampled
+        # response receives the same sequence return.
+        advantages = advantages.unsqueeze(-1).expand_as(mask)
+
+        return advantages * mask
+
+
+class ReinforcePlusPlusAdvantageEstimator(BaseAdvantageEstimator):
+    """REINFORCE++ advantage estimator with optional baseline subtraction and KL penalty in reward.
 
     Args:
         minus_baseline: If True, subtract per-prompt mean baseline from rewards.
@@ -94,7 +160,7 @@ class ReinforcePlusPlusAdvantageEstimator:
         logprobs_reference=None,
         **kwargs,
     ):
-        """Compute Reinforce++ advantages with optional KL penalty.
+        """Compute REINFORCE++ advantages with optional KL penalty.
 
         Args:
             prompt_ids: Tensor of shape [batch_size] identifying which prompt each sample belongs to.
@@ -146,18 +212,19 @@ class ReinforcePlusPlusAdvantageEstimator:
         return adv
 
 
-class OPDAdvantageEstimator:
+class OPDAdvantageEstimator(BaseAdvantageEstimator):
     """On-Policy Distillation advantage estimator (MOPD, arXiv:2601.02780).
 
     Computes token-level distillation advantages:
         Â_MOPD,t = sg[log π_teacher - log π_student]
 
-    This is Equation 8 from the MOPD paper. The IS truncation (w_t, the
+    This is Equation 8 from the MOPD paper. The `IS` truncation (w_t, the
     hard gate on the training-to-inference ratio) is handled separately by
     ICE-POP mode in ClippedPGLoss — not here.
 
-    Optionally blends in GRPO reward advantages:
-        Â = opd_advantage_weight * Â_MOPD + grpo_advantage_weight * Â_GRPO
+    Optionally blends in ORM reward advantages:
+        Â = opd_advantage_weight * Â_MOPD + orm_advantage_weight * Â_ORM
+    where the ORM could be one of any supported AdvantageEstimator classes.
 
     The loss function should be configured with:
         disable_ppo_ratio: true               (REINFORCE, no PPO ratio)
@@ -169,30 +236,42 @@ class OPDAdvantageEstimator:
     Required kwargs in compute_advantage:
         teacher_logprobs: [B, S] teacher model log probabilities
         prev_logprobs: [B, S] student training-engine log probabilities
-    Optional kwargs:
-        orm_advantages: [B, S] ORM advantages to blend in (Equation 9)
     """
 
+    ORM_ESTIMATOR_MAPPING: dict[str, type[BaseAdvantageEstimator]] = {
+        "grpo": GRPOAdvantageEstimator,
+        "reinforce": ReinforceAdvantageEstimator,
+        "reinforceplusplus": ReinforcePlusPlusAdvantageEstimator,
+        "reinforce++": ReinforcePlusPlusAdvantageEstimator,
+    }
+
     def __init__(self, estimator_config: dict, loss_config: dict):
-        self.use_orm_advantage = bool(estimator_config["use_orm_advantage"])
-        self.orm_advantage_weight = float(estimator_config["orm_advantage_weight"])
         self.opd_advantage_weight = float(estimator_config["opd_advantage_weight"])
-        self.grpo_advantage_weight = float(estimator_config["grpo_advantage_weight"])
         self.opd_advantage_clip_low = float(estimator_config.get("opd_advantage_clip_low", -6767))
         self.opd_advantage_clip_high = float(estimator_config.get("opd_advantage_clip_high", 6767))
-        self.grpo_advantage_clip_low = float(estimator_config.get("grpo_advantage_clip_low", -6767))
-        self.grpo_advantage_clip_high = float(estimator_config.get("grpo_advantage_clip_high", 6767))
-        self.zero_out_of_bounds_advantages = bool(
-            estimator_config.get("zero_out_of_bounds_advantages", False)
-        )
-        grpo_cfg = estimator_config["grpo"]
-        self.grpo_estimator = GRPOAdvantageEstimator(
-            {
-                "use_leave_one_out_baseline": grpo_cfg.get("use_leave_one_out_baseline", False),
-                "normalize_rewards": grpo_cfg.get("normalize_rewards", True),
-            },
-            loss_config,
-        )
+        self.orm_advantage_weight = float(estimator_config.get("orm_advantage_weight", 0.0))
+        self.orm_advantage_clip_low = float(estimator_config.get("orm_advantage_clip_low", -6767))
+        self.orm_advantage_clip_high = float(estimator_config.get("orm_advantage_clip_high", 6767))
+        self.zero_out_of_bounds_advantages = estimator_config.get("zero_out_of_bounds_advantages", False)
+
+        if self.orm_advantage_weight > 0:
+            orm_estimator_cfg = estimator_config.get("orm_advantage_estimator")
+            if not orm_estimator_cfg:
+                raise ValueError(
+                    "OPD requires 'orm_advantage_estimator' in the estimator config "
+                    "when orm_advantage_weight > 0."
+                )
+            self.orm_estimator_name: str = orm_estimator_cfg["orm_estimator_name"]
+            if self.orm_estimator_name not in self.ORM_ESTIMATOR_MAPPING:
+                raise ValueError(
+                    f"Unsupported ORM advantage estimator: {self.orm_estimator_name!r}. "
+                    f"Supported estimators are: {sorted(self.ORM_ESTIMATOR_MAPPING)}"
+                )
+            self.orm_estimator = self.ORM_ESTIMATOR_MAPPING[self.orm_estimator_name](
+                orm_estimator_cfg,
+                loss_config
+            )
+
         self.last_metrics: dict[str, float] = {}
 
     def compute_advantage(
@@ -202,18 +281,16 @@ class OPDAdvantageEstimator:
         mask,
         teacher_logprobs=None,
         prev_logprobs=None,
-        orm_advantages=None,
         **kwargs,
     ):
-        """Compute OPD distillation advantages, optionally blended with GRPO.
+        """Compute OPD distillation advantages, optionally blended with ORM.
 
         Args:
             prompt_ids: [B] prompt IDs.
-            rewards: [B] rewards (used only when grpo_advantage_weight > 0).
+            rewards: [B] rewards (used only when orm_advantage_weight > 0).
             mask: [B, S] token mask.
             teacher_logprobs: [B, S] teacher model logprobs (required).
             prev_logprobs: [B, S] student training-engine logprobs (required).
-            orm_advantages: [B, S] ORM advantages (optional, Equation 9).
 
         Returns:
             [B, S] token-level advantages (stop-gradient).
@@ -225,7 +302,7 @@ class OPDAdvantageEstimator:
 
         # Â_MOPD,t = sg[log π_teacher - log π_student]  (Equation 8)
         # NaN = collection-time context-length sentinel → zero OPD contribution for
-        # those rows; GRPO/ORM blending below is unaffected.
+        # those rows; ORM blending below is unaffected.
         distill_advantages = torch.nan_to_num(
             (teacher_logprobs - prev_logprobs).detach(), nan=0.0
         )
@@ -234,29 +311,27 @@ class OPDAdvantageEstimator:
         )
         combined = self.opd_advantage_weight * distill_advantages
 
-        if self.grpo_advantage_weight > 0:
-            grpo_adv = self.grpo_estimator.compute_advantage(prompt_ids, rewards, mask)
-            grpo_adv = self._apply_advantage_bounds(
-                grpo_adv, self.grpo_advantage_clip_low, self.grpo_advantage_clip_high
+        if self.orm_advantage_weight > 0:
+            orm_advantages = self.orm_estimator.compute_advantage(
+                prompt_ids, rewards, mask, **kwargs
             )
-            combined = combined + self.grpo_advantage_weight * grpo_adv
+            orm_advantages = self._apply_advantage_bounds(
+                orm_advantages, self.orm_advantage_clip_low, self.orm_advantage_clip_high
+            )
+            combined = combined + self.orm_advantage_weight * orm_advantages
         else:
-            grpo_adv = None
-
-        # Optional ORM blending (Equation 9)
-        if self.use_orm_advantage and orm_advantages is not None:
-            combined = combined + self.orm_advantage_weight * orm_advantages.detach()
+            orm_advantages = None
 
         # Apply mask
         advantages = combined * mask
         advantages = torch.nan_to_num(advantages, nan=0.0, posinf=0.0, neginf=0.0)
 
         # Metrics
-        self._compute_metrics(distill_advantages, advantages, mask, grpo_advantages=grpo_adv)
+        self._compute_metrics(distill_advantages, advantages, mask, orm_advantages=orm_advantages)
 
         return advantages
 
-    def _apply_advantage_bounds(self, advantages, clip_low, clip_high):
+    def _apply_advantage_bounds(self, advantages: "Tensor", clip_low: float, clip_high: float) -> "Tensor":
         """Apply [clip_low, clip_high] bounds to advantages.
 
         Clips by default; zeroes out-of-bounds values instead when
@@ -270,7 +345,7 @@ class OPDAdvantageEstimator:
             )
         return advantages.clamp(min=clip_low, max=clip_high)
 
-    def _compute_metrics(self, distill_advantages, advantages, mask, grpo_advantages=None):
+    def _compute_metrics(self, distill_advantages: "Tensor", advantages: "Tensor", mask: "Tensor", orm_advantages: "Tensor" | None = None):
         """Compute OPD logging metrics and store in self.last_metrics."""
         valid_bool = mask.bool()
         distill_valid = torch.masked_select(distill_advantages, valid_bool)
@@ -286,11 +361,11 @@ class OPDAdvantageEstimator:
             "on_policy_distillation/adv_std": adv_std,
         }
 
-        if grpo_advantages is not None:
-            grpo_valid = torch.masked_select(grpo_advantages, valid_bool)
-            self.last_metrics["on_policy_distillation/grpo_adv_mean"] = (
-                grpo_valid.mean().item() if grpo_valid.numel() > 0 else 0.0
+        if orm_advantages is not None:
+            orm_valid = torch.masked_select(orm_advantages, valid_bool)
+            self.last_metrics[f"on_policy_distillation/{self.orm_estimator_name}_adv_mean"] = (
+                orm_valid.mean().item() if orm_valid.numel() > 0 else 0.0
             )
-            self.last_metrics["on_policy_distillation/grpo_adv_std"] = (
-                grpo_valid.std().item() if grpo_valid.numel() > 1 else 0.0
+            self.last_metrics[f"on_policy_distillation/{self.orm_estimator_name}_adv_std"] = (
+                orm_valid.std().item() if orm_valid.numel() > 1 else 0.0
             )

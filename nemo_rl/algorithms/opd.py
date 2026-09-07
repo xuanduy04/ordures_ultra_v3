@@ -34,9 +34,11 @@ from nemo_rl.algorithms.vllm_teacher_client import (
 # ---------------------------------------------------------------------------
 
 
-class GrpoBlendConfig(TypedDict):
-    normalize_rewards: NotRequired[bool]
+class OrmEstimatorConfig(TypedDict):
+    orm_estimator_name: str
     use_leave_one_out_baseline: NotRequired[bool]
+    normalize_rewards: NotRequired[bool]
+    minus_baseline: NotRequired[bool]
 
 
 class OnPolicyDistillationConfig(TypedDict):
@@ -46,13 +48,13 @@ class OnPolicyDistillationConfig(TypedDict):
     default_teacher_alias: NotRequired[Optional[str]]
     strict_agent_name_match: NotRequired[bool]
     opd_advantage_weight: NotRequired[float]
-    grpo_advantage_weight: NotRequired[float]
+    orm_advantage_weight: NotRequired[float]
     opd_advantage_clip_low: NotRequired[float]
     opd_advantage_clip_high: NotRequired[float]
-    grpo_advantage_clip_low: NotRequired[float]
-    grpo_advantage_clip_high: NotRequired[float]
+    orm_advantage_clip_low: NotRequired[float]
+    orm_advantage_clip_high: NotRequired[float]
     zero_out_of_bounds_advantages: NotRequired[bool]
-    grpo: NotRequired[GrpoBlendConfig]
+    orm_advantage_estimator: NotRequired[OrmEstimatorConfig]
 
 
 # ---------------------------------------------------------------------------

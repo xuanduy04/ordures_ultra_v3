@@ -1380,18 +1380,16 @@ def _create_advantage_estimator(master_config: MasterConfig):
         opd_cfg = master_config.get("on_policy_distillation", {})
         opd_estimator_config = {
             "name": "opd",
-            "use_orm_advantage": opd_cfg.get("use_orm_advantage", False),
-            "orm_advantage_weight": opd_cfg.get("orm_advantage_weight", 0.0),
             "opd_advantage_weight": opd_cfg.get("opd_advantage_weight", 1.0),
-            "grpo_advantage_weight": opd_cfg.get("grpo_advantage_weight", 0.0),
+            "orm_advantage_weight": opd_cfg.get("orm_advantage_weight", 0.0),
             "opd_advantage_clip_low": opd_cfg.get("opd_advantage_clip_low", -6767),
             "opd_advantage_clip_high": opd_cfg.get("opd_advantage_clip_high", 6767),
-            "grpo_advantage_clip_low": opd_cfg.get("grpo_advantage_clip_low", -6767),
-            "grpo_advantage_clip_high": opd_cfg.get("grpo_advantage_clip_high", 6767),
+            "orm_advantage_clip_low": opd_cfg.get("orm_advantage_clip_low", -6767),
+            "orm_advantage_clip_high": opd_cfg.get("orm_advantage_clip_high", 6767),
             "zero_out_of_bounds_advantages": opd_cfg.get(
                 "zero_out_of_bounds_advantages", False
             ),
-            "grpo": opd_cfg.get("grpo", {}),
+            "orm_advantage_estimator": opd_cfg.get("orm_advantage_estimator", {}),
         }
         adv_estimator = OPDAdvantageEstimator(opd_estimator_config, loss_config)
         print("  ✓ Using OPD advantage estimator")

@@ -15,38 +15,43 @@
 import pytest
 import torch
 
-from nemo_rl.algorithms.advantage_estimator import OPDAdvantageEstimator
+from nemo_rl.algorithms.advantage_estimator import (
+    BaseAdvantageEstimator,
+    OPDAdvantageEstimator,
+    ReinforceAdvantageEstimator,
+)
 
 
 def _make_estimator(
-    use_orm_advantage=False,
-    orm_advantage_weight=0.0,
     opd_advantage_weight=1.0,
-    grpo_advantage_weight=0.0,
-    grpo=None,
+    orm_advantage_weight=0.0,
     opd_advantage_clip_low=None,
     opd_advantage_clip_high=None,
-    grpo_advantage_clip_low=None,
-    grpo_advantage_clip_high=None,
+    orm_advantage_clip_low=None,
+    orm_advantage_clip_high=None,
     zero_out_of_bounds_advantages=False,
+    orm_estimator_name=None,
+    orm_estimator_kwargs=None,
 ):
     estimator_config = {
-        "use_orm_advantage": use_orm_advantage,
-        "orm_advantage_weight": orm_advantage_weight,
         "opd_advantage_weight": opd_advantage_weight,
-        "grpo_advantage_weight": grpo_advantage_weight,
-        "grpo": grpo or {},
+        "orm_advantage_weight": orm_advantage_weight,
     }
     if opd_advantage_clip_low is not None:
         estimator_config["opd_advantage_clip_low"] = opd_advantage_clip_low
     if opd_advantage_clip_high is not None:
         estimator_config["opd_advantage_clip_high"] = opd_advantage_clip_high
-    if grpo_advantage_clip_low is not None:
-        estimator_config["grpo_advantage_clip_low"] = grpo_advantage_clip_low
-    if grpo_advantage_clip_high is not None:
-        estimator_config["grpo_advantage_clip_high"] = grpo_advantage_clip_high
+    if orm_advantage_clip_low is not None:
+        estimator_config["orm_advantage_clip_low"] = orm_advantage_clip_low
+    if orm_advantage_clip_high is not None:
+        estimator_config["orm_advantage_clip_high"] = orm_advantage_clip_high
     if zero_out_of_bounds_advantages:
         estimator_config["zero_out_of_bounds_advantages"] = zero_out_of_bounds_advantages
+    if orm_estimator_name is not None:
+        estimator_config["orm_advantage_estimator"] = {
+            "orm_estimator_name": orm_estimator_name,
+            **(orm_estimator_kwargs or {}),
+        }
     loss_config = {}
     return OPDAdvantageEstimator(estimator_config, loss_config)
 
@@ -86,15 +91,16 @@ def test_opd_teacher_equals_student():
 
 
 def test_opd_with_orm_advantage():
-    """ORM blending with weight=0.5."""
-    estimator = _make_estimator(use_orm_advantage=True, orm_advantage_weight=0.5)
+    """ORM blending with weight=0.5, ORM computed internally (reinforce)."""
+    estimator = _make_estimator(
+        orm_advantage_weight=0.5, orm_estimator_name="reinforce"
+    )
     B, S = 2, 4
     teacher_lp = torch.zeros(B, S)
     student_lp = torch.full((B, S), -2.0)
-    orm_adv = torch.ones(B, S) * 4.0  # constant ORM advantage
     mask = torch.ones(B, S)
     prompt_ids = torch.arange(B)
-    rewards = torch.zeros(B)
+    rewards = torch.full((B,), 4.0)  # reinforce: adv = reward = 4.0
 
     adv = estimator.compute_advantage(
         prompt_ids,
@@ -102,7 +108,6 @@ def test_opd_with_orm_advantage():
         mask,
         teacher_logprobs=teacher_lp,
         prev_logprobs=student_lp,
-        orm_advantages=orm_adv,
     )
 
     # distill = 0 - (-2) = 2.0; orm contribution = 0.5 * 4.0 = 2.0; total = 4.0
@@ -153,10 +158,14 @@ def test_opd_metrics_returned():
     assert abs(estimator.last_metrics["on_policy_distillation/adv_std"]) < 1e-5
 
 
-def test_opd_with_grpo_blending():
-    """opd_weight=1.0, grpo_weight=1.0 => blended advantages."""
-    grpo_cfg = {"normalize_rewards": False, "use_leave_one_out_baseline": False}
-    estimator = _make_estimator(grpo_advantage_weight=1.0, grpo=grpo_cfg)
+def test_opd_with_orm_grpo_blending():
+    """opd_weight=1.0, orm_weight=1.0 (grpo) => blended advantages."""
+    orm_kwargs = {"normalize_rewards": False, "use_leave_one_out_baseline": False}
+    estimator = _make_estimator(
+        orm_advantage_weight=1.0,
+        orm_estimator_name="grpo",
+        orm_estimator_kwargs=orm_kwargs,
+    )
     B, S = 2, 4
     teacher_lp = torch.zeros(B, S)
     student_lp = torch.full((B, S), -2.0)
@@ -185,11 +194,15 @@ def test_opd_with_grpo_blending():
     assert "on_policy_distillation/grpo_adv_std" in estimator.last_metrics
 
 
-def test_opd_grpo_weight_zero():
-    """grpo_advantage_weight=0 gives identical results to pure OPD."""
-    grpo_cfg = {"normalize_rewards": False, "use_leave_one_out_baseline": False}
-    estimator_blend = _make_estimator(grpo_advantage_weight=0.0, grpo=grpo_cfg)
-    estimator_pure = _make_estimator(grpo_advantage_weight=0.0)
+def test_opd_orm_weight_zero():
+    """orm_advantage_weight=0 gives identical results to pure OPD."""
+    orm_kwargs = {"normalize_rewards": False, "use_leave_one_out_baseline": False}
+    estimator_blend = _make_estimator(
+        orm_advantage_weight=0.0,
+        orm_estimator_name="grpo",
+        orm_estimator_kwargs=orm_kwargs,
+    )
+    estimator_pure = _make_estimator(orm_advantage_weight=0.0)
 
     B, S = 2, 4
     teacher_lp = torch.zeros(B, S)
@@ -208,10 +221,15 @@ def test_opd_grpo_weight_zero():
     torch.testing.assert_close(adv_blend, adv_pure)
 
 
-def test_opd_pure_grpo():
-    """opd_weight=0, grpo_weight=1.0 recovers plain GRPO from rewards."""
-    grpo_cfg = {"normalize_rewards": False, "use_leave_one_out_baseline": False}
-    estimator = _make_estimator(opd_advantage_weight=0.0, grpo_advantage_weight=1.0, grpo=grpo_cfg)
+def test_opd_pure_orm_grpo():
+    """opd_weight=0, orm_weight=1.0 (grpo) recovers plain GRPO from rewards."""
+    orm_kwargs = {"normalize_rewards": False, "use_leave_one_out_baseline": False}
+    estimator = _make_estimator(
+        opd_advantage_weight=0.0,
+        orm_advantage_weight=1.0,
+        orm_estimator_name="grpo",
+        orm_estimator_kwargs=orm_kwargs,
+    )
 
     B, S = 2, 4
     teacher_lp = torch.zeros(B, S)
@@ -268,15 +286,16 @@ def test_opd_distill_advantage_clip_low():
     torch.testing.assert_close(adv, expected)
 
 
-def test_opd_grpo_blend_advantage_clip():
-    """GRPO blend advantages are clamped to grpo_advantage_clip bounds."""
-    grpo_cfg = {"normalize_rewards": False, "use_leave_one_out_baseline": False}
+def test_opd_orm_blend_advantage_clip():
+    """ORM blend advantages are clamped to orm_advantage_clip bounds."""
+    orm_kwargs = {"normalize_rewards": False, "use_leave_one_out_baseline": False}
     estimator = _make_estimator(
         opd_advantage_weight=0.0,
-        grpo_advantage_weight=1.0,
-        grpo=grpo_cfg,
-        grpo_advantage_clip_low=-1.0,
-        grpo_advantage_clip_high=1.0,
+        orm_advantage_weight=1.0,
+        orm_estimator_name="grpo",
+        orm_estimator_kwargs=orm_kwargs,
+        orm_advantage_clip_low=-1.0,
+        orm_advantage_clip_high=1.0,
     )
     B, S = 2, 4
     teacher_lp = torch.zeros(B, S)
@@ -315,15 +334,14 @@ def test_opd_default_clip_values_are_noop():
     torch.testing.assert_close(adv, expected)
 
 
-def test_opd_nan_teacher_rows_preserve_grpo_and_orm():
-    """NaN teacher rows zero the distill contribution; GRPO/ORM are preserved."""
-    grpo_cfg = {"normalize_rewards": False, "use_leave_one_out_baseline": False}
+def test_opd_nan_teacher_rows_preserve_orm():
+    """NaN teacher rows zero the distill contribution; ORM is preserved."""
+    orm_kwargs = {"normalize_rewards": False, "use_leave_one_out_baseline": False}
     estimator = _make_estimator(
-        use_orm_advantage=True,
         orm_advantage_weight=1.0,
         opd_advantage_weight=1.0,
-        grpo_advantage_weight=1.0,
-        grpo=grpo_cfg,
+        orm_estimator_name="grpo",
+        orm_estimator_kwargs=orm_kwargs,
     )
     B, S = 4, 4
     teacher_lp = torch.tensor(
@@ -338,7 +356,6 @@ def test_opd_nan_teacher_rows_preserve_grpo_and_orm():
     mask = torch.ones(B, S)
     prompt_ids = torch.tensor([[0], [0], [0], [0]])
     rewards = torch.tensor([1.0, 3.0, 5.0, 7.0])
-    orm_adv = torch.full((B, S), 4.0)
 
     adv = estimator.compute_advantage(
         prompt_ids,
@@ -346,7 +363,6 @@ def test_opd_nan_teacher_rows_preserve_grpo_and_orm():
         mask,
         teacher_logprobs=teacher_lp,
         prev_logprobs=student_lp,
-        orm_advantages=orm_adv,
     )
 
     # GRPO baseline = mean([1, 3, 5, 7]) = 4.0
@@ -354,15 +370,15 @@ def test_opd_nan_teacher_rows_preserve_grpo_and_orm():
     # distill = teacher - student = [2, 3, NaN->0, 4]
     distill = torch.tensor([2.0, 3.0, 0.0, 4.0])
     expected = torch.stack(
-        [torch.full((S,), float(d) + float(g) + 4.0) for d, g in zip(distill, grpo_adv)]
+        [torch.full((S,), float(d) + float(g)) for d, g in zip(distill, grpo_adv)]
     )
 
     torch.testing.assert_close(adv, expected)
     assert not torch.isnan(adv).any()
 
-    # GRPO and ORM contributions are fully preserved on the NaN row:
-    # adv = 0 (distill) + grpo_adv + orm_adv = 1.0 + 4.0 = 5.0
-    assert torch.allclose(adv[2], torch.full((S,), 5.0))
+    # ORM contribution fully preserved on the NaN row:
+    # adv = 0 (distill) + grpo_adv = 1.0
+    assert torch.allclose(adv[2], torch.full((S,), 1.0))
 
     # Finite rows match the all-finite baseline exactly.
     baseline = estimator.compute_advantage(
@@ -371,7 +387,6 @@ def test_opd_nan_teacher_rows_preserve_grpo_and_orm():
         mask,
         teacher_logprobs=torch.nan_to_num(teacher_lp, nan=0.0),
         prev_logprobs=student_lp,
-        orm_advantages=orm_adv,
     )
     finite_rows = torch.tensor([True, True, False, True])
     torch.testing.assert_close(adv[finite_rows], baseline[finite_rows])
@@ -400,15 +415,16 @@ def test_opd_zero_out_of_bounds_distill_advantages():
     torch.testing.assert_close(adv, expected)
 
 
-def test_opd_zero_out_of_bounds_grpo_advantages():
-    """zero_out_of_bounds_advantages: GRPO blend values outside bounds become 0."""
-    grpo_cfg = {"normalize_rewards": False, "use_leave_one_out_baseline": False}
+def test_opd_zero_out_of_bounds_orm_advantages():
+    """zero_out_of_bounds_advantages: ORM blend values outside bounds become 0."""
+    orm_kwargs = {"normalize_rewards": False, "use_leave_one_out_baseline": False}
     estimator = _make_estimator(
         opd_advantage_weight=0.0,
-        grpo_advantage_weight=1.0,
-        grpo=grpo_cfg,
-        grpo_advantage_clip_low=-1.0,
-        grpo_advantage_clip_high=1.0,
+        orm_advantage_weight=1.0,
+        orm_estimator_name="grpo",
+        orm_estimator_kwargs=orm_kwargs,
+        orm_advantage_clip_low=-1.0,
+        orm_advantage_clip_high=1.0,
         zero_out_of_bounds_advantages=True,
     )
     B, S = 2, 4
@@ -427,15 +443,16 @@ def test_opd_zero_out_of_bounds_grpo_advantages():
     torch.testing.assert_close(adv, expected)
 
 
-def test_opd_zero_out_of_bounds_grpo_keeps_in_bounds():
-    """zero_out_of_bounds_advantages: in-bounds GRPO blend values are kept."""
-    grpo_cfg = {"normalize_rewards": False, "use_leave_one_out_baseline": False}
+def test_opd_zero_out_of_bounds_orm_keeps_in_bounds():
+    """zero_out_of_bounds_advantages: in-bounds ORM blend values are kept."""
+    orm_kwargs = {"normalize_rewards": False, "use_leave_one_out_baseline": False}
     estimator = _make_estimator(
         opd_advantage_weight=0.0,
-        grpo_advantage_weight=1.0,
-        grpo=grpo_cfg,
-        grpo_advantage_clip_low=-1.0,
-        grpo_advantage_clip_high=1.0,
+        orm_advantage_weight=1.0,
+        orm_estimator_name="grpo",
+        orm_estimator_kwargs=orm_kwargs,
+        orm_advantage_clip_low=-1.0,
+        orm_advantage_clip_high=1.0,
         zero_out_of_bounds_advantages=True,
     )
     B, S = 2, 4
@@ -455,3 +472,92 @@ def test_opd_zero_out_of_bounds_grpo_keeps_in_bounds():
         [0.5] * S,
     ], dtype=torch.float32)
     torch.testing.assert_close(adv, expected)
+
+
+def test_opd_is_base_advantage_estimator():
+    """OPDAdvantageEstimator must be a BaseAdvantageEstimator subclass."""
+    estimator = _make_estimator()
+    assert isinstance(estimator, BaseAdvantageEstimator)
+
+
+def test_opd_requires_teacher_logprobs():
+    """OPD raises when teacher_logprobs is missing."""
+    estimator = _make_estimator()
+    with pytest.raises(ValueError, match="teacher_logprobs"):
+        estimator.compute_advantage(
+            torch.arange(2), torch.zeros(2), torch.ones(2, 4), prev_logprobs=torch.zeros(2, 4)
+        )
+
+
+def test_opd_requires_prev_logprobs():
+    """OPD raises when prev_logprobs is missing."""
+    estimator = _make_estimator()
+    with pytest.raises(ValueError, match="prev_logprobs"):
+        estimator.compute_advantage(
+            torch.arange(2), torch.zeros(2), torch.ones(2, 4), teacher_logprobs=torch.zeros(2, 4)
+        )
+
+
+def test_opd_unsupported_orm_estimator_raises():
+    """Unsupported ORM estimator names raise ValueError at construction."""
+    with pytest.raises(ValueError, match="Unsupported ORM advantage estimator"):
+        _make_estimator(orm_advantage_weight=1.0, orm_estimator_name="unknown")
+
+
+def test_opd_orm_weight_without_estimator_config_raises():
+    """orm_advantage_weight > 0 without orm_advantage_estimator raises ValueError."""
+    with pytest.raises(ValueError, match="orm_advantage_estimator"):
+        _make_estimator(orm_advantage_weight=1.0, orm_estimator_name=None)
+
+
+def _make_reinforce_estimator(minus_baseline=False):
+    return ReinforceAdvantageEstimator({"minus_baseline": minus_baseline})
+
+
+def test_reinforce_no_baseline():
+    """REINFORCE with minus_baseline=False returns raw rewards per token."""
+    estimator = _make_reinforce_estimator(minus_baseline=False)
+    B, S = 2, 4
+    prompt_ids = torch.tensor([[0], [1]])
+    rewards = torch.tensor([1.0, 3.0])
+    mask = torch.ones(B, S)
+
+    adv = estimator.compute_advantage(prompt_ids, rewards, mask)
+
+    expected = torch.tensor([
+        [1.0] * S,
+        [3.0] * S,
+    ], dtype=torch.float32)
+    torch.testing.assert_close(adv, expected)
+
+
+def test_reinforce_minus_baseline():
+    """REINFORCE with minus_baseline=True subtracts the per-prompt mean."""
+    estimator = _make_reinforce_estimator(minus_baseline=True)
+    B, S = 2, 4
+    prompt_ids = torch.tensor([[0], [0]])
+    rewards = torch.tensor([1.0, 3.0])
+    mask = torch.ones(B, S)
+
+    adv = estimator.compute_advantage(prompt_ids, rewards, mask)
+
+    # baseline = mean([1, 3]) = 2.0 -> adv = [-1, 1]
+    expected = torch.tensor([
+        [-1.0] * S,
+        [1.0] * S,
+    ], dtype=torch.float32)
+    torch.testing.assert_close(adv, expected)
+
+
+def test_reinforce_mask_applied():
+    """REINFORCE advantages are zero on masked tokens."""
+    estimator = _make_reinforce_estimator(minus_baseline=False)
+    B, S = 1, 4
+    prompt_ids = torch.arange(B)
+    rewards = torch.tensor([2.0])
+    mask = torch.tensor([[1, 1, 0, 0]], dtype=torch.float32)
+
+    adv = estimator.compute_advantage(prompt_ids, rewards, mask)
+
+    assert (adv[:, 2:] == 0).all(), "Masked positions should be zero"
+    assert (adv[:, :2] == 2.0).all(), "Unmasked positions should equal the reward"
