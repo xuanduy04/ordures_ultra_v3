@@ -1083,6 +1083,9 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
             item: "<think>" count must be 0 (always in prompt, never generated),
             "</think>" count must be 0 or 1.
          Data: message_log pairs for token IDs, full_result output items for strings.
+         Advantage-level flag (grpo.penalize_malformed_think_tag): additionally marks
+         each violative assistant message with has_malformed_thinking for the
+         negative-advantage clamp in grpo.py
     """
     counts = {
         "duplicated_reasoning": 0,
@@ -1103,7 +1106,8 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
     )
     any_penalty_enabled = any_penalty_enabled or any(
         bool((master_config.get("grpo") or {}).get(flag, False))
-        for flag in ("penalize_empty_final_answer", "penalize_eos_token")
+        for flag in ("penalize_empty_final_answer", "penalize_eos_token",
+                     "penalize_malformed_think_tag")
     )
     if any_penalty_enabled:
         for result in results:
@@ -1113,6 +1117,7 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
                 f"but found roles: {roles}. These penalties are not supported for non-Gym rollout paths."
             )
 
+    grpo_cfg = master_config.get("grpo") or {}
     # --- Penalty 1: Duplicated reasoning / final answer ---
     if master_config.get("penalize_duplicated_reasoning", False):
         for result in results:
@@ -1141,7 +1146,6 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
                 counts["duplicated_reasoning"] += 1
 
     # --- Penalty 2: Empty final answer ---
-    grpo_cfg = master_config.get("grpo") or {}
     if master_config.get("penalize_empty_final_answer", False) or grpo_cfg.get("penalize_empty_final_answer", False):
         for result in results:
             output_items = result["full_result"].get("response", {}).get("output", [])
@@ -1161,7 +1165,7 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
                 elif isinstance(content, str):
                     final_answer_text = content.strip()
                     break
-            if final_answer_text is None or final_answer_text == "":
+            if final_answer_text is None or final_answer_text.strip() == "":
                 if master_config.get("penalize_empty_final_answer", False):
                     result["full_result"]["reward"] = 0.0
 
@@ -1195,7 +1199,7 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
                             msg["has_eos_token"] = True
 
     # --- Penalty 4: Malformed think tags (token ID + string) ---
-    if master_config.get("penalize_malformed_think_tag", False):
+    if master_config.get("penalize_malformed_think_tag", False) or grpo_cfg.get("penalize_malformed_think_tag", False):
         token_ids_cfg = master_config.get("token_ids", {})
         think_open_token_id = token_ids_cfg.get("think_open", 12)
         think_close_token_id = token_ids_cfg.get("think_close", 13)
@@ -1223,21 +1227,27 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
                     else:
                         # Unexpected prompt pattern — flag as violation
                         has_violation = True
-                        break
+                        if grpo_cfg.get("penalize_malformed_think_tag", False):
+                            msgs[i + 1]["has_malformed_thinking"] = True
+                        continue
                     if asst_open != expected_open or asst_close != expected_close:
                         has_violation = True
-                        break
+                        if grpo_cfg.get("penalize_malformed_think_tag", False):
+                            msgs[i + 1]["has_malformed_thinking"] = True
             # 4b) String check on generation_str per output item
-            if not has_violation:
-                output_items = result["full_result"].get("response", {}).get("output", [])
-                for item in output_items:
-                    gen_str = item.get("generation_str", "")
-                    if not gen_str:
-                        continue
-                    if gen_str.count("<think>") > 0 or gen_str.count("</think>") > 1:
-                        has_violation = True
-                        break
-            if has_violation:
+            output_items = result["full_result"].get("response", {}).get("output", [])
+            assistant_msgs = [msg for msg in msgs if msg["role"] == "assistant"]
+            gen_item_idx = 0
+            for item in output_items:
+                gen_str = item.get("generation_str", "")
+                if not gen_str:
+                    continue
+                if gen_str.count("<think>") > 0 or gen_str.count("</think>") > 1:
+                    has_violation = True
+                    if grpo_cfg.get("penalize_malformed_think_tag", False) and gen_item_idx < len(assistant_msgs):
+                        assistant_msgs[gen_item_idx]["has_malformed_thinking"] = True
+                gen_item_idx += 1  # increment idx only for generation turns
+            if has_violation and master_config.get("penalize_malformed_think_tag", False):
                 result["full_result"]["reward"] = 0.0
 
                 counts["malformed_think_tag"] += 1

@@ -478,6 +478,77 @@ class TestPenalizeMultiEndThink:
         assert result["full_result"]["reward"] == 1.0
 
 
+class TestAdvantageLevelMalformedThinkTag:
+    CFG = {"grpo": {"penalize_malformed_think_tag": True}}
+
+    def test_token_violation_marks_only_violating_turns(self):
+        """Turn 1 valid, turn 2 has double  response — only turn 2 marked."""
+        result = _make_result(reward=1.0, message_log=[
+            _msg("user", [100, 12]),
+            _msg("assistant", [300, 13, 400]),
+            _msg("user", [500, 12]),
+            _msg("assistant", [600, 13, 13, 700]),
+        ])
+        counts = apply_reward_penalties([result], self.CFG)
+        assert result["full_result"]["reward"] == 1.0
+        assert counts["malformed_think_tag"] == 0
+        ml = result["message_log"]
+        assert "has_malformed_thinking" not in ml[0]
+        assert "has_malformed_thinking" not in ml[1]
+        assert ml[3]["has_malformed_thinking"] is True
+
+    def test_multiple_violating_turns_all_marked(self):
+        """Both turns malformed — every violating assistant message marked."""
+        result = _make_result(reward=1.0, message_log=[
+            _msg("user", [100, 12]),
+            _msg("assistant", [300, 13, 13]),
+            _msg("user", [500, 12]),
+            _msg("assistant", [600, 13, 13]),
+        ])
+        counts = apply_reward_penalties([result], self.CFG)
+        assert result["full_result"]["reward"] == 1.0
+        ml = result["message_log"]
+        assert ml[1]["has_malformed_thinking"] is True
+        assert ml[3]["has_malformed_thinking"] is True
+
+    def test_no_violation_no_flags(self):
+        result = _make_result(reward=1.0, message_log=[
+            _msg("user", [100, 12]),
+            _msg("assistant", [300, 13, 400]),
+        ])
+        counts = apply_reward_penalties([result], self.CFG)
+        assert result["full_result"]["reward"] == 1.0
+        assert "has_malformed_thinking" not in result["message_log"][1]
+
+    def test_string_violation_marks_corresponding_assistant(self):
+        """Piecemeal  thinking in generation_str marks that turn's assistant."""
+        result = _make_result(
+            reward=1.0,
+            output_items=[_message_item("answer", generation_str="some <think> text </think> answer")],
+            message_log=[
+                _msg("user", [100, 12]),
+                _msg("assistant", [300, 13, 400]),  # token IDs are fine
+            ],
+        )
+        counts = apply_reward_penalties([result], self.CFG)
+        assert result["full_result"]["reward"] == 1.0
+        assert result["message_log"][1]["has_malformed_thinking"] is True
+
+    def test_both_levels_reward_zeroed_and_flagged(self):
+        cfg = {
+            "penalize_malformed_think_tag": True,
+            "grpo": {"penalize_malformed_think_tag": True},
+        }
+        result = _make_result(reward=1.0, message_log=[
+            _msg("user", [100, 13, 13, 12]),  # unexpected prompt pattern
+            _msg("assistant", [300, 400]),
+        ])
+        counts = apply_reward_penalties([result], cfg)
+        assert result["full_result"]["reward"] == 0.0
+        assert counts["malformed_think_tag"] == 1
+        assert result["message_log"][1]["has_malformed_thinking"] is True
+
+
 # =====================================================================
 # Advantage-level flags (grpo.penalize_*): message flag attachment
 # =====================================================================

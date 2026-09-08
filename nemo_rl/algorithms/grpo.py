@@ -199,8 +199,8 @@ class GRPOConfig(TypedDict):
     seq_logprob_error_threshold: float | None
     penalize_invalid_tool_call: bool  # If True, assign a negative advantage to invalid tool call tokens
     invalid_tool_call_advantage: NotRequired[float]  # Advantage value for invalid tool calls when penalize_invalid_tool_call is True (default: -5.0)
-    penalize_malformed_thinking: bool  # If True, assign a negative advantage to messages with malformed thinking tags
-    malformed_thinking_advantage: NotRequired[float]  # Advantage value for malformed thinking when penalize_malformed_thinking is True (default: -5.0)
+    penalize_malformed_think_tag: bool  # If True, assign a negative advantage to messages with malformed thinking tags
+    malformed_thinking_advantage: NotRequired[float]  # Advantage value for malformed thinking when penalize_malformed_think_tag is True (default: -5.0)
     penalize_eos_token: NotRequired[bool]  # If True, assign a negative advantage from the first EOS token in generation to the final token (assistant turns only)
     eos_token_advantage: NotRequired[float]  # Advantage value for EOS tokens when penalize_eos_token is True (default: -5.0)
     penalize_empty_final_answer: NotRequired[bool]  # If True, assign a negative advantage to the final assistant message when the final answer is empty
@@ -2267,7 +2267,7 @@ def grpo_train(
                     # flattened sequence. Use in-place additive clamping so that both
                     # penalty types can apply to the same message without clobbering.
                     penalize_invalid_tool_call = master_config["grpo"].get("penalize_invalid_tool_call", False)
-                    penalize_malformed_thinking = master_config["grpo"].get("penalize_malformed_thinking", False)
+                    penalize_malformed_think_tag = master_config["grpo"].get("penalize_malformed_think_tag", False)
                     invalid_neg_adv = master_config["grpo"].get("invalid_tool_call_advantage", -5.0)
                     malformed_neg_adv = master_config["grpo"].get("malformed_thinking_advantage", -5.0)
                     penalize_eos_token = master_config["grpo"].get("penalize_eos_token", False)
@@ -2280,16 +2280,16 @@ def grpo_train(
                             msg_len = len(message["token_ids"])
                             is_assistant = message["role"] == "assistant" and "generation_logprobs" in message
                             if is_assistant and penalize_invalid_tool_call and message.get("is_invalid_tool_call", False):
-                                print(f"Setting negative advantage ({invalid_neg_adv}) for invalid tool call in assistant message {i} {j}", flush=True)
+                                print(f"Setting negative advantage ({invalid_neg_adv}) for invalid tool call in assistant message {i} turn {j}", flush=True)
                                 train_data["advantages"][i, token_offset:token_offset + msg_len].add_(invalid_neg_adv).clamp_(max=invalid_neg_adv)
-                            if is_assistant and penalize_malformed_thinking and message.get("has_malformed_thinking", False):
-                                print(f"Setting negative advantage ({malformed_neg_adv}) for malformed thinking in assistant message {i} {j}", flush=True)
+                            if is_assistant and penalize_malformed_think_tag and message.get("has_malformed_thinking", False):
+                                print(f"Setting negative advantage ({malformed_neg_adv}) for malformed thinking in assistant message {i} turn {j}", flush=True)
                                 train_data["advantages"][i, token_offset:token_offset + msg_len].add_(malformed_neg_adv).clamp_(max=malformed_neg_adv)
                             if is_assistant and penalize_eos_token and message.get("has_eos_token", False):
-                                print(f"Setting negative advantage ({eos_neg_adv}) for EOS token in assistant message {i} {j}", flush=True)
+                                print(f"Setting negative advantage ({eos_neg_adv}) for EOS token in assistant message {i} turn {j}", flush=True)
                                 train_data["advantages"][i, token_offset:token_offset + msg_len].add_(eos_neg_adv).clamp_(max=eos_neg_adv)
                             if is_assistant and penalize_empty_final_answer and message.get("has_empty_final_answer", False):
-                                print(f"Setting negative advantage ({empty_neg_adv}) for empty final answer in assistant message {i} {j}", flush=True)
+                                print(f"Setting negative advantage ({empty_neg_adv}) for empty final answer in assistant message {i} turn {j}", flush=True)
                                 train_data["advantages"][i, token_offset:token_offset + msg_len].add_(empty_neg_adv).clamp_(max=empty_neg_adv)
                             token_offset += msg_len
 
@@ -3634,7 +3634,7 @@ def async_grpo_train(
                     # flattened sequence. Use in-place additive clamping so that both
                     # penalty types can apply to the same message without clobbering.
                     penalize_invalid_tool_call = master_config["grpo"].get("penalize_invalid_tool_call", False)
-                    penalize_malformed_thinking = master_config["grpo"].get("penalize_malformed_thinking", False)
+                    penalize_malformed_think_tag = master_config["grpo"].get("penalize_malformed_think_tag", False)
                     invalid_neg_adv = master_config["grpo"].get("invalid_tool_call_advantage", -5.0)
                     malformed_neg_adv = master_config["grpo"].get("malformed_thinking_advantage", -5.0)
                     penalize_eos_token = master_config["grpo"].get("penalize_eos_token", False)
@@ -3647,16 +3647,16 @@ def async_grpo_train(
                             msg_len = len(message["token_ids"])
                             is_assistant = message["role"] == "assistant" and "generation_logprobs" in message
                             if is_assistant and penalize_invalid_tool_call and message.get("is_invalid_tool_call", False):
-                                print(f"Setting negative advantage ({invalid_neg_adv}) for invalid tool call in assistant message {i} {j}", flush=True)
+                                print(f"Setting negative advantage ({invalid_neg_adv}) for invalid tool call in assistant message {i} turn {j}", flush=True)
                                 train_data["advantages"][i, token_offset:token_offset + msg_len].add_(invalid_neg_adv).clamp_(max=invalid_neg_adv)
-                            if is_assistant and penalize_malformed_thinking and message.get("has_malformed_thinking", False):
-                                print(f"Setting negative advantage ({malformed_neg_adv}) for malformed thinking in assistant message {i} {j}", flush=True)
+                            if is_assistant and penalize_malformed_think_tag and message.get("has_malformed_thinking", False):
+                                print(f"Setting negative advantage ({malformed_neg_adv}) for malformed thinking in assistant message {i} turn {j}", flush=True)
                                 train_data["advantages"][i, token_offset:token_offset + msg_len].add_(malformed_neg_adv).clamp_(max=malformed_neg_adv)
                             if is_assistant and penalize_eos_token and message.get("has_eos_token", False):
-                                print(f"Setting negative advantage ({eos_neg_adv}) for EOS token in assistant message {i} {j}", flush=True)
+                                print(f"Setting negative advantage ({eos_neg_adv}) for EOS token in assistant message {i} turn {j}", flush=True)
                                 train_data["advantages"][i, token_offset:token_offset + msg_len].add_(eos_neg_adv).clamp_(max=eos_neg_adv)
                             if is_assistant and penalize_empty_final_answer and message.get("has_empty_final_answer", False):
-                                print(f"Setting negative advantage ({empty_neg_adv}) for empty final answer in assistant message {i} {j}", flush=True)
+                                print(f"Setting negative advantage ({empty_neg_adv}) for empty final answer in assistant message {i} turn {j}", flush=True)
                                 train_data["advantages"][i, token_offset:token_offset + msg_len].add_(empty_neg_adv).clamp_(max=empty_neg_adv)
                             token_offset += msg_len
 

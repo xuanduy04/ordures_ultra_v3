@@ -321,7 +321,6 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
             # executed by NeMo-Gym. If tool call patterns appear in the text content instead,
             # the call was invalid and never executed — flag it so training can penalize it.
             invalid_tool_call_patterns = self.cfg.get("invalid_tool_call_patterns") or ["<tool_call>", "</tool_call>", "<function_call>", "</function_call>"]
-            thinking_tags = self.cfg.get("thinking_tags") or ["<think>", "</think>"]
             is_invalid_tool_call = False
 
             # NeMo-Gym only attaches generation_token_ids to the last output item of a
@@ -331,22 +330,19 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
             is_output_message = "content" in output_item_dict and len(output_item_dict["content"]) > 0 and "text" in output_item_dict["content"][0]
             is_reasoning_message = output_item_dict.get("type") == "reasoning" and len(output_item_dict["summary"]) > 0 and "text" in output_item_dict["summary"][0]
 
-            # Penalize malformed thinking tags: more than one of any thinking tag in
-            # reasoning, or any thinking tag leaking into the final answer content.
-            has_malformed_thinking = False
+            # Malformed thinking-tag detection moved to apply_reward_penalties in
+            # nemo_rl/experience/rollouts.py (token-ID + string checks). The
+            # per-message has_malformed_thinking flag is now set there when
+            # grpo.penalize_malformed_think_tag is enabled.
 
             if is_output_message:
                 assistant_message_content = output_item_dict["content"][0]["text"]
                 if any(pattern in assistant_message_content for pattern in invalid_tool_call_patterns):
                     is_invalid_tool_call = True
-                if any(tag in assistant_message_content for tag in thinking_tags):
-                    has_malformed_thinking = True
             elif is_reasoning_message:
                 assistant_message_content = output_item_dict["summary"][0]["text"]
                 if any(pattern in assistant_message_content for pattern in invalid_tool_call_patterns):
                     is_invalid_tool_call = True
-                if any(assistant_message_content.count(tag) > 1 for tag in thinking_tags):
-                    has_malformed_thinking = True
 
             nemo_rl_message_log.append(
                 {
@@ -355,7 +351,6 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
                     "token_ids": generation_token_ids,
                     "generation_logprobs": generation_logprobs,
                     "is_invalid_tool_call": is_invalid_tool_call,
-                    "has_malformed_thinking": has_malformed_thinking,
                 }
             )
 
