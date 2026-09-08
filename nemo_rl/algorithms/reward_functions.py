@@ -103,15 +103,15 @@ def apply_reward_shaping(
         return batch
     rewards = batch["total_reward"]
 
-    # Apply N-gram repetition penalty and/or overlong/DAPO penalty if configured
+    # Apply N-gram repetition penalty and/or overlong (DAPO) penalty if configured
     use_n_gram_penalty = (
-        cfg.get("n_gram_repetition_weight") is not None
+        cfg.get("n_gram_repetition_weight", 0.0)
         and cfg.get("n_gram_size") is not None
         and cfg.get("n_gram_threshold") is not None
     )
     use_overlong_penalty = (
-        cfg.get("overlong_buffer_length") is not None
-        and cfg.get("overlong_buffer_penalty") is not None
+        cfg.get("overlong_buffer_penalty", 0.0)
+        and cfg.get("overlong_buffer_length") is not None
         and cfg.get("max_response_length") is not None
     )
     if use_n_gram_penalty or use_overlong_penalty:
@@ -121,8 +121,8 @@ def apply_reward_shaping(
             n_gram_threshold = cfg["n_gram_threshold"]
 
         if use_overlong_penalty:
-            overlong_buffer_length = cfg["overlong_buffer_length"]
             overlong_buffer_penalty = abs(cfg["overlong_buffer_penalty"])
+            overlong_buffer_length = cfg["overlong_buffer_length"]
             max_response_length = cfg["max_response_length"]
             # Calculate the expected response length
             expected_response_length = max_response_length - overlong_buffer_length
@@ -139,7 +139,9 @@ def apply_reward_shaping(
                     assistant_token_ids = message["token_ids"]
                     break
             assert assistant_token_ids is not None, (
-                "Assistant response not found during reward shaping"
+                "Assistant response not found during reward shaping. "
+                "This means the model has empty GENERATION (i.e. empty reasoning_content and empty content)."
+                "Something has gone horribly wrong"
             )
 
             if use_n_gram_penalty:
