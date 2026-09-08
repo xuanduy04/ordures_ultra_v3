@@ -39,9 +39,6 @@ from nemo_rl.algorithms.vllm_teacher_client import (
 from nemo_rl.data.interfaces import DatumSpec
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.environments.interfaces import EnvironmentInterface
-from nemo_rl.experience.rollouts import (
-    run_async_multi_turn_rollout,
-)
 from nemo_rl.models.generation.interfaces import GenerationInterface
 from nemo_rl.utils.timer import ThreadSafeTimer
 
@@ -486,7 +483,7 @@ class ReplayBuffer:
         complete_targets = {t for t, c in target_counts.items() if c >= num_prompts_per_step}
         incomplete_targets = {t for t, c in target_counts.items() if c < num_prompts_per_step}
 
-        print(f"   📊 Buffer state after removing past steps:")
+        print("   📊 Buffer state after removing past steps:")
         print(f"      Complete targets: {sorted(complete_targets) if complete_targets else 'none'}")
         if incomplete_targets:
             for t in sorted(incomplete_targets):
@@ -594,7 +591,7 @@ class ReplayBuffer:
         else:
             # No complete targets left, reset counter
             print(
-                f"   🔄 No complete targets left, resetting last_target_weight_already_generated to -1"
+                "   🔄 No complete targets left, resetting last_target_weight_already_generated to -1"
             )
             self.last_target_weight_already_generated = -1
 
@@ -1215,7 +1212,9 @@ class AsyncTrajectoryCollector:
             input_ids: [B, S] tokenized input tensor
             agent_refs: list of B agent reference dicts
             input_lengths: [B] per-sample lengths (rows are trimmed before
-                being sent to the serve when provided)
+                being sent to the serve when provided). Rows of length 0
+                (empty message logs) are never sent to the serve.
+
         Returns:
             ([B, S] teacher logprobs tensor, total_time_seconds)
         """
@@ -1247,18 +1246,56 @@ class AsyncTrajectoryCollector:
             )
         teacher = teacher_specs[0]
 
-        t_start = time.time()
-        try:
-            logprobs = await self._teacher_logprob_client.score_group(
-                teacher, input_ids, input_lengths
-            )
-        except TeacherContextLengthError as exc:
+        # Rows whose message log was empty flatten to length 0 (all-padding
+        # rows). vLLM rejects empty prompts with a permanent 400 that is not
+        # a context-length error, so sending them would fail the whole group.
+        # Score only the non-empty rows and scatter the results back; empty
+        # rows keep the NaN sentinel, which OPDAdvantageEstimator zeroes so
+        # the GRPO/ORM blending is unaffected.
+        batch_size = input_ids.shape[0]
+        lengths = (
+            input_lengths.tolist()
+            if input_lengths is not None
+            else [input_ids.shape[1]] * batch_size
+        )
+        non_empty_indices = [i for i in range(batch_size) if lengths[i] > 0]
+        if len(non_empty_indices) < batch_size:
             print(
-                f"[OPD] Teacher cannot fit trajectory group ({exc}); "
-                f"zeroing OPD advantage for this group (GRPO/ORM unaffected).",
+                f"[OPD] Skipping {batch_size - len(non_empty_indices)} empty "
+                f"trajectory row(s) in teacher scoring (NaN sentinel rows; "
+                f"GRPO/ORM unaffected).",
                 flush=True,
             )
-            logprobs = torch.full(input_ids.shape, float("nan"), dtype=torch.float32)
+
+        t_start = time.time()
+        if not non_empty_indices:
+            logprobs = torch.full(
+                input_ids.shape, float("nan"), dtype=torch.float32
+            )
+        else:
+            sub_input_ids = input_ids[non_empty_indices]
+            sub_lengths = (
+                torch.tensor([lengths[i] for i in non_empty_indices])
+                if input_lengths is not None
+                else None
+            )
+            try:
+                scored = await self._teacher_logprob_client.score_group(
+                    teacher, sub_input_ids, sub_lengths
+                )
+                logprobs = torch.full(
+                    input_ids.shape, float("nan"), dtype=torch.float32
+                )
+                logprobs[non_empty_indices] = scored
+            except TeacherContextLengthError as exc:
+                print(
+                    f"[OPD] Teacher cannot fit trajectory group ({exc}); "
+                    f"zeroing OPD advantage for this group (GRPO/ORM unaffected).",
+                    flush=True,
+                )
+                logprobs = torch.full(
+                    input_ids.shape, float("nan"), dtype=torch.float32
+                )
         total_time = time.time() - t_start
         print(
             f"[teacher_logprob] teacher={teacher['url']} model={teacher['model']} "
@@ -1370,7 +1407,7 @@ class AsyncTrajectoryCollector:
                     f"❌ Failed to enqueue per-prompt group to buffer (prompt_idx={prompt_idx}, target_weight={target_weight_version}): {e}"
                 )
                 print(
-                    f"   ⚠️ This trajectory will NOT be buffered - may cause stall if training expects it!"
+                    "   ⚠️ This trajectory will NOT be buffered - may cause stall if training expects it!"
                 )
                 if backoff_start is not None:
                     self._efficiency_timer.record(
@@ -1387,7 +1424,7 @@ class AsyncTrajectoryCollector:
             from nemo_rl.algorithms.grpo import _should_use_nemo_gym
             from nemo_rl.experience.rollouts import run_async_nemo_gym_rollout
 
-            assert _should_use_nemo_gym(self.master_config), f"We currently only support the NeMo Gym path in Async GRPO!"
+            assert _should_use_nemo_gym(self.master_config), "We currently only support the NeMo Gym path in Async GRPO!"
 
             # Run rollout for this prompt group
             # Async engine supports concurrent generation; avoid locking
@@ -1464,7 +1501,7 @@ class AsyncTrajectoryCollector:
                     f"   ⚠️ Max retries ({MAX_RETRIES}) exceeded - trajectory will NOT be buffered!"
                 )
                 print(
-                    f"   ⚠️ This may cause training to stall if it expects this trajectory."
+                    "   ⚠️ This may cause training to stall if it expects this trajectory."
                 )
                 import traceback
                 traceback.print_exc()

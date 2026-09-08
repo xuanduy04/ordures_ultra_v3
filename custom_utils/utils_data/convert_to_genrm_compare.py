@@ -5,7 +5,7 @@ list of turns). The output is a JSONL file with entries containing
 ``agent_ref`` (with ``responses_api_agents`` type and a ``genrm_simple_agent``
 or ``genrm_simple_agent_reasoning_off`` name), ``responses_create_params``
 (with ``input``, ``tools`` when present, and ``parallel_tool_calls: false``),
-and an optional ``dataset`` field.
+and optional ``dataset`` and ``principle`` fields.
 """
 
 from __future__ import annotations
@@ -101,7 +101,7 @@ def _convert_tools_to_nemo_gym(tools: list[dict]) -> list[dict]:
     return out
 
 
-def _convert_entry(entry: dict, prompt_field: str, tools_field: str, no_reasoning: bool, dataset: str) -> dict:
+def _convert_entry(entry: dict, prompt_field: str, tools_field: str, no_reasoning: bool, dataset: str, principle: str) -> dict:
     """Convert one raw entry to the genrm_compare JSONL schema."""
     prompt = entry.get(prompt_field, "")
 
@@ -138,6 +138,8 @@ def _convert_entry(entry: dict, prompt_field: str, tools_field: str, no_reasonin
     }
     if dataset:
         out["dataset"] = dataset
+    if principle:
+        out["principle"] = principle
 
     return out
 
@@ -191,6 +193,12 @@ def main() -> None:
         help="Dataset name stamped on each output row; an empty value omits the field entirely.",
     )
     parser.add_argument(
+        "--principle",
+        default=None,
+        help="Principle stamped on each output row (used by the GenRM judge when use_principle is enabled). "
+        "Either a literal string or a path to a single text file whose content is used as the principle.",
+    )
+    parser.add_argument(
         "--skip-on-error",
         action="store_true",
         default=False,
@@ -210,6 +218,19 @@ def main() -> None:
     no_reasoning: bool = args.no_reasoning
     dataset: str = args.dataset.strip()
     skip_on_error: bool = args.skip_on_error
+
+    principle: str = ""
+    if args.principle is not None:
+        principle_path = Path(args.principle)
+        if principle_path.is_file():
+            principle = principle_path.read_text(encoding="utf-8")
+        elif principle_path.is_dir():
+            parser.error(f"--principle is a directory, must be a singular file: {principle_path}")
+        else:
+            principle = args.principle
+        principle = principle.strip()
+        if not principle:
+            parser.error("--principle is empty after stripping")
 
     if not dataset:
         logger.info("--dataset is empty; the 'dataset' field will be omitted from all output rows.")
@@ -241,7 +262,7 @@ def main() -> None:
                 continue
             try:
                 entry = json.loads(stripped)
-                converted_entry = _convert_entry(entry, prompt_field, tools_field, no_reasoning, dataset)
+                converted_entry = _convert_entry(entry, prompt_field, tools_field, no_reasoning, dataset, principle)
             except Exception as exc:
                 if skip_on_error:
                     logger.warning(f"Skipping line {lineno}: {exc}")

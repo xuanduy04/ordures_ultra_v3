@@ -1166,10 +1166,10 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
                     final_answer_text = content.strip()
                     break
             if final_answer_text is None or final_answer_text.strip() == "":
+                counts["empty_final_answer"] += 1
                 if master_config.get("penalize_empty_final_answer", False):
                     result["full_result"]["reward"] = 0.0
 
-                    counts["empty_final_answer"] += 1
                 if grpo_cfg.get("penalize_empty_final_answer", False):
                     for msg in reversed(result["message_log"]):
                         if msg["role"] == "assistant":
@@ -1185,12 +1185,11 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
             for idx, msg in enumerate(result["message_log"]):
                 if msg["role"] == "assistant" and eos_token_id in msg["token_ids"]:
                     first_eos_idx = idx
+                    counts["eos_token"] += 1
                     break
             if first_eos_idx is not None:
                 if master_config.get("penalize_eos_token", False):
                     result["full_result"]["reward"] = 0.0
-
-                    counts["eos_token"] += 1
                 if grpo_cfg.get("penalize_eos_token", False):
                     # Advantage-level flag: punish from the literal first EOS token in
                     # generation until the final token, assistant turns only.
@@ -1247,10 +1246,10 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
                     if grpo_cfg.get("penalize_malformed_think_tag", False) and gen_item_idx < len(assistant_msgs):
                         assistant_msgs[gen_item_idx]["has_malformed_thinking"] = True
                 gen_item_idx += 1  # increment idx only for generation turns
-            if has_violation and master_config.get("penalize_malformed_think_tag", False):
-                result["full_result"]["reward"] = 0.0
-
+            if has_violation:
                 counts["malformed_think_tag"] += 1
+                if master_config.get("penalize_malformed_think_tag", False):
+                    result["full_result"]["reward"] = 0.0
 
     return counts
 
