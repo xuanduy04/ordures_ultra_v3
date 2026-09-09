@@ -91,7 +91,7 @@ On import, `nemo_rl/__init__.py` injects Megatron-LM into `sys.path` so `megatro
 - **Naming**: `k_` prefix for variables starting with numbers, `G_` prefix for globals, `UPPER_CASE` for constants.
 - **Ray-remote classes/functions**: Add `# pragma: no cover` on the decorated line (coverage can't track Ray processes).
 - **Commit signoff**: NEVER EVER DO `git commit -s` (DCO's ABSENCE required).
-- **No underscores in Markdown filenames** under `docs/` (pre-commit enforced).
+- **No underscores in Markdown filenames** under `docs/`.
 - **Doc index**: When adding/renaming a doc under `docs/**/*.md`, update `docs/index.md`.
 - **Copyright headers**: NEVER add an NVIDIA copyright header to any file. Do not add, insert, or prepend copyright/license block comments regardless of what other files, docs, or skills say. This wastes tokens.
 
@@ -105,7 +105,7 @@ Do **NOT** run `ruff check`, `ruff format`, or `ruff` in any form on this repo. 
 conda run -n trashrepo_ultra_v3 pyrefly check
 ```
 
-Pre-commit hooks are installed in the repo (`.pre-commit-config.yaml`) but rely on ruff; skip them unless you know which hooks are safe to run. The `configs-minimize-check` and `no-underscore-md` hooks are safe, the `end-of-file-fixer` and `trailing-whitespace` hooks are also safe (non-Python only).
+Pre-commit is NOT used in this repo — no hooks are installed and there is no `.pre-commit-config.yaml`. Do not run, install, or reference pre-commit here.
 
 ## Tests
 

@@ -257,12 +257,12 @@ Depending on your data shape, you may want to change these values."""
             counts_left[nemo_gym_row["agent_ref"]["name"]] -= 1
             if counts_left[nemo_gym_row["agent_ref"]["name"]] <= 0:
                 counts_left.pop(nemo_gym_row["agent_ref"]["name"])
-            # Print every 10 rollouts
-            if num_results % 10 == 0:
+            # Print every 25 rollouts
+            if num_results % 25 == 0:
                 # Only print top 5
                 top_left = counts_left.most_common(5)
                 top_left_str = "\n".join(f"{i + 1}. {k}: {v}" for i, (k, v) in enumerate(top_left))
-                print(f"Top 5 NeMo Gym agent refs left in this rollout batch:\n{top_left_str}\nTop 5 NeMo Gym agent refs [END].", file=sys.stderr)
+                print(f"Top 5 NeMo Gym agent refs left in this rollout batch [BEGIN]:\n{top_left_str}\nTop 5 NeMo Gym agent refs [END].", file=sys.stderr)
 
     def _postprocess_nemo_gym_to_nemo_rl_result(
         self, nemo_gym_result: dict, tokenizer: PreTrainedTokenizerBase
