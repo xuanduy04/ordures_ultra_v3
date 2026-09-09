@@ -33,16 +33,6 @@ def _preprocess_underscore_args(argv: list[str]) -> list[str]:
     return out
 
 
-def _resolve_input_files(patterns: list[str]) -> list[Path]:
-    """Resolve glob *patterns* to a sorted, deduplicated list of files."""
-    # Expand all globs and deduplicate using a set, then convert to Path objects
-    candidates = [Path(p) for pattern in patterns for p in glob.glob(pattern)]
-    files = sorted({p for p in candidates if p.is_file()})
-    if not files:
-        raise FileNotFoundError(f"No input files matched patterns: {patterns}")
-    return files
-
-
 def _validate_output_path(output_path: Path) -> None:
     """Ensure *output_path* ends with ``.jsonl``, parent dir exists, and file does not already exist."""
     if output_path.suffix.lower() != ".jsonl":
@@ -52,6 +42,16 @@ def _validate_output_path(output_path: Path) -> None:
         raise FileExistsError(f"Output file already exists: {output_path}")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _resolve_input_files(patterns: list[str]) -> list[Path]:
+    """Resolve glob *patterns* to a sorted, deduplicated list of files."""
+    # Expand all globs and deduplicate using a set, then convert to Path objects
+    candidates = [Path(p) for pattern in patterns for p in glob.glob(pattern)]
+    files = sorted({p for p in candidates if p.is_file()})
+    if not files:
+        raise FileNotFoundError(f"No input files matched patterns: {patterns}")
+    return files
 
 
 def dataset_set_minus(A_files: list[Path], B_files: list[Path], output_path: Path) -> dict[str, int]:
@@ -135,17 +135,24 @@ def main() -> None:
         help="Input JSONL file(s) or glob pattern(s) for dataset B.",
     )
     parser.add_argument(
-        "--output-path",
+        "--output",
         type=Path,
-        default=Path("./dataset_set_minus.jsonl"),
+        default=Path("./output/dataset_set_minus.jsonl"),
         help="Path to the output JSONL file (default: %(default)s).",
+    )
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        default=False,
+        help="Preemptively confirm overwrite of the output file (default: false).",
     )
 
     args = parser.parse_args()
 
     A_patterns: list[str] = args.a
     B_patterns: list[str] = args.b
-    output_path: Path = args.output_path.resolve()
+    output_path: Path = args.output.resolve()
 
     try:
         A_files = _resolve_input_files(A_patterns)
@@ -163,10 +170,11 @@ def main() -> None:
     try:
         _validate_output_path(output_path)
     except FileExistsError:
-        response = input(f"{output_path} already exists. Override? Type [y]es/[n]o: ").strip().lower()
-        if response not in ("y", "yes"):
-            logger.info("Existing output file will not be overridden; exiting.")
-            sys.exit(0)
+        if not args.yes:
+            response = input(f"{output_path} already exists. Override? Type [y]es/[n]o: ").strip().lower()
+            if response not in ("y", "yes"):
+                logger.info("Existing output file will not be overridden; exiting.")
+                sys.exit(0)
 
     logger.info(f"Computing A \\ B from {len(A_files)} A file(s) and {len(B_files)} B file(s) -> {output_path}")
 

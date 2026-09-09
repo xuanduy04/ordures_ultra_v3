@@ -53,6 +53,17 @@ def _preprocess_underscore_args(argv: list[str]) -> list[str]:
     return out
 
 
+def _validate_output_path(output_path: Path) -> None:
+    """Ensure *output_path* ends with ``.jsonl``, parent dir exists, and file does not already exist."""
+    if output_path.suffix.lower() != ".jsonl":
+        raise ValueError(f"Output path must end with .jsonl, got: {output_path}")
+
+    if output_path.exists():
+        raise FileExistsError(f"Output file already exists: {output_path}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+
 def _resolve_input_files(input_pattern: str) -> list[Path]:
     """Resolve *input_pattern* (a direct file path or a glob) to a sorted list of files."""
     candidates = [Path(p) for p in glob.glob(input_pattern)]
@@ -71,17 +82,6 @@ def _extract_agent_name(entry: dict) -> str:
     if not isinstance(name, str) or not name:
         raise ValueError("Entry has missing or invalid 'agent_ref.name' field")
     return name
-
-
-def _validate_output_path(output_path: Path) -> None:
-    """Ensure *output_path* ends with ``.jsonl``, parent dir exists, and file does not already exist."""
-    if output_path.suffix.lower() != ".jsonl":
-        raise ValueError(f"Output path must end with .jsonl, got: {output_path}")
-
-    if output_path.exists():
-        raise FileExistsError(f"Output file already exists: {output_path}")
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def _count_agents(files: list[Path]) -> tuple[dict[str, int], int]:
@@ -173,10 +173,17 @@ def main() -> None:
         help="Path to the input data file or a glob pattern (e.g. './*.jsonl').",
     )
     parser.add_argument(
-        "--output-path",
+        "--output",
         type=Path,
-        default=Path("./nemo_gym_sample.jsonl"),
-        help="Path to the output JSONL file (default: %(default)s).",
+        required=True,
+        help="Path to the output JSONL file (must end with .jsonl).",
+    )
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        default=False,
+        help="Preemptively confirm overwrite of the output file (default: false).",
     )
     parser.add_argument(
         "--seed",
@@ -188,7 +195,7 @@ def main() -> None:
     args = parser.parse_args()
 
     input_pattern: str = args.input
-    output_path: Path = args.output_path.resolve()
+    output_path: Path = args.output.resolve()
     seed: int = args.seed
 
     try:
@@ -202,10 +209,11 @@ def main() -> None:
     try:
         _validate_output_path(output_path)
     except FileExistsError:
-        response = input(f"{output_path} already exists. Override? Type [y]es/[n]o: ").strip().lower()
-        if response not in ("y", "yes"):
-            logger.info("Existing output file will not be overridden; exiting.")
-            sys.exit(0)
+        if not args.yes:
+            response = input(f"{output_path} already exists. Override? Type [y]es/[n]o: ").strip().lower()
+            if response not in ("y", "yes"):
+                logger.info("Existing output file will not be overridden; exiting.")
+                sys.exit(0)
 
     logger.info(f"Sampling {len(files)} input file(s) -> {output_path}")
 

@@ -103,19 +103,26 @@ def main() -> None:
         help="Path to the input JSONL file (single file, no glob).",
     )
     parser.add_argument(
-        "--output-path",
+        "--output",
         type=Path,
         default=None,
-        help="Path to the output JSONL file (default: '<input>' with '.jsonl' replaced by '_RLStyle.jsonl').",
+        help="Path to the output JSONL file (default: '<input stem>-rl_qa.jsonl').",
+    )
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        default=False,
+        help="Preemptively confirm overwrite of the output file (default: false).",
     )
 
     args = parser.parse_args()
 
     input_path: Path = Path(args.input).resolve()
     output_path: Path = (
-        args.output_path.resolve()
-        if args.output_path is not None
-        else input_path.with_name(input_path.stem + "_RLStyle.jsonl")
+        args.output.resolve()
+        if args.output is not None
+        else input_path.with_name(input_path.stem + "-rl_qa.jsonl")
     )
 
     if not input_path.is_file():
@@ -127,10 +134,11 @@ def main() -> None:
     try:
         _validate_output_path(output_path)
     except FileExistsError:
-        response = input(f"{output_path} already exists. Override? Type [y]es/[n]o: ").strip().lower()
-        if response not in ("y", "yes"):
-            logger.info("Existing output file will not be overridden; exiting.")
-            sys.exit(0)
+        if not args.yes:
+            response = input(f"{output_path} already exists. Override? Type [y]es/[n]o: ").strip().lower()
+            if response not in ("y", "yes"):
+                logger.info("Existing output file will not be overridden; exiting.")
+                sys.exit(0)
 
     logger.info(f"Converting {input_path} -> {output_path}")
 

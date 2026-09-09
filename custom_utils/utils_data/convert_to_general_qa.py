@@ -1,13 +1,3 @@
-"""Convert a JSON/JSONL dataset to general_qa format.
-
-Each input entry must have a prompt field (a plain string or a chat-template
-list of turns) and an answer field. The output is a JSONL file with entries
-containing ``agent_ref`` (with a ``general_qa_simple_agent`` or
-``general_qa_simple_agent_reasoning_off`` name), ``responses_create_params``,
-``question``, ``expected_answer``, ``should_use_judge``, and an optional
-``dataset`` field.
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -43,6 +33,17 @@ def _preprocess_underscore_args(argv: list[str]) -> list[str]:
             arg = arg.replace("_", "-")
         out.append(arg)
     return out
+
+
+def _validate_output_path(output_path: Path) -> None:
+    """Ensure *output_path* ends with ``.jsonl``, parent dir exists, and file does not already exist."""
+    if output_path.suffix.lower() != ".jsonl":
+        raise ValueError(f"Output path must end with .jsonl, got: {output_path}")
+
+    if output_path.exists():
+        raise FileExistsError(f"Output file already exists: {output_path}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def _convert_chat_template_to_nemo_gym(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -153,17 +154,6 @@ def _convert_entry(entry: dict, prompt_field: str, answer_field: str, use_judge:
     return out
 
 
-def _validate_output_path(output_path: Path) -> None:
-    """Ensure *output_path* ends with ``.jsonl``, parent dir exists, and file does not already exist."""
-    if output_path.suffix.lower() != ".jsonl":
-        raise ValueError(f"Output path must end with .jsonl, got: {output_path}")
-
-    if output_path.exists():
-        raise FileExistsError(f"Output file already exists: {output_path}")
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-
 def main() -> None:
     sys.argv = _preprocess_underscore_args(sys.argv)
 
@@ -179,6 +169,13 @@ def main() -> None:
         "--output",
         type=Path,
         help="Path to the output JSONL file (must end with .jsonl).",
+    )
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        default=False,
+        help="Preemptively confirm overwrite of the output file (default: false).",
     )
     parser.add_argument(
         "--prompt-field",
@@ -230,7 +227,7 @@ def main() -> None:
     output_path: Path = (
         args.output
         if args.output is not None
-        else args.input.with_name(args.input.stem + "_general_qa.jsonl")
+        else args.input.with_name(args.input.stem + "-general_qa.jsonl")
     )
     prompt_field: str = args.prompt_field
     tools_field: str = args.tools_field
@@ -255,10 +252,11 @@ def main() -> None:
     try:
         _validate_output_path(output_path)
     except FileExistsError:
-        response = input(f"{output_path} already exists. Override? Type [y]es/[n]o: ").strip().lower()
-        if response not in ("y", "yes"):
-            logger.info("Existing output file will not be overridden; exiting.")
-            sys.exit(0)
+        if not args.yes:
+            response = input(f"{output_path} already exists. Override? Type [y]es/[n]o: ").strip().lower()
+            if response not in ("y", "yes"):
+                logger.info("Existing output file will not be overridden; exiting.")
+                sys.exit(0)
 
     logger.info(f"Converting {input_path} -> {output_path}")
 

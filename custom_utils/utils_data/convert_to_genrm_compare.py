@@ -1,20 +1,12 @@
-"""Convert a JSON/JSONL dataset to genrm_compare format.
-
-Each input entry must have a prompt field (a plain string or a chat-template
-list of turns). The output is a JSONL file with entries containing
-``agent_ref`` (with ``responses_api_agents`` type and a ``genrm_simple_agent``
-or ``genrm_simple_agent_reasoning_off`` name), ``responses_create_params``
-(with ``input``, ``tools`` when present, and ``parallel_tool_calls: false``),
-and optional ``dataset`` and ``principle`` fields.
-"""
-
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import logging
 import sys
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 from tqdm.auto import tqdm
@@ -44,6 +36,17 @@ def _preprocess_underscore_args(argv: list[str]) -> list[str]:
             arg = arg.replace("_", "-")
         out.append(arg)
     return out
+
+
+def _validate_output_path(output_path: Path) -> None:
+    """Ensure *output_path* ends with ``.jsonl``, parent dir exists, and file does not already exist."""
+    if output_path.suffix.lower() != ".jsonl":
+        raise ValueError(f"Output path must end with .jsonl, got: {output_path}")
+
+    if output_path.exists():
+        raise FileExistsError(f"Output file already exists: {output_path}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
 
 
 def _convert_chat_template_to_nemo_gym(turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -144,15 +147,28 @@ def _convert_entry(entry: dict, prompt_field: str, tools_field: str, no_reasonin
     return out
 
 
-def _validate_output_path(output_path: Path) -> None:
-    """Ensure *output_path* ends with ``.jsonl``, parent dir exists, and file does not already exist."""
-    if output_path.suffix.lower() != ".jsonl":
-        raise ValueError(f"Output path must end with .jsonl, got: {output_path}")
+def _load_principle_script(script_path: Path) -> ModuleType:
+    """Import *script_path* as a module and validate its ``get_principle`` contract.
 
-    if output_path.exists():
-        raise FileExistsError(f"Output file already exists: {output_path}")
+    Raises:
+        RuntimeError: If the module cannot be imported or does not define a
+            callable ``get_principle``.
+    """
+    try:
+        spec = importlib.util.spec_from_file_location("genrm_principle_script", script_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Could not create a module spec for '{script_path}'")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to import principle script '{script_path}': {exc}") from exc
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if not callable(getattr(module, "get_principle", None)):
+        raise RuntimeError(
+            f"Principle script '{script_path}' must define a callable 'get_principle(entry: dict) -> str'"
+        )
+
+    return module
 
 
 def main() -> None:
@@ -170,6 +186,13 @@ def main() -> None:
         "--output",
         type=Path,
         help="Path to the output JSONL file (must end with .jsonl).",
+    )
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        default=False,
+        help="Preemptively confirm overwrite of the output file (default: false).",
     )
     parser.add_argument(
         "--prompt-field",
@@ -192,11 +215,28 @@ def main() -> None:
         required=True,
         help="Dataset name stamped on each output row; an empty value omits the field entirely.",
     )
-    parser.add_argument(
-        "--principle",
+    principle_group = parser.add_mutually_exclusive_group()
+    principle_group.add_argument(
+        "--principle-string",
         default=None,
-        help="Principle stamped on each output row (used by the GenRM judge when use_principle is enabled). "
-        "Either a literal string or a path to a single text file whose content is used as the principle.",
+        help="Literal principle stamped on each output row (used by the GenRM judge when use_principle is enabled).",
+    )
+    principle_group.add_argument(
+        "--principle-file",
+        type=Path,
+        default=None,
+        help="Path to a text file whose content is used as the principle stamped on each output row.",
+    )
+    principle_group.add_argument(
+        "--principle-script",
+        type=Path,
+        default=None,
+        help="Path to a .py principle script. The script must define a callable "
+        "'get_principle(entry: dict) -> str'. It is imported once and get_principle is called for "
+        "every input entry with the parsed JSON entry as its only argument; the returned string "
+        "(after .strip()) becomes that row's principle. A missing file, an import error, or a "
+        "missing get_principle always aborts the run; exceptions or invalid/empty return values "
+        "per entry are treated as row failures (honored by --skip-on-error).",
     )
     parser.add_argument(
         "--skip-on-error",
@@ -211,7 +251,7 @@ def main() -> None:
     output_path: Path = (
         args.output
         if args.output is not None
-        else args.input.with_name(args.input.stem + "_genrm_compare.jsonl")
+        else args.input.with_name(args.input.stem + "-genrm_compare.jsonl")
     )
     prompt_field: str = args.prompt_field
     tools_field: str = args.tools_field
@@ -220,17 +260,28 @@ def main() -> None:
     skip_on_error: bool = args.skip_on_error
 
     principle: str = ""
-    if args.principle is not None:
-        principle_path = Path(args.principle)
-        if principle_path.is_file():
-            principle = principle_path.read_text(encoding="utf-8")
-        elif principle_path.is_dir():
-            parser.error(f"--principle is a directory, must be a singular file: {principle_path}")
-        else:
-            principle = args.principle
-        principle = principle.strip()
+    principle_getter: Any = None
+    principle_script_path: Path | None = None
+    if args.principle_string is not None:
+        principle = args.principle_string.strip()
         if not principle:
-            parser.error("--principle is empty after stripping")
+            parser.error("--principle-string is empty after stripping")
+    elif args.principle_file is not None:
+        principle_path = args.principle_file
+        if not principle_path.is_file():
+            parser.error(f"--principle-file must be an existing file, got: {principle_path}")
+        principle = principle_path.read_text(encoding="utf-8").strip()
+        if not principle:
+            parser.error("--principle-file is empty after stripping")
+    elif args.principle_script is not None:
+        principle_script_path = args.principle_script
+        if not principle_script_path.is_file():
+            parser.error(f"--principle-script must be an existing file, got: {principle_script_path}")
+        if principle_script_path.suffix != ".py":
+            parser.error(f"--principle-script must end with .py, got: {principle_script_path}")
+        if not principle_script_path.read_text(encoding="utf-8").strip():
+            parser.error(f"--principle-script is empty: {principle_script_path}")
+        principle_getter = _load_principle_script(principle_script_path).get_principle
 
     if not dataset:
         logger.info("--dataset is empty; the 'dataset' field will be omitted from all output rows.")
@@ -246,10 +297,11 @@ def main() -> None:
     try:
         _validate_output_path(output_path)
     except FileExistsError:
-        response = input(f"{output_path} already exists. Override? Type [y]es/[n]o: ").strip().lower()
-        if response not in ("y", "yes"):
-            logger.info("Existing output file will not be overridden; exiting.")
-            sys.exit(0)
+        if not args.yes:
+            response = input(f"{output_path} already exists. Override? Type [y]es/[n]o: ").strip().lower()
+            if response not in ("y", "yes"):
+                logger.info("Existing output file will not be overridden; exiting.")
+                sys.exit(0)
 
     logger.info(f"Converting {input_path} -> {output_path}")
 
@@ -262,7 +314,20 @@ def main() -> None:
                 continue
             try:
                 entry = json.loads(stripped)
-                converted_entry = _convert_entry(entry, prompt_field, tools_field, no_reasoning, dataset, principle)
+                row_principle = principle
+                if principle_getter is not None:
+                    result = principle_getter(entry)
+                    if not isinstance(result, str):
+                        raise ValueError(
+                            f"Principle script '{principle_script_path}' get_principle() returned "
+                            f"{type(result).__name__}, expected str"
+                        )
+                    row_principle = result.strip()
+                    if not row_principle:
+                        raise ValueError(
+                            f"Principle script '{principle_script_path}' returned an empty principle"
+                        )
+                converted_entry = _convert_entry(entry, prompt_field, tools_field, no_reasoning, dataset, row_principle)
             except Exception as exc:
                 if skip_on_error:
                     logger.warning(f"Skipping line {lineno}: {exc}")
