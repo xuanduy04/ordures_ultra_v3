@@ -106,7 +106,7 @@ def main() -> None:
         "--output",
         type=Path,
         default=None,
-        help="Path to the output JSONL file (default: '<input stem>-rl_qa.jsonl').",
+        help="Path to the output JSONL file (default: '<input stem>-RL_QA.jsonl').",
     )
     parser.add_argument(
         "--yes",
@@ -122,7 +122,7 @@ def main() -> None:
     output_path: Path = (
         args.output.resolve()
         if args.output is not None
-        else input_path.with_name(input_path.stem + "-rl_qa.jsonl")
+        else input_path.with_name(input_path.stem + "-RL_QA.jsonl")
     )
 
     if not input_path.is_file():
