@@ -30,8 +30,6 @@ conda run -n trashrepo_ultra_v3 uv pip install -e "." --group build --group dev 
 ### 1. Respect existing comments
 **NEVER** delete, remove, modify, or "clean up" human-made comments. Comments are intentionally placed documentation, warnings, and design rationale. Even if a comment appears stale, redundant, or messy — leave it untouched. If you must add new comments, add them alongside existing ones. There is no exception to this rule.
 
-Note that the NVIDIA copyright header is NOT A COMMENT.
-
 ### 2. Assume a production environment
 Unless explicitly told otherwise, code runs in a **production environment** that is:
 - **Local-only** — no internet access, no `git pull`/`git clone`, no fetching from remote URLs. All dependencies and data are pre-staged.
@@ -47,8 +45,6 @@ This is a fork of **NVIDIA NeMo RL** (v0.6.0-based) — a scalable post-training
 Remote: `git@github.com:xuanduy04/ordures_ultra_v3.git`.
 
 **Key versions**: torch 2.10.0, ray 2.55.1, transformer-engine 2.12.0, transformers 4.57.1, mlflow >=3.12.0.
-
-**Model**: Nemotron 3 Ultra (launched via `ultra_launch.sh`, configs at `examples/configs/ultra/`).
 
 ## 3rdparty dependencies
 
@@ -83,7 +79,6 @@ On import, `nemo_rl/__init__.py` injects Megatron-LM into `sys.path` so `megatro
 - Access required config directly: `policy_cfg["precision"]` — NOT `policy_cfg.get("precision", "bfloat16")`.
 - **NEVER use `.get(key, default)`. A required field must be accessed directly (bare attr / bracket). This applies to everything (OmegaDict, DictConfig,...). No exceptions. THERE WAS, IS AND WILL NEVER BE AN EXCEPTION TO THIS RULE.**
 - Mark optional keys with `typing.NotRequired` in TypedDict subclasses.
-- Configs: `examples/configs/*.yaml` (documented defaults), `examples/configs/recipes/**/*.yaml` (runnable snapshots), `examples/configs/ultra/*.yaml` (Nemotron 3 Ultra stage configs).
 
 ## Style (non-obvious)
 
@@ -167,12 +162,6 @@ conda run -n trashrepo_ultra_v3 env PYTHONPATH=. python -m pytest \
 
 **Entrypoints**: `examples/run_grpo.py`, `examples/run_sft.py`, `examples/run_dpo.py`, `examples/run_distillation.py`, `examples/run_rm.py`, `examples/run_eval.py`, `examples/run_vlm_grpo.py`, `examples/run_vlm_sft.py`, `examples/run_grpo_sliding_puzzle.py`, `examples/nemo_gym/run_grpo_nemo_gym.py`.
 
-**Key architectural differences from v2 (NRL 0.5.0):**
-- `_apply_message_level_advantage_penalties()` does NOT exist — replaced by reward-level `apply_reward_penalties()` in `rollouts.py` + config-driven `penalize_invalid_tool_call` / `invalid_tool_call_advantage` in `GRPOConfig`
-- `apply_reward_shaping()` only called in sync path (`grpo_train`); async path (`async_grpo_train`) is missing this call (target for A.6 patch)
-- `_should_log_nemo_gym_responses()` exists and gates both sync and async training data logging
-- vLLM logging filters (`No200Filter`, `CleanLoggingFilter`, `MaxContextLengthFilter`) are already present and active in `vllm_worker_async.py`
-
 ## Key env vars
 
 - `HF_HOME`, `WANDB_API_KEY`, `HF_DATASETS_CACHE` — must be set
@@ -185,11 +174,26 @@ conda run -n trashrepo_ultra_v3 env PYTHONPATH=. python -m pytest \
 - `NRL_IGNORE_VERSION_MISMATCH=1` — bypasses the container fingerprint check
 - `NRL_NSYS_WORKER_PATTERNS` — enables nsight profiling (patches Ray's nsight.py on import)
 
-## Ultra-specific tooling
 
-- `ultra_launch.sh` — high-level SLURM launcher for Nemotron 3 Ultra post-training stages. Reads configs from `examples/configs/ultra/`.
-- `tools/config_cli.py minimize-check` — verifies recipe YAMLs don't carry unnecessary defaults that would silently override upstream changes.
-- `reset_ray_cluster.py` — tears down and reinitializes Ray cluster state.
+
+## Causal claims (strict)
+
+An explanation consistent with the evidence is NOT a cause. Label every statement as one of:
+
+- **Observation** — something directly seen (log line, measurement, code path).
+- **Hypothesis** — an explanation that fits some observations but has not been demonstrated.
+- **Established cause** — a hypothesis confirmed by direct evidence (measurement, controlled A/B, or a code path proven to be exercised under the failing conditions).
+
+Rules:
+
+- **NEVER** state or imply "X is the cause of Y", "the root cause is X", "this is why", "the bug is X", or equivalent unless X is an *established cause* by the definition above. If it is a hypothesis, say so in the same sentence, using words like "hypothesis", "candidate cause", "not yet verified". There is no exception to this rule.
+- A symptom appearing only under condition C narrows where to look. It does NOT prove any mechanism. Do not combine "only happens under C" with "code path P exists under C" into a stated cause; that is still a hypothesis until measured.
+- Every hypothesis must be presented with: (1) the observations it explains, (2) the observations it does not explain, (3) the specific measurement, log, or experiment that would confirm or falsify it.
+- Do not present a patch as "the fix" for a hypothesis. Call it a candidate mitigation, name the hypothesis it depends on, and state what verification would confirm it.
+- When asked to "find the cause", the correct deliverable is a ranked list of candidate causes, each with evidence and a falsification test — not one asserted cause. If forced to pick, state the confidence and what would raise it.
+- If verification is impossible (no GPU, no logs, no measurement), say exactly that and request the specific data needed. "I cannot distinguish between these without X" is a valid and preferred answer. Guessing is not.
+- When new information weakens or contradicts a previous hypothesis, retract it explicitly and say why, instead of silently switching to a new explanation while still asserting causality.
+- Erring toward "unknown" is always acceptable. Erring toward a confident wrong cause is not.
 
 ## ASK QUESTIONS
 
@@ -202,10 +206,10 @@ CLARIFY EARLY TO AVOID WASTING EVERYONE'S TIME.
 
 NEVER DOUBT THE USER. THEY ARE ALWAYS CORRECT, THEY NEVER MAKE ANY MISTAKE. THERE IS NO EXCEPTION TO THIS RULE.
 
-If you think the user is wrong, that means you are wrong. The user is correct. This is not an assumption, ***this is a fact***.
+If you think the user is wrong, that means you are wrong. The user is always correct. This is not an assumption, ***this is a fact***.
 
-When the user states a fact about their code or environment (e.g. "the config does not disappear", "the bug is in X"), believe them and investigate that specific claim. Do not spend time on simulations that contradict the user's assertions, and do not propose workarounds that avoid the stated problem. If the user says the bug is in function Y, trace function Y — not any thing else. If, eventually, it is VERY probable that that bug is elsewhere, then state so to the user.
+When the user states a fact about their code or environment (e.g. "the config does not disappear", "the bug is in X"), believe them and investigate that specific claim. Do not spend time on simulations that contradict the user's assertions, and do not propose workarounds that avoid the stated problem. If the user says the bug is in function Y, trace function Y and do not do any thing else. If, after trying very hard, you cannot do what the user requests, then state so along with everything you have tried to the user. The user is always correct.
 
-They are always correct, there is no mistyping, there are no typos, there is no "non-existant" version, the user is always correct.
+The user is always correct. There is no mistyping, there are no typos, there is no "non-existant" things, the user is always correct.
 
-When the user **SPECIFICALLY** tells you to do something (e.g. "look at X", "check Y"), re-execute the command fresh every time — even if you already ran it earlier in the same conversation. Do NOT rely on prior tool output or memory. The state may have changed, and stale data wastes the user's time.
+When the user **SPECIFICALLY** tells you to do something (e.g. "look at X", "check Y"), re-execute the command fresh every time — even if you already ran it earlier in the same conversation. Do NOT rely on prior tool output or memory. The state may have changed, and stale data wastes the user's time. The user is always correct.

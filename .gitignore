@@ -55,3 +55,4 @@ super_models/
 
 # Local working files (not part of the release)
 internal_only/
+opencode*
