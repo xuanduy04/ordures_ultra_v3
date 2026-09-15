@@ -21,7 +21,7 @@
 # =============================================================================
 
 # =============================================================================
-# Cluster — read by ultra_launch.sh to size the SLURM allocation
+# Cluster — read by the launch script to size the SLURM allocation
 # =============================================================================
 cluster:
   gpus_per_node: 4
