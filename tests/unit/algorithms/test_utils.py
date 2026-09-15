@@ -228,75 +228,6 @@ def _base_master_config(colocated: bool):
     }
 
 
-def test_sync_colocated_throughput_flops_and_imbalance(capsys):
-    master_config = _base_master_config(colocated=True)
-
-    timing_metrics = {
-        "policy_and_reference_logprobs": 2.0,
-        "policy_training": 4.0,
-        "total_step_time": 10.0,
-        "generation": 5.0,
-        "weight_sync": 1.0,
-    }
-
-    # total_num_gpus = 2 * 8 = 16
-    # samples_per_step = 8 * 10 = 80
-    metrics = {
-        "total_num_tokens": 8000.0,
-        "per_worker_token_counts": {0: 1000, 1: 2000, 2: 3000, 3: 4000},
-    }
-
-    # total_tflops = total_flops / policy_training / 1e12 = 1e15 / 4 / 1e12 = 250
-    # per-rank TFLOPS message shows 31.25 TFLOPS per rank for 8 ranks
-    train_results = {
-        "total_flops": 1.0e15,
-        "num_ranks": 8,
-        "theoretical_tflops": 500.0,
-    }
-
-    perf = print_performance_metrics(
-        train_results, metrics, timing_metrics, master_config
-    )
-
-    # Validate key throughput metrics
-    assert math.isclose(perf["samples_per_sec_per_gpu"], 0.5, rel_tol=1e-6)
-    assert math.isclose(perf["tokens_per_sec_per_gpu"], 50.0, rel_tol=1e-6)
-    assert math.isclose(
-        perf["policy_training_tokens_per_sec_per_gpu"], 125.0, rel_tol=1e-6
-    )
-    assert math.isclose(
-        perf["policy_and_reference_logprobs_tokens_per_sec_per_gpu"],
-        250.0,
-        rel_tol=1e-6,
-    )
-    assert math.isclose(
-        perf["training_worker_group_tokens_per_sec_per_gpu"],
-        8000.0 / 6.0 / 16.0,
-        rel_tol=1e-6,
-    )
-    assert math.isclose(
-        perf["generation_tokens_per_sec_per_gpu"], 8000.0 / 5.0 / 16.0, rel_tol=1e-6
-    )
-
-    # Group totals
-    assert math.isclose(perf["samples_per_sec"], 8.0, rel_tol=1e-6)
-    assert math.isclose(perf["tokens_per_sec"], 800.0, rel_tol=1e-6)
-    assert math.isclose(
-        perf["training_worker_group_tokens_per_sec"], 8000.0 / 6.0, rel_tol=1e-6
-    )
-
-    # Imbalance metric from ratios [0.25, 0.5, 0.75, 1.0]
-    assert math.isclose(perf["average_token_imbalance"], 0.375, rel_tol=1e-6)
-
-    # Verify selected console output snippets
-    out = capsys.readouterr().out
-    assert "Performance Metrics" in out
-    assert "Throughputs (per GPU)" in out
-    assert "Average Token Imbalance" in out
-    assert "Training FLOPS" in out
-    assert "Floating Point Utilization" in out
-
-
 def test_async_non_colocated_idle_ratio_and_generation_time(capsys):
     master_config = _base_master_config(colocated=False)
     master_config["async_grpo"] = {"enabled": True}
@@ -306,7 +237,7 @@ def test_async_non_colocated_idle_ratio_and_generation_time(capsys):
         "policy_training": 4.0,
         "total_step_time": 10.0,
         "exposed_generation": 2.0,
-        "prepare_for_generation/total": 1.0,
+        "weight_sync": 1.0,
     }
 
     # total_num_gpus = 16, training_num_gpus = 8, generation_num_gpus = 8
@@ -359,7 +290,7 @@ def test_minimal_inputs_no_counts_no_flops(capsys):
         "policy_training": 3.0,
         "total_step_time": 8.0,
         "exposed_generation": 0.2,
-        "prepare_for_generation/total": 0.5,
+        "weight_sync": 0.5,
     }
 
     metrics = {

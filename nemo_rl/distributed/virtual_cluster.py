@@ -52,9 +52,6 @@ class PY_EXECUTABLES:
     # Use NeMo-Gym dependencies
     NEMO_GYM = f"uv run --locked --extra nemo_gym --directory {git_root}"
 
-    # Use NeMo-RL direct dependencies and SGLang.
-    SGLANG = f"uv run --locked --extra sglang --directory {git_root}"
-
 
 # Default port range for master address allocation.
 # We avoid the OS ephemeral range (typically 32768-60999 on Linux) because

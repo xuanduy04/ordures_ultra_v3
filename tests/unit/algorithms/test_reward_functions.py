@@ -3,7 +3,6 @@
 import pytest
 import torch
 
-from nemo_rl.algorithms.grpo import RewardScalingConfig, scale_rewards
 from nemo_rl.algorithms.reward_functions import (
     RewardShapingConfig,
     _compute_n_gram_repetition_penalty,
@@ -12,86 +11,6 @@ from nemo_rl.algorithms.reward_functions import (
 from nemo_rl.data.interfaces import DatumSpec
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from tests.unit.algorithms.utils import create_mock_batch_with_responses
-
-
-def test_reward_scaling_disabled():
-    """Test that when reward scaling is disabled, rewards remain unchanged."""
-    batch = create_mock_batch_with_responses(
-        num_samples=3, response_lengths=[10, 20, 30], initial_rewards=[1.0, 0.5, 0.8]
-    )
-
-    original_rewards = batch["total_reward"].clone()
-    config = RewardScalingConfig(enabled=False)
-    result_batch = scale_rewards(batch, config)
-    assert torch.allclose(result_batch["total_reward"], original_rewards)
-    assert result_batch is batch  # Should return the same batch object
-
-
-def test_reward_scaling_base():
-    """Test that rewards are linearly scaled from [0.0, 1.0] to [0.0, 0.7]."""
-    batch = create_mock_batch_with_responses(
-        num_samples=3, response_lengths=[10, 20, 30], initial_rewards=[1.0, 0.5, 0.8]
-    )
-
-    config = RewardScalingConfig(
-        enabled=True, source_min=0.0, source_max=1.0, target_min=0.0, target_max=0.7
-    )
-
-    result_batch = scale_rewards(batch, config)
-    # Calculate expected rewards manually
-    # Response 0: length=10, initial_reward=1.0, clip_initial_reward=1.0, scaled_reward=0.0 + [(1-0.0)/(1.0-0.0)]*(0.7-0) =  0.7
-    # Response 1: length=20, initial_reward=0.5, clip_initial_reward=0.5, scaled_reward=0.0 + [(0.5-0.0)/(1.0-0.0)]*(0.7-0) =  0.35
-    # Response 2: length=30, initial_reward=0.8, clip_initial_reward=0.8, scaled_reward=0.0 + [(0.8-0.0)/(1.0-0.0)]*(0.7-0) =  0.56
-
-    expected_rewards = torch.tensor([0.7, 0.35, 0.56])
-    assert torch.allclose(result_batch["total_reward"], expected_rewards)
-    assert result_batch is batch  # Should return the same batch object
-
-
-def test_reward_scaling_dapo():
-    """Test that verifies binary rewards 0/1 are scaled to -1.0/1.0 respectively used in DAPO algorithm."""
-    batch = create_mock_batch_with_responses(
-        num_samples=5,
-        response_lengths=[10, 20, 30, 40, 50],
-        initial_rewards=[1.0, 0.0, 0.0, 1.0, 0.0],
-    )
-
-    config = RewardScalingConfig(
-        enabled=True, source_min=0.0, source_max=1.0, target_min=-1.0, target_max=1.0
-    )
-
-    result_batch = scale_rewards(batch, config)
-    expected_rewards = torch.tensor([1.0, -1.0, -1.0, 1.0, -1.0])
-
-    assert torch.allclose(result_batch["total_reward"], expected_rewards)
-    assert result_batch is batch  # Should return the same batch object
-
-
-def test_reward_scaling_clipping():
-    """Test that verifies the out-of-range rewards are clipped and scaled to the target range."""
-    batch = create_mock_batch_with_responses(
-        num_samples=6,
-        response_lengths=[10, 20, 30, 40, 50, 60],
-        initial_rewards=[-2.8, -0.25, 1.5, 0.5, 2.0, 2.5],
-    )
-
-    config = RewardScalingConfig(
-        enabled=True, source_min=-2.0, source_max=2.0, target_min=-1.0, target_max=1.0
-    )
-
-    result_batch = scale_rewards(batch, config)
-    # Calculate expected rewards manually
-    # Response 0: initial_reward=-2.8, clip_initial_reward=-2.0, scaled_reward=-1.0 + [(-2.0-(-2.0))/(2.0-(-2.0))]*(1.0-(-1.0)) =  -1.0
-    # Response 1: initial_reward=-0.25, clip_initial_reward=-0.25, scaled_reward=-1.0 + [(-0.25-(-2.0))/(2.0-(-2.0))]*(1.0-(-1.0)) =  -0.125
-    # Response 2: initial_reward=1.5, clip_initial_reward=1.5, scaled_reward=-1.0 + [(1.5-(-2.0))/(2.0-(-2.0))]*(1.0-(-1.0)) =  0.75
-    # Response 3: initial_reward=0.5, clip_initial_reward=0.5, scaled_reward=-1.0 + [(0.5-(-2.0))/(2.0-(-2.0))]*(1.0-(-1.0)) =  0.25
-    # Response 4: initial_reward=2.0, clip_initial_reward=2.0, scaled_reward=-1.0 + [(2.0-(-2.0))/(2.0-(-2.0))]*(1.0-(-1.0)) =  1.0
-    # Response 5: initial_reward=2.5, clip_initial_reward=2.0, scaled_reward=-1.0 + [(2.0-(-2.0))/(2.0-(-2.0))]*(1.0-(-1.0)) =  1.0
-
-    expected_rewards = torch.tensor([-1.0, -0.125, 0.75, 0.25, 1.0, 1.0])
-
-    assert torch.allclose(result_batch["total_reward"], expected_rewards)
-    assert result_batch is batch  # Should return the same batch object
 
 
 def test_reward_shaping_disabled():

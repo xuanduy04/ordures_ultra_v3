@@ -563,22 +563,15 @@ def print_performance_metrics(
     policy_and_reference_logprobs_time = timing_metrics["policy_and_reference_logprobs"]
     policy_training_time = timing_metrics["policy_training"]
     total_time = timing_metrics["total_step_time"]
-    refit_time = (
-        timing_metrics["weight_sync"]
-        if "weight_sync" in timing_metrics
-        else timing_metrics["prepare_for_generation/total"]
+    refit_time = timing_metrics["weight_sync"]
+    # If the training time is greater than the generation time, we include the idle time caused by training as part of the generation time.
+    # if training time > generation time, generation time = training time
+    # if training time < generation time, generation time = training time + exposed generation time
+    generation_time = (
+        timing_metrics["exposed_generation"]
+        + timing_metrics["policy_and_reference_logprobs"]
+        + timing_metrics["policy_training"]
     )
-    if "generation" in timing_metrics:  # Sync GRPO
-        generation_time = timing_metrics["generation"]
-    else:  # Async GRPO
-        # If the training time is greater than the generation time, we include the idle time caused by training as part of the generation time.
-        # if training time > generation time, generation time = training time
-        # if training time < generation time, generation time = training time + exposed generation time
-        generation_time = (
-            timing_metrics["exposed_generation"]
-            + timing_metrics["policy_and_reference_logprobs"]
-            + timing_metrics["policy_training"]
-        )
 
     num_nodes = master_config["cluster"]["num_nodes"]
     gpus_per_node = master_config["cluster"]["gpus_per_node"]

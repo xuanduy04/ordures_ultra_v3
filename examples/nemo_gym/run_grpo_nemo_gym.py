@@ -22,7 +22,6 @@ from nemo_rl.algorithms.grpo import (
     StatefulDataLoader,
     TokenizerType,
     _should_use_nemo_gym,
-    grpo_train,
     refit_policy_generation,
     setup,
 )
@@ -274,23 +273,7 @@ The validation set you pass in will directly be used for validation with no addi
             max_trajectory_age_steps=async_config["max_trajectory_age_steps"],
         )
     else:
-        print("🚀 Running synchronous GRPO training")
-
-        # Run standard GRPO training
-        grpo_train(
-            policy,
-            policy_generation,
-            dataloader,
-            val_dataloader,
-            tokenizer,
-            loss_fn,
-            task_to_env,
-            val_task_to_env,
-            logger,
-            checkpointer,
-            grpo_state,
-            master_config,
-        )
+        raise NotImplementedError("Synchronous GRPO has been removed; enable grpo.async_grpo.enabled and policy.generation.vllm_cfg.async_engine.")
 
 
 if __name__ == "__main__":
