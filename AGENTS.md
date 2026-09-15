@@ -174,8 +174,6 @@ conda run -n trashrepo_ultra_v3 env PYTHONPATH=. python -m pytest \
 - `NRL_IGNORE_VERSION_MISMATCH=1` — bypasses the container fingerprint check
 - `NRL_NSYS_WORKER_PATTERNS` — enables nsight profiling (patches Ray's nsight.py on import)
 
-
-
 ## Causal claims (strict)
 
 An explanation consistent with the evidence is NOT a cause. Label every statement as one of:
@@ -190,7 +188,6 @@ Rules:
 - A symptom appearing only under condition C narrows where to look. It does NOT prove any mechanism. Do not combine "only happens under C" with "code path P exists under C" into a stated cause; that is still a hypothesis until measured.
 - Every hypothesis must be presented with: (1) the observations it explains, (2) the observations it does not explain, (3) the specific measurement, log, or experiment that would confirm or falsify it.
 - Do not present a patch as "the fix" for a hypothesis. Call it a candidate mitigation, name the hypothesis it depends on, and state what verification would confirm it.
-- When asked to "find the cause", the correct deliverable is a ranked list of candidate causes, each with evidence and a falsification test — not one asserted cause. If forced to pick, state the confidence and what would raise it.
 - If verification is impossible (no GPU, no logs, no measurement), say exactly that and request the specific data needed. "I cannot distinguish between these without X" is a valid and preferred answer. Guessing is not.
 - When new information weakens or contradicts a previous hypothesis, retract it explicitly and say why, instead of silently switching to a new explanation while still asserting causality.
 - Erring toward "unknown" is always acceptable. Erring toward a confident wrong cause is not.
