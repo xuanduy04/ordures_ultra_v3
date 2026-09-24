@@ -16,13 +16,10 @@ from transformers import PreTrainedTokenizerBase
 
 from nemo_rl.algorithms.grpo import MasterConfig
 from nemo_rl.algorithms.opd import (
-    is_opd_enabled,
-    resolve_reference_aliases,
-    resolve_teacher_specs,
-)
-from nemo_rl.algorithms.vllm_teacher_client import (
     TeacherContextLengthError,
     VLLMTeacherLogprobClient,
+    is_opd_enabled,
+    resolve_teacher_specs,
 )
 from nemo_rl.data.interfaces import DatumSpec
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
@@ -1211,13 +1208,10 @@ class AsyncTrajectoryCollector:
         default_teacher_alias = opd_cfg.get("default_teacher_alias")
         strict = opd_cfg.get("strict_agent_name_match", False)
 
-        reference_aliases = resolve_reference_aliases(
+        teacher_specs = resolve_teacher_specs(
             agent_refs, teacher_model_by_agent_name,
             default_teacher_alias=default_teacher_alias,
             strict_agent_name_match=strict,
-        )
-        teacher_specs = resolve_teacher_specs(
-            reference_aliases, teacher_model_by_agent_name
         )
         # OPD is currently tested/supported only in single-teacher mode: one
         # teacher serve per prompt group. Multi-teacher OPD (routing rows to
