@@ -105,6 +105,8 @@ def main() -> None:
             checkpointer,
             grpo_state,
             master_config,
+            _teacher_worker_groups,
+            _alias_to_group_alias,
         ) = setup(config, tokenizer, dataset, val_dataset)
 
     rl_init_timer.record("total", time.perf_counter() - main_start)
@@ -160,6 +162,8 @@ def main() -> None:
             grpo_save_state=grpo_state,
             master_config=master_config,
             max_trajectory_age_steps=async_config["max_trajectory_age_steps"],
+            teacher_worker_groups=_teacher_worker_groups,
+            alias_to_group_alias=_alias_to_group_alias,
         )
     else:
         raise NotImplementedError("Synchronous GRPO has been removed; enable grpo.async_grpo.enabled and policy.generation.vllm_cfg.async_engine.")

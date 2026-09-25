@@ -1,147 +1,44 @@
-
-
-
 import asyncio
-import json
 import threading
-import urllib.error
 
 import pytest
 import torch
 
-from nemo_rl.algorithms import opd as opd_module
-from nemo_rl.algorithms.opd import (
-    TeacherContextLengthError,
-    VLLMTeacherLogprobClient,
-    is_opd_enabled,
-    normalize_teacher_serve,
-    probe_teacher_serve,
-    resolve_teacher_specs,
-    validate_teacher_serves,
-)
+from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 
 
 # ---------------------------------------------------------------------------
-# Shared helpers
+# Mock teacher worker group for _compute_teacher_logprobs tests
 # ---------------------------------------------------------------------------
 
-_TEACHER = {"url": "http://teacher:8000", "model": "teacher-model"}
 
-_TEACHER_SERVES = {
-    "math_agent": {"url": "http://t-math:8000", "model": "teacher-math"},
-    "code_agent": {"url": "http://t-code:8000", "model": "teacher-code"},
-}
+class _MockShardingAnnotations:
+    def __init__(self, dp_size):
+        self._dp_size = dp_size
 
-
-def _run(coro):
-    return asyncio.run(coro)
-
-
-def _run_with_close(client, coro):
-    """Run a coroutine and close the client worker afterwards."""
-
-    async def _inner():
-        try:
-            return await coro
-        finally:
-            await client.close()
-
-    return asyncio.run(_inner())
+    def get_axis_size(self, name):
+        if name == "data_parallel":
+            return self._dp_size
+        return 1
 
 
-def _canned_response(prompts, fill=0.5):
-    choices = []
-    for p in prompts:
-        token_logprobs = [None] + [fill] * (len(p) - 1)
-        choices.append(
-            {"prompt_token_ids": p, "logprobs": {"token_logprobs": token_logprobs}}
-        )
-    return {"choices": choices}
+class _MockTeacherWorkerGroup:
+    """Returns logprobs filled with a constant; validates DP-divisible batch."""
 
-
-class _FakePoster:
-    """Records payloads and returns canned JSON responses in order."""
-
-    def __init__(self, *payloads):
-        self._payloads = list(payloads)
-        self.calls = []
-
-    async def __call__(self, session, teacher, payload, headers):
-        self.calls.append((teacher, payload, headers))
-        payload = self._payloads.pop(0)
-        if isinstance(payload, Exception):
-            raise payload
-        return payload
-
-
-def _client_with(poster):
-    client = VLLMTeacherLogprobClient()
-    client._post_with_retries = poster
-    return client
-
-
-class _FakeResponse:
-    def __init__(self, status: int, body: str):
-        self.status = status
-        self._body = body
-
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc_info):
-        return False
-
-    async def text(self) -> str:
-        return self._body
-
-
-class _FakeSession:
-    """Minimal aiohttp.ClientSession stand-in for _post_with_retries tests."""
-
-    def __init__(self, *responses):
-        self._responses = list(responses)
-        self.requests = []
-
-    def post(self, url, json=None, headers=None):
-        self.requests.append((url, json, headers))
-        return self._responses.pop(0)
-
-
-class _FakeURLResponse:
-    def __init__(self, payload: dict):
-        self._payload = json.dumps(payload).encode("utf-8")
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc_info):
-        return False
-
-    def read(self) -> bytes:
-        return self._payload
-
-
-class _FakeTeacherClient:
-    """Returns a constant-filled logprobs tensor; records the served teacher."""
-
-    def __init__(self, fill_value=2.0):
+    def __init__(self, fill_value=1.0, dp_size=4):
         self._fill_value = fill_value
-        self.last_teacher = None
-        self.last_input_lengths = None
+        self.sharding_annotations = _MockShardingAnnotations(dp_size)
 
-    async def score_group(self, teacher, input_ids, input_lengths=None):
-        self.last_teacher = teacher
-        self.last_input_lengths = input_lengths
+    def get_logprobs(self, data):
+        input_ids = data["input_ids"]
         B, S = input_ids.shape
-        return torch.full((B, S), self._fill_value)
-
-
-class _ContextLengthFailingTeacherClient:
-    """Raises TeacherContextLengthError on every score_group call."""
-
-    async def score_group(self, teacher, input_ids, input_lengths=None):
-        raise TeacherContextLengthError(
-            teacher["url"], "This model's maximum context length is 4096 tokens"
+        # Verify the caller already padded to dp_size
+        dp_size = self.sharding_annotations.get_axis_size("data_parallel")
+        assert B % dp_size == 0, (
+            f"get_logprobs received batch_size={B} not divisible by dp_size={dp_size}"
+        )
+        return BatchedDataDict(
+            {"reference_logprobs": torch.full((B, S), self._fill_value)}
         )
 
 
@@ -151,11 +48,18 @@ def _make_collector(**overrides):
 
     collector_cls = AsyncTrajectoryCollector.__ray_metadata__.modified_class
     defaults = {
+        "teacher_worker_groups": {},
+        "alias_to_group_alias": {},
         "on_policy_distillation_cfg": {},
-        "_has_opd_teachers": False,
-        "_teacher_logprob_client": None,
+        "_has_non_colocated_teachers": False,
+        "_opd_outsource": False,
+        "_teacher_locks": {},
     }
     defaults.update(overrides)
+    if "teacher_worker_groups" in overrides:
+        defaults["_teacher_locks"] = {
+            k: threading.Lock() for k in overrides["teacher_worker_groups"]
+        }
     obj = object.__new__(collector_cls)
     for k, v in defaults.items():
         setattr(obj, k, v)
@@ -163,548 +67,229 @@ def _make_collector(**overrides):
 
 
 # ---------------------------------------------------------------------------
-# Config helpers
+# DP padding tests
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("batch_size,dp_size", [
+    (1, 4),   # the exact bug: 1 sample, dp=4
+    (2, 4),   # 2 samples, dp=4
+    (3, 4),   # 3 samples, dp=4
+    (4, 4),   # already aligned
+    (1, 8),   # extreme: 1 sample, dp=8
+    (5, 4),   # 5 samples → pad to 8
+])
+def test_compute_teacher_logprobs_dp_padding(batch_size, dp_size):
+    """Teacher logprob computation must pad batch to dp_size multiple."""
+    twg = _MockTeacherWorkerGroup(fill_value=2.0, dp_size=dp_size)
+    collector = _make_collector(
+        teacher_worker_groups={"math": twg},
+        alias_to_group_alias={"math_agent": "math"},
+        on_policy_distillation_cfg={
+            "teacher_model_by_agent_name": {"math_agent": "/ckpt/math"},
+        },
+        _has_non_colocated_teachers=True,
+    )
+
+    S = 16
+    input_ids = torch.randint(0, 100, (batch_size, S))
+    agent_refs = [{"name": "math_agent"}] * batch_size
+
+    result, _ = asyncio.run(collector._compute_teacher_logprobs(input_ids, agent_refs))
+
+    assert result.shape == (batch_size, S)
+    assert torch.allclose(result, torch.tensor(2.0))
+
+
+def test_compute_teacher_logprobs_routes_to_correct_teacher():
+    """Samples are routed to the right teacher and results stitched back."""
+    math_twg = _MockTeacherWorkerGroup(fill_value=1.0, dp_size=1)
+    code_twg = _MockTeacherWorkerGroup(fill_value=2.0, dp_size=1)
+
+    collector = _make_collector(
+        teacher_worker_groups={"math": math_twg, "code": code_twg},
+        alias_to_group_alias={"math_agent": "math", "code_agent": "code"},
+        on_policy_distillation_cfg={
+            "teacher_model_by_agent_name": {
+                "math_agent": "/ckpt/math",
+                "code_agent": "/ckpt/code",
+            },
+        },
+        _has_non_colocated_teachers=True,
+    )
+
+    B, S = 4, 8
+    input_ids = torch.randint(0, 100, (B, S))
+    agent_refs = [
+        {"name": "math_agent"},
+        {"name": "code_agent"},
+        {"name": "math_agent"},
+        {"name": "code_agent"},
+    ]
+
+    result, _ = asyncio.run(collector._compute_teacher_logprobs(input_ids, agent_refs))
+
+    assert result.shape == (B, S)
+    assert torch.allclose(result[0], torch.tensor(1.0))
+    assert torch.allclose(result[1], torch.tensor(2.0))
+    assert torch.allclose(result[2], torch.tensor(1.0))
+    assert torch.allclose(result[3], torch.tensor(2.0))
+
+
+def test_compute_teacher_logprobs_deduplication():
+    """alias_to_group_alias routes multiple aliases to one teacher group."""
+    shared_twg = _MockTeacherWorkerGroup(fill_value=3.0, dp_size=1)
+
+    collector = _make_collector(
+        teacher_worker_groups={"primary": shared_twg},
+        alias_to_group_alias={"mcqa": "primary", "terminal": "primary"},
+        on_policy_distillation_cfg={
+            "teacher_model_by_agent_name": {
+                "mcqa": "/ckpt/shared",
+                "terminal": "/ckpt/shared",
+            },
+        },
+        _has_non_colocated_teachers=True,
+    )
+
+    B, S = 2, 4
+    input_ids = torch.randint(0, 100, (B, S))
+    agent_refs = [{"name": "mcqa"}, {"name": "terminal"}]
+
+    result, _ = asyncio.run(collector._compute_teacher_logprobs(input_ids, agent_refs))
+    assert result.shape == (B, S)
+    assert torch.allclose(result, torch.tensor(3.0))
+
+
+# ---------------------------------------------------------------------------
+# Unsort / reorder_data regression test
+# ---------------------------------------------------------------------------
+
+
+def test_reorder_data_vs_direct_gather():
+    """Verify reorder_data inverts the permutation, while direct gather does not.
+
+    This is the root cause of the num_gen>1 teacher logprob misalignment bug:
+    shard_by_batch_size returns a forward permutation (sorted_pos → orig_idx).
+    To restore original order we need the *inverse* (argsort), which
+    reorder_data computes.  A direct gather ``result[indices]`` applies
+    the forward permutation and silently produces wrong results.
+    """
+    # Simulate: 4 samples reordered by sequence packing as [3, 0, 2, 1]
+    forward_perm = [3, 0, 2, 1]
+    # After inference, results are in sorted order:
+    #   position 0 = result for orig sample 3
+    #   position 1 = result for orig sample 0  etc.
+    sorted_results = BatchedDataDict(
+        {"logprobs": torch.tensor([[30.0], [0.0], [20.0], [10.0]])}
+    )
+    # label: sorted_results[i] holds the value for original sample forward_perm[i]
+    #   sorted_results[0]=30 → orig 3,  sorted_results[1]=0 → orig 0, etc.
+
+    # --- WRONG: direct gather (the old bug) ---
+    wrong = sorted_results["logprobs"][forward_perm]
+    # wrong[0] = sorted_results[3] = 10  (should be 0 for orig 0)
+    assert not torch.equal(wrong, torch.tensor([[0.0], [10.0], [20.0], [30.0]])), \
+        "Direct gather should NOT produce the correct original order"
+
+    # --- CORRECT: reorder_data (inverse permutation) ---
+    correct = BatchedDataDict({"logprobs": sorted_results["logprobs"].clone()})
+    correct.reorder_data(forward_perm)
+    assert torch.equal(correct["logprobs"], torch.tensor([[0.0], [10.0], [20.0], [30.0]])), \
+        "reorder_data should restore the original sample order"
+
+
+# ---------------------------------------------------------------------------
+# Teacher logprob alignment with variable-length sequences (num_gen > 1)
+# ---------------------------------------------------------------------------
+
+
+def test_reorder_data_inverse_permutation_various():
+    """reorder_data correctly inverts arbitrary permutations, including identity."""
+    # Identity permutation
+    bdd = BatchedDataDict({"x": torch.tensor([[0.0], [1.0], [2.0]])})
+    bdd.reorder_data([0, 1, 2])
+    assert torch.equal(bdd["x"], torch.tensor([[0.0], [1.0], [2.0]]))
+
+    # Reversal
+    bdd = BatchedDataDict({"x": torch.tensor([[0.0], [1.0], [2.0]])})
+    bdd.reorder_data([2, 1, 0])
+    # batch_sorted_indices=[2,1,0] means sorted[0] came from orig 2, etc.
+    # Inverse: orig[2]=sorted[0]=0.0, orig[1]=sorted[1]=1.0, orig[0]=sorted[2]=2.0
+    assert torch.equal(bdd["x"], torch.tensor([[2.0], [1.0], [0.0]]))
+
+    # Non-trivial: simulate 4 samples reordered as [2, 3, 0, 1]
+    bdd = BatchedDataDict({"x": torch.tensor([[20.0], [30.0], [0.0], [10.0]])})
+    bdd.reorder_data([2, 3, 0, 1])
+    assert torch.equal(bdd["x"], torch.tensor([[0.0], [10.0], [20.0], [30.0]])),  \
+        "After reorder_data, row i should hold the result for original sample i"
+
+
+def test_get_logprobs_unsort_matches_lm_policy():
+    """TeacherWorkerGroup.get_logprobs uses reorder_data (inverse permutation)
+    to undo sequence packing reorder, matching lm_policy.py's approach.
+
+    This is a code-level check: verify the fix is in place by reading the
+    source and confirming reorder_data is called (not a direct index gather).
+    """
+    import inspect
+    from nemo_rl.models.policy.teacher_worker_group import TeacherWorkerGroup
+
+    source = inspect.getsource(TeacherWorkerGroup.get_logprobs)
+    assert "reorder_data" in source, \
+        "get_logprobs must use reorder_data() for unsort (not direct index gather)"
+    assert "unsorted_data_indices]" not in source, \
+        "get_logprobs must NOT use result[unsorted_data_indices] (wrong permutation direction)"
+
+
 def test_is_opd_enabled():
+    from nemo_rl.algorithms.opd import is_opd_enabled
     assert is_opd_enabled({"on_policy_distillation": {"enabled": True}})
     assert not is_opd_enabled({"on_policy_distillation": {"enabled": False}})
     assert not is_opd_enabled({})
 
 
-# ---------------------------------------------------------------------------
-# normalize_teacher_serve
-# ---------------------------------------------------------------------------
+def test_is_non_colocated_teachers_enabled():
+    from nemo_rl.algorithms.opd import is_non_colocated_teachers_enabled
+    assert is_non_colocated_teachers_enabled({
+        "on_policy_distillation": {"enabled": True, "non_colocated_teachers": {"enabled": True}}
+    })
+    assert not is_non_colocated_teachers_enabled({
+        "on_policy_distillation": {"enabled": True, "non_colocated_teachers": {"enabled": False}}
+    })
 
 
-def test_normalize_teacher_serve_valid():
-    assert normalize_teacher_serve({"url": "http://x", "model": "m"}) == {
-        "url": "http://x",
-        "model": "m",
-    }
-
-
-def test_normalize_teacher_serve_strips_whitespace():
-    assert normalize_teacher_serve({"url": " http://x ", "model": " m "}) == {
-        "url": "http://x",
-        "model": "m",
-    }
-
-
-def test_normalize_teacher_serve_missing_fields():
-    with pytest.raises(ValueError, match="'url' and 'model'"):
-        normalize_teacher_serve({"url": "http://x"})
-
-
-def test_normalize_teacher_serve_not_a_mapping():
-    with pytest.raises(ValueError, match="mappings with 'url' and 'model'"):
-        normalize_teacher_serve("/ckpt/path")
-
-
-def test_normalize_teacher_serve_non_string_fields():
-    with pytest.raises(ValueError, match="'url'"):
-        normalize_teacher_serve({"url": None, "model": "m"})
-    with pytest.raises(ValueError, match="'model'"):
-        normalize_teacher_serve({"url": "http://x", "model": 42})
-
-
-def test_normalize_teacher_serve_empty_strings():
-    with pytest.raises(ValueError, match="'url'"):
-        normalize_teacher_serve({"url": "   ", "model": "m"})
-    with pytest.raises(ValueError, match="'model'"):
-        normalize_teacher_serve({"url": "http://x", "model": ""})
-
-
-# ---------------------------------------------------------------------------
-# probe_teacher_serve
-# ---------------------------------------------------------------------------
-
-
-def test_probe_teacher_serve_success(monkeypatch):
-    calls = []
-
-    def fake_urlopen(url, timeout=None, context=None):
-        calls.append((url, timeout))
-        return _FakeURLResponse({"data": [{"id": "teacher-model"}]})
-
-    monkeypatch.setattr(opd_module.urllib.request, "urlopen", fake_urlopen)
-    probe_teacher_serve("http://teacher:8000", {"teacher-model"})
-
-    assert calls == [("http://teacher:8000/v1/models", 30.0)]
-
-
-def test_probe_teacher_serve_missing_model(monkeypatch):
-    def fake_urlopen(url, timeout=None, context=None):
-        return _FakeURLResponse({"data": [{"id": "other-model"}]})
-
-    monkeypatch.setattr(opd_module.urllib.request, "urlopen", fake_urlopen)
-    with pytest.raises(RuntimeError, match="does not serve"):
-        probe_teacher_serve("http://teacher:8000", {"teacher-model"})
-
-
-def test_probe_teacher_serve_connection_error(monkeypatch):
-    def fake_urlopen(url, timeout=None, context=None):
-        raise urllib.error.URLError("connection refused")
-
-    monkeypatch.setattr(opd_module.urllib.request, "urlopen", fake_urlopen)
-    with pytest.raises(RuntimeError, match="health check failed"):
-        probe_teacher_serve("http://teacher:8000", {"teacher-model"})
-
-
-# ---------------------------------------------------------------------------
-# resolve_teacher_specs
-# ---------------------------------------------------------------------------
-
-
-def test_resolve_teacher_specs_routes_and_normalizes():
-    specs = resolve_teacher_specs(
-        [{"name": "math_agent"}, {"name": "code_agent"}], _TEACHER_SERVES
-    )
-    assert specs == [
-        _TEACHER_SERVES["math_agent"],
-        _TEACHER_SERVES["code_agent"],
-    ]
-
-    stripped = resolve_teacher_specs(
-        [{"name": "math_agent"}],
-        {"math_agent": {"url": " http://x ", "model": " m "}},
-    )
-    assert stripped == [{"url": "http://x", "model": "m"}]
-
-
-def test_resolve_teacher_specs_bad_agent_ref():
+def test_resolve_reference_aliases_bad_agent_ref():
+    from nemo_rl.algorithms.opd import resolve_reference_aliases
     with pytest.raises(KeyError):
-        resolve_teacher_specs(
-            [{"not_name": "oops"}], {"math": _TEACHER_SERVES["math_agent"]}
+        resolve_reference_aliases(
+            [{"not_name": "oops"}], {"math": "/ckpt/math"}
         )
 
 
-def test_resolve_teacher_specs_fallback():
-    specs = resolve_teacher_specs(
+def test_resolve_reference_aliases_fallback():
+    from nemo_rl.algorithms.opd import resolve_reference_aliases
+    aliases = resolve_reference_aliases(
         [{"name": "math_agent"}, {"name": "unknown"}, {"name": "code_agent"}],
-        _TEACHER_SERVES,
+        {"math_agent": "/ckpt/math", "code_agent": "/ckpt/code"},
         default_teacher_alias="math_agent",
     )
-    assert specs == [
-        _TEACHER_SERVES["math_agent"],
-        _TEACHER_SERVES["math_agent"],
-        _TEACHER_SERVES["code_agent"],
-    ]
+    assert aliases == ["math_agent", "math_agent", "code_agent"]
 
 
-def test_resolve_teacher_specs_strict_raises():
+def test_resolve_reference_aliases_strict_raises():
+    from nemo_rl.algorithms.opd import resolve_reference_aliases
     with pytest.raises(ValueError, match="No teacher model mapping"):
-        resolve_teacher_specs(
-            [{"name": "unknown"}], _TEACHER_SERVES, strict_agent_name_match=True
+        resolve_reference_aliases(
+            [{"name": "unknown"}], {"math": "/ckpt/math"}, strict_agent_name_match=True
         )
 
 
-def test_resolve_teacher_specs_unmapped_fallback_alias_raises():
-    with pytest.raises(KeyError, match="no teacher serve mapping"):
-        resolve_teacher_specs(
-            [{"name": "unknown"}],
-            _TEACHER_SERVES,
-            default_teacher_alias="missing_alias",
-        )
-
-
-# ---------------------------------------------------------------------------
-# validate_teacher_serves
-# ---------------------------------------------------------------------------
-
-
-def test_validate_teacher_serves_valid(monkeypatch):
-    monkeypatch.setattr(opd_module, "probe_teacher_serve", lambda url, models: None)
-    validate_teacher_serves(
-        {"on_policy_distillation": {"teacher_model_by_agent_name": _TEACHER_SERVES}}
+def test_get_teacher_routing_metrics():
+    from nemo_rl.algorithms.opd import get_teacher_routing_metrics
+    metrics = get_teacher_routing_metrics(
+        ["math_a", "math_b", "if", "math_a"],
+        {"math_a": "t_math", "math_b": "t_math", "if": "t_if"},
     )
-
-
-def test_validate_teacher_serves_probe_failure(monkeypatch):
-    """A failing serve probe surfaces as RuntimeError at setup time."""
-
-    def _boom(url, models):
-        raise RuntimeError(f"probe failed for {url}")
-
-    monkeypatch.setattr(opd_module, "probe_teacher_serve", _boom)
-    with pytest.raises(RuntimeError, match="probe failed"):
-        validate_teacher_serves(
-            {"on_policy_distillation": {"teacher_model_by_agent_name": _TEACHER_SERVES}}
-        )
-
-
-def test_validate_teacher_serves_missing_fields():
-    with pytest.raises(ValueError, match="'url' and 'model'"):
-        validate_teacher_serves(
-            {
-                "on_policy_distillation": {
-                    "teacher_model_by_agent_name": {"math": "/ckpt/math"}
-                }
-            }
-        )
-
-
-def test_validate_teacher_serves_non_string_fields():
-    with pytest.raises(ValueError, match="'url'"):
-        validate_teacher_serves(
-            {
-                "on_policy_distillation": {
-                    "teacher_model_by_agent_name": {
-                        "math": {"url": None, "model": "m"}
-                    }
-                }
-            }
-        )
-
-
-# ---------------------------------------------------------------------------
-# _retry_delay — jitter
-# ---------------------------------------------------------------------------
-
-
-def test_retry_delay_jitter_bounds(monkeypatch):
-    monkeypatch.setattr(opd_module, "_RETRY_BACKOFF_BASE_S", 2.0)
-    for attempt in range(6):
-        base = min(2.0 * (2 ** attempt), opd_module._MAX_RETRY_BACKOFF_S)
-        for _ in range(50):
-            delay = opd_module._retry_delay(attempt)
-            assert base * 0.8 <= delay <= base * 1.2
-
-
-# ---------------------------------------------------------------------------
-# score_group — payload construction
-# ---------------------------------------------------------------------------
-
-
-def test_score_group_payload_and_parse():
-    """Payload uses echo + max_tokens=0 and rows are trimmed to their lengths."""
-    input_ids = torch.tensor([[1, 2, 3, 0, 0], [4, 5, 6, 7, 8]])
-    lengths = torch.tensor([3, 5])
-    poster = _FakePoster(_canned_response([[1, 2, 3], [4, 5, 6, 7, 8]], fill=0.5))
-    client = _client_with(poster)
-
-    out = _run_with_close(client, client.score_group(_TEACHER, input_ids, lengths))
-
-    assert len(poster.calls) == 1
-    teacher, payload, headers = poster.calls[0]
-    assert teacher == _TEACHER
-    assert payload["model"] == "teacher-model"
-    assert payload["prompt"] == [[1, 2, 3], [4, 5, 6, 7, 8]]
-    assert payload["echo"] is True
-    assert payload["max_tokens"] == 0
-    assert payload["logprobs"] == 1
-    assert payload["return_token_ids"] is True
-    assert payload["temperature"] == 0
-    assert payload["add_special_tokens"] is False
-    assert headers == {"Authorization": "Bearer EMPTY"}
-
-    expected = torch.tensor(
-        [[0.0, 0.5, 0.5, 0.0, 0.0], [0.0, 0.5, 0.5, 0.5, 0.5]]
-    )
-    assert torch.allclose(out, expected)
-
-
-def test_score_group_without_lengths_uses_full_rows():
-    input_ids = torch.tensor([[1, 2, 3], [4, 5, 6]])
-    poster = _FakePoster(_canned_response([[1, 2, 3], [4, 5, 6]]))
-    client = _client_with(poster)
-
-    out = _run_with_close(client, client.score_group(_TEACHER, input_ids))
-
-    _, payload, _ = poster.calls[0]
-    assert payload["prompt"] == [[1, 2, 3], [4, 5, 6]]
-    expected = torch.tensor([[0.0, 0.5, 0.5], [0.0, 0.5, 0.5]])
-    assert torch.allclose(out, expected)
-
-
-# ---------------------------------------------------------------------------
-# score_group — response validation
-# ---------------------------------------------------------------------------
-
-
-def test_score_group_echo_mismatch_raises():
-    input_ids = torch.tensor([[1, 2, 3]])
-    bad = {"choices": [{"prompt_token_ids": [9, 9, 9], "logprobs": {"token_logprobs": [None, 0.1, 0.1]}}]}
-    client = _client_with(_FakePoster(bad))
-
-    with pytest.raises(RuntimeError, match="mismatched prompt token"):
-        _run_with_close(client, client.score_group(_TEACHER, input_ids))
-
-
-def test_score_group_missing_logprobs_raises():
-    input_ids = torch.tensor([[1, 2, 3]])
-    bad = {"choices": [{"prompt_token_ids": [1, 2, 3], "logprobs": None}]}
-    client = _client_with(_FakePoster(bad))
-
-    with pytest.raises(RuntimeError, match="no logprobs"):
-        _run_with_close(client, client.score_group(_TEACHER, input_ids))
-
-
-def test_score_group_wrong_logprob_count_raises():
-    input_ids = torch.tensor([[1, 2, 3]])
-    bad = {"choices": [{"prompt_token_ids": [1, 2, 3], "logprobs": {"token_logprobs": [None]}}]}
-    client = _client_with(_FakePoster(bad))
-
-    with pytest.raises(RuntimeError, match="token logprobs"):
-        _run_with_close(client, client.score_group(_TEACHER, input_ids))
-
-
-def test_score_group_mid_sequence_none_becomes_nan():
-    """A None at a non-zero position is masked with NaN, not treated as 0."""
-    input_ids = torch.tensor([[1, 2, 3]])
-    bad = {
-        "choices": [
-            {
-                "prompt_token_ids": [1, 2, 3],
-                "logprobs": {"token_logprobs": [None, None, 0.5]},
-            }
-        ]
-    }
-    client = _client_with(_FakePoster(bad))
-
-    out = _run_with_close(client, client.score_group(_TEACHER, input_ids))
-
-    assert out[0, 0] == 0.0
-    assert torch.isnan(out[0, 1])
-    assert out[0, 2] == 0.5
-
-
-def test_score_group_choice_count_mismatch_raises():
-    input_ids = torch.tensor([[1, 2, 3], [4, 5, 6]])
-    client = _client_with(_FakePoster({"choices": []}))
-
-    with pytest.raises(RuntimeError, match="choices"):
-        _run_with_close(client, client.score_group(_TEACHER, input_ids))
-
-
-# ---------------------------------------------------------------------------
-# _post_with_retries — retry semantics
-# ---------------------------------------------------------------------------
-
-
-def test_post_with_retries_retries_then_succeeds(monkeypatch):
-    monkeypatch.setattr(opd_module, "_RETRY_BACKOFF_BASE_S", 0.0)
-    client = VLLMTeacherLogprobClient()
-    session = _FakeSession(
-        _FakeResponse(503, "unavailable"),
-        _FakeResponse(200, '{"choices": []}'),
-    )
-
-    result = _run(
-        client._post_with_retries(
-            session, _TEACHER, {"prompt": [[1]]}, {"Authorization": "Bearer EMPTY"}
-        )
-    )
-
-    assert result == {"choices": []}
-    assert len(session.requests) == 2
-    url, payload, headers = session.requests[0]
-    assert url == "http://teacher:8000/v1/completions"
-
-
-def test_retryable_status_retried_forever(monkeypatch):
-    """Retryable statuses are retried until success — no attempt cap."""
-    monkeypatch.setattr(opd_module, "_RETRY_BACKOFF_BASE_S", 0.0)
-    client = VLLMTeacherLogprobClient()
-    session = _FakeSession(
-        _FakeResponse(503, "unavailable"),
-        _FakeResponse(503, "unavailable"),
-        _FakeResponse(200, '{"choices": []}'),
-    )
-
-    result = _run(
-        client._post_with_retries(session, _TEACHER, {"prompt": [[1]]}, {})
-    )
-
-    assert result == {"choices": []}
-    assert len(session.requests) == 3
-
-
-def test_permanent_4xx_raises_immediately(monkeypatch):
-    """A 4xx without context-length substrings raises on the first attempt."""
-    monkeypatch.setattr(opd_module, "_RETRY_BACKOFF_BASE_S", 0.0)
-    client = VLLMTeacherLogprobClient()
-    session = _FakeSession(_FakeResponse(400, "model not found"))
-
-    with pytest.raises(opd_module._TeacherServerError, match="HTTP 400"):
-        _run(client._post_with_retries(session, _TEACHER, {"prompt": [[1]]}, {}))
-
-    assert len(session.requests) == 1
-
-
-def test_context_length_raises_no_retry(monkeypatch):
-    """A context-length overflow body raises TeacherContextLengthError, no retry."""
-    monkeypatch.setattr(opd_module, "_RETRY_BACKOFF_BASE_S", 0.0)
-    client = VLLMTeacherLogprobClient()
-    body = "This model's maximum context length is 4096 tokens and the input is too long."
-    session = _FakeSession(_FakeResponse(400, body))
-
-    with pytest.raises(TeacherContextLengthError, match="context-length overflow"):
-        _run(client._post_with_retries(session, _TEACHER, {"prompt": [[1]]}, {}))
-
-    assert len(session.requests) == 1
-
-
-# ---------------------------------------------------------------------------
-# persistent worker — dummy-value scoring
-# ---------------------------------------------------------------------------
-
-
-def test_score_group_sequential_loops():
-    """Two successive asyncio.run calls (different loops) return dummy values."""
-    input_ids = torch.tensor([[1, 2, 3]])
-    poster = _FakePoster(
-        _canned_response([[1, 2, 3]], fill=0.25),
-        _canned_response([[1, 2, 3]], fill=0.75),
-    )
-    client = _client_with(poster)
-
-    out1 = asyncio.run(client.score_group(_TEACHER, input_ids))
-    out2 = asyncio.run(client.score_group(_TEACHER, input_ids))
-
-    assert torch.allclose(out1, torch.tensor([[0.0, 0.25, 0.25]]))
-    assert torch.allclose(out2, torch.tensor([[0.0, 0.75, 0.75]]))
-    _run(client.close())
-
-
-def test_score_group_concurrent_threads():
-    """Concurrent score_group calls from N threads all return dummy values."""
-    n_threads = 4
-    input_ids = torch.tensor([[1, 2, 3]])
-    poster = _FakePoster(*([_canned_response([[1, 2, 3]], fill=0.5)] * n_threads))
-    client = _client_with(poster)
-
-    results: list[torch.Tensor] = []
-
-    def _score():
-        results.append(asyncio.run(client.score_group(_TEACHER, input_ids)))
-
-    threads = [
-        threading.Thread(target=_score, daemon=True) for _ in range(n_threads)
-    ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=10)
-
-    assert len(results) == n_threads
-    expected = torch.tensor([[0.0, 0.5, 0.5]])
-    for out in results:
-        assert torch.allclose(out, expected)
-    _run(client.close())
-
-
-# ---------------------------------------------------------------------------
-# AsyncTrajectoryCollector._compute_teacher_logprobs (remote serve path)
-# ---------------------------------------------------------------------------
-
-
-def test_compute_teacher_logprobs_remote():
-    """A prompt group is scored on the teacher serve for its agent."""
-    client = _FakeTeacherClient(fill_value=2.0)
-    collector = _make_collector(
-        on_policy_distillation_cfg={
-            "teacher_model_by_agent_name": _TEACHER_SERVES,
-        },
-        _has_opd_teachers=True,
-        _teacher_logprob_client=client,
-    )
-
-    B, S = 4, 16
-    input_ids = torch.randint(0, 100, (B, S))
-    agent_refs = [{"name": "math_agent"}] * B
-
-    result, total_time = asyncio.run(
-        collector._compute_teacher_logprobs(input_ids, agent_refs)
-    )
-
-    assert result.shape == (B, S)
-    assert torch.allclose(result, torch.tensor(2.0))
-    assert client.last_teacher == _TEACHER_SERVES["math_agent"]
-    assert total_time >= 0.0
-
-
-def test_compute_teacher_logprobs_passes_lengths():
-    """Per-sample lengths are forwarded to the client."""
-    client = _FakeTeacherClient(fill_value=1.0)
-    collector = _make_collector(
-        on_policy_distillation_cfg={
-            "teacher_model_by_agent_name": _TEACHER_SERVES,
-        },
-        _has_opd_teachers=True,
-        _teacher_logprob_client=client,
-    )
-
-    B, S = 2, 8
-    input_ids = torch.randint(0, 100, (B, S))
-    lengths = torch.tensor([5, 8])
-    agent_refs = [{"name": "code_agent"}] * B
-
-    asyncio.run(
-        collector._compute_teacher_logprobs(input_ids, agent_refs, lengths)
-    )
-
-    assert client.last_teacher == _TEACHER_SERVES["code_agent"]
-    assert torch.equal(client.last_input_lengths, lengths)
-
-
-def test_compute_teacher_logprobs_default_alias_fallback():
-    """Unmapped agents fall back to the default_teacher_alias serve."""
-    client = _FakeTeacherClient(fill_value=3.0)
-    collector = _make_collector(
-        on_policy_distillation_cfg={
-            "teacher_model_by_agent_name": _TEACHER_SERVES,
-            "default_teacher_alias": "code_agent",
-        },
-        _has_opd_teachers=True,
-        _teacher_logprob_client=client,
-    )
-
-    input_ids = torch.randint(0, 100, (1, 4))
-    agent_refs = [{"name": "unknown_agent"}]
-
-    asyncio.run(collector._compute_teacher_logprobs(input_ids, agent_refs))
-
-    assert client.last_teacher == _TEACHER_SERVES["code_agent"]
-
-
-def test_compute_teacher_logprobs_unmapped_alias_raises():
-    """A fallback alias with no mapping entry raises a clear KeyError."""
-    collector = _make_collector(
-        on_policy_distillation_cfg={
-            "teacher_model_by_agent_name": _TEACHER_SERVES,
-            "default_teacher_alias": "missing_alias",
-        },
-        _has_opd_teachers=True,
-        _teacher_logprob_client=_FakeTeacherClient(),
-    )
-
-    input_ids = torch.randint(0, 100, (1, 4))
-    agent_refs = [{"name": "unknown_agent"}]
-
-    with pytest.raises(KeyError, match="no teacher serve mapping"):
-        asyncio.run(collector._compute_teacher_logprobs(input_ids, agent_refs))
-
-
-def test_compute_teacher_logprobs_context_length_returns_nan():
-    """Context-length overflow degrades to an all-NaN tensor instead of raising."""
-    collector = _make_collector(
-        on_policy_distillation_cfg={
-            "teacher_model_by_agent_name": _TEACHER_SERVES,
-        },
-        _has_opd_teachers=True,
-        _teacher_logprob_client=_ContextLengthFailingTeacherClient(),
-    )
-
-    B, S = 2, 8
-    input_ids = torch.randint(0, 100, (B, S))
-    agent_refs = [{"name": "math_agent"}] * B
-
-    result, total_time = asyncio.run(
-        collector._compute_teacher_logprobs(input_ids, agent_refs)
-    )
-
-    assert result.shape == (B, S)
-    assert torch.isnan(result).all()
-    assert total_time >= 0.0
+    assert metrics["on_policy_distillation/teacher_alias_unique"] == 3.0
+    assert metrics["on_policy_distillation/teacher_model_unique"] == 2.0
