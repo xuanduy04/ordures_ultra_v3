@@ -9,6 +9,7 @@ import torch
 from nemo_rl.algorithms.utils import (
     EFFICIENCY_CATEGORIES,
     calculate_baseline_and_std_per_prompt,
+    calculate_batch_level_baseline,
     get_tokenizer,
     maybe_pad_last_batch,
     print_efficiency_summary,
@@ -514,6 +515,126 @@ def test_calculate_baseline_and_std_per_prompt_numerical_precision():
     # Std values should be finite and not NaN
     assert torch.isfinite(std).all()
     assert not torch.isnan(std).any()
+
+
+# ============================================================================
+# Tests for calculate_batch_level_baseline function
+# ============================================================================
+
+
+def test_calculate_batch_level_baseline_mean():
+    """Batch-level baseline averages over all valid samples, ignoring prompts."""
+    rewards = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    prompts = torch.tensor(
+        [
+            [1, 2, 3],  # prompt 0
+            [1, 2, 3],  # prompt 0
+            [1, 2, 3],  # prompt 0
+            [4, 5, 6],  # prompt 1
+            [4, 5, 6],  # prompt 1
+            [4, 5, 6],  # prompt 1
+        ]
+    )
+    valid_mask = torch.ones(6)
+
+    baseline = calculate_batch_level_baseline(
+        prompts, rewards, valid_mask, leave_one_out_baseline=False
+    )
+
+    expected_baseline = torch.full((6,), 3.5)
+    assert torch.allclose(baseline, expected_baseline, rtol=1e-5)
+
+
+def test_calculate_batch_level_baseline_leave_one_out():
+    """Batch-level leave-one-out excludes each sample's own reward."""
+    rewards = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    prompts = torch.arange(6).unsqueeze(1)
+    valid_mask = torch.ones(6)
+
+    baseline = calculate_batch_level_baseline(
+        prompts, rewards, valid_mask, leave_one_out_baseline=True
+    )
+
+    expected_baseline = torch.tensor([4.0, 3.8, 3.6, 3.4, 3.2, 3.0])
+    assert torch.allclose(baseline, expected_baseline, rtol=1e-5)
+
+
+def test_calculate_batch_level_baseline_valid_mask():
+    """Batch-level baseline excludes invalid samples from the average."""
+    rewards = torch.tensor([1.0, 999.0, 3.0, 4.0, 5.0, 6.0])
+    prompts = torch.arange(6).unsqueeze(1)
+    valid_mask = torch.tensor([1.0, 0.0, 1.0, 1.0, 1.0, 1.0])
+
+    baseline = calculate_batch_level_baseline(
+        prompts, rewards, valid_mask, leave_one_out_baseline=False
+    )
+
+    expected_baseline = torch.full((6,), 19.0 / 5.0)
+    assert torch.allclose(baseline, expected_baseline, rtol=1e-5)
+
+    baseline_loo = calculate_batch_level_baseline(
+        prompts, rewards, valid_mask, leave_one_out_baseline=True
+    )
+
+    expected_loo = torch.tensor([4.5, 3.8, 4.0, 3.75, 3.5, 3.25])
+    assert torch.allclose(baseline_loo, expected_loo, rtol=1e-5)
+
+
+def test_calculate_batch_level_baseline_single_valid_sample():
+    """Exactly one valid sample falls back to its own reward (zero advantage)."""
+    rewards = torch.tensor([2.0, 4.0])
+    prompts = torch.arange(2).unsqueeze(1)
+    valid_mask = torch.tensor([1.0, 0.0])
+
+    baseline = calculate_batch_level_baseline(
+        prompts, rewards, valid_mask, leave_one_out_baseline=True
+    )
+
+    expected_baseline = torch.tensor([2.0, 2.0])
+    assert torch.allclose(baseline, expected_baseline, rtol=1e-5)
+
+
+def test_calculate_batch_level_baseline_no_valid_samples():
+    """No valid samples returns a copy of the rewards, yielding zero advantages."""
+    rewards = torch.tensor([1.0, 2.0])
+    prompts = torch.arange(2).unsqueeze(1)
+    valid_mask = torch.zeros(2)
+
+    baseline = calculate_batch_level_baseline(
+        prompts, rewards, valid_mask, leave_one_out_baseline=True
+    )
+
+    assert torch.equal(baseline, rewards)
+    assert baseline is not rewards
+
+
+def test_calculate_batch_level_baseline_empty_input():
+    """Batch-level baseline handles empty tensors."""
+    rewards = torch.tensor([])
+    prompts = torch.empty(0, 3, dtype=torch.long)
+    valid_mask = torch.tensor([])
+
+    baseline = calculate_batch_level_baseline(prompts, rewards, valid_mask)
+
+    assert baseline.shape == torch.Size([0])
+
+
+def test_calculate_batch_level_baseline_cuda_compatibility():
+    """Batch-level baseline works with CUDA tensors if available."""
+    if not torch.cuda.is_available():
+        pytest.skip("CUDA not available")
+
+    rewards = torch.tensor([1.0, 2.0, 3.0, 4.0]).cuda()
+    prompts = torch.arange(4).unsqueeze(1).cuda()
+    valid_mask = torch.ones(4).cuda()
+
+    baseline = calculate_batch_level_baseline(
+        prompts, rewards, valid_mask, leave_one_out_baseline=False
+    )
+
+    assert baseline.device.type == "cuda"
+    expected_baseline = torch.full((4,), 2.5).cuda()
+    assert torch.allclose(baseline, expected_baseline, rtol=1e-5)
 
 
 class TestPrintEfficiencySummary:

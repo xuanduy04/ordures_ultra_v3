@@ -147,6 +147,44 @@ def calculate_baseline_and_std_per_prompt(
     return baseline, std
 
 
+def calculate_batch_level_baseline(
+    rewards: torch.Tensor,
+    valid_mask: torch.Tensor,
+    leave_one_out_baseline: bool = True,
+) -> torch.Tensor:
+    """Function to compute a single baseline for the whole batch.
+
+    Unlike calculate_baseline_and_std_per_prompt, this function ignores prompt
+    identity and pools every valid (prompt, response) pair in the batch. This is
+    useful for single-rollout settings where a per-prompt baseline is undefined.
+
+    rewards:    tensor (b,)       Float-valued rewards. May be on any device
+    valid_mask: tensor (b,)       Vector of 0/1, where 0 is to ignore and 1 is to keep
+    leave_one_out_baseline: bool  Compute an unbiased baseline by leaving out the sample that the
+                                  baseline is for (like RLOO https://arxiv.org/abs/2402.14740)
+
+    Returns:
+    tensor (b,) of baselines on the same device as 'rewards'
+    """
+    valid_mask = valid_mask.to(dtype=rewards.dtype)
+    valid_rewards = rewards * valid_mask
+    num_valid = valid_mask.sum()
+
+    if num_valid.item() == 0:
+        return rewards.clone()
+
+    if leave_one_out_baseline:
+        baseline = (valid_rewards.sum() - valid_rewards) / (
+            num_valid - valid_mask
+        ).clamp(min=1.0)
+        if num_valid.item() <= 1:
+            baseline = torch.where(valid_mask.bool(), rewards, baseline)
+    else:
+        baseline = (valid_rewards.sum() / num_valid).expand_as(rewards)
+
+    return baseline
+
+
 def surpress_user_warnings(f):  # type: ignore
     @wraps(f)
     def wrapper(*args, **kwargs):  # type: ignore

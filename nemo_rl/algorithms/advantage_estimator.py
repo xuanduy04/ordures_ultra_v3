@@ -17,7 +17,11 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from nemo_rl.algorithms.utils import calculate_baseline_and_std_per_prompt, calculate_kl
+from nemo_rl.algorithms.utils import (
+    calculate_baseline_and_std_per_prompt,
+    calculate_batch_level_baseline,
+    calculate_kl,
+)
 
 if TYPE_CHECKING:
     from torch import Tensor
@@ -97,6 +101,11 @@ class ReinforceAdvantageEstimator(BaseAdvantageEstimator):
     def __init__(self, estimator_config: dict, loss_config: dict | None = None):
         # We allow .get() here, this is an exception.
         self.minus_baseline = estimator_config.get("minus_baseline", False)
+        self.leave_one_out_baseline = estimator_config.get("leave_one_out_baseline", False)
+        self.batch_level_baseline = estimator_config.get("batch_level_baseline", False)
+
+        if (not self.minus_baseline) and(self.batch_level_baseline or self.leave_one_out_baseline):
+            print("[WARNING] minus_baseline=False. Ignoring batch_level_baseline and leave_one_out_baseline settings")
 
     def compute_advantage(
         self,
@@ -120,16 +129,23 @@ class ReinforceAdvantageEstimator(BaseAdvantageEstimator):
             Tensor of shape [batch_size, seq_len].
         """
         if self.minus_baseline:
-            baseline, _ = calculate_baseline_and_std_per_prompt(
-                prompt_ids,
-                rewards,
-                torch.ones_like(rewards),
-                leave_one_out_baseline=False,
-            )
+            if self.batch_level_baseline:
+                baseline = calculate_batch_level_baseline(
+                    rewards,
+                    torch.ones_like(rewards),
+                    leave_one_out_baseline=self.leave_one_out_baseline,
+                )
+            else:
+                baseline, _ = calculate_baseline_and_std_per_prompt(
+                    prompt_ids,
+                    rewards,
+                    torch.ones_like(rewards),
+                    leave_one_out_baseline=self.leave_one_out_baseline,
+                )
             advantages = rewards - baseline
         else:
             advantages = rewards
-
+        advantages = torch.nan_to_num(advantages, nan=0.0, posinf=0.0, neginf=0.0)
         # In sequence-level REINFORCE, every action/token in the sampled
         # response receives the same sequence return.
         advantages = advantages.unsqueeze(-1).expand_as(mask)
@@ -265,11 +281,10 @@ class OPDAdvantageEstimator(BaseAdvantageEstimator):
             if self.orm_estimator_name not in self.ORM_ESTIMATOR_MAPPING:
                 raise ValueError(
                     f"Unsupported ORM advantage estimator: {self.orm_estimator_name!r}. "
-                    f"Supported estimators are: {sorted(self.ORM_ESTIMATOR_MAPPING)}"
+                    f"Supported estimators are: {sorted(self.ORM_ESTIMATOR_MAPPING.keys())}"
                 )
             self.orm_estimator = self.ORM_ESTIMATOR_MAPPING[self.orm_estimator_name](
-                orm_estimator_cfg,
-                loss_config
+                orm_estimator_cfg, loss_config
             )
 
         self.last_metrics: dict[str, float] = {}

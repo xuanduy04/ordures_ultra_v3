@@ -552,7 +552,10 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
 
         no_grad.__exit__(None, None, None)
         self.timer.stop("get_logprobs")
-        return BatchedDataDict[LogprobOutputSpec](logprobs=logprobs).to("cpu")
+        result = BatchedDataDict[LogprobOutputSpec](logprobs=logprobs).to("cpu")
+        gc.collect()
+        torch.cuda.empty_cache()
+        return result
 
     @contextmanager
     def use_reference_model(self):
@@ -697,9 +700,12 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
 
         no_grad.__exit__(None, None, None)
         self.timer.stop("get_topk_logits")
-        return BatchedDataDict.from_batches(
+        result = BatchedDataDict.from_batches(
             [{"topk_logits": topk_logits.cpu(), "topk_indices": topk_indices.cpu()}]
         )
+        gc.collect()
+        torch.cuda.empty_cache()
+        return result
 
     @wrap_with_nvtx_name("megatron_policy_worker/generate")
     def generate(
@@ -1134,6 +1140,9 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         torch.cuda.empty_cache()
 
     def prepare_for_training(self, *args, **kwargs):
+        gc.collect()
+        torch.cuda.empty_cache()
+
         # onload models and optimizer state to cuda
         self.model = self.move_model(
             self.model, "cuda", move_grads=True, move_params=True
@@ -1329,6 +1338,9 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
                 if self.scheduler is not None:
                     scheduler_to_save = self.scheduler
 
+            gc.collect()
+            torch.cuda.empty_cache()
+
             is_training = self.model.training
             if not is_training:
                 self.model.eval()
@@ -1363,6 +1375,8 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         finally:
             self.mcore_state.cfg.checkpoint.save = original_save_path
             self.timer.stop("save_checkpoint")
+            gc.collect()
+            torch.cuda.empty_cache()
 
     def finalize_async_save(self):
         """Block until the in-flight async write completes and run finalize_fns.
@@ -1375,6 +1389,8 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
             ckpt_cfg=self.mcore_state.cfg.checkpoint,
             blocking=True,
         )
+        gc.collect()
+        torch.cuda.empty_cache()
 
     def terminate_async_checkpoint_worker(self):
         """Block until any in-flight write completes, then shut down the persistent worker.

@@ -498,8 +498,18 @@ def test_opd_orm_weight_without_estimator_config_raises():
         _make_estimator(orm_advantage_weight=1.0, orm_estimator_name=None)
 
 
-def _make_reinforce_estimator(minus_baseline=False):
-    return ReinforceAdvantageEstimator({"minus_baseline": minus_baseline})
+def _make_reinforce_estimator(
+    minus_baseline=False,
+    leave_one_out_baseline=False,
+    batch_level_baseline=False,
+):
+    return ReinforceAdvantageEstimator(
+        {
+            "minus_baseline": minus_baseline,
+            "leave_one_out_baseline": leave_one_out_baseline,
+            "batch_level_baseline": batch_level_baseline,
+        }
+    )
 
 
 def test_reinforce_no_baseline():
@@ -535,6 +545,65 @@ def test_reinforce_minus_baseline():
         [1.0] * S,
     ], dtype=torch.float32)
     torch.testing.assert_close(adv, expected)
+
+
+def test_reinforce_batch_level_baseline():
+    """batch_level_baseline=True subtracts the mean over the batch, not per prompt."""
+    estimator = _make_reinforce_estimator(
+        minus_baseline=True, batch_level_baseline=True
+    )
+    B, S = 4, 4
+    prompt_ids = torch.tensor([[0], [0], [1], [1]])
+    rewards = torch.tensor([1.0, 3.0, 5.0, 7.0])
+    mask = torch.ones(B, S)
+
+    adv = estimator.compute_advantage(prompt_ids, rewards, mask)
+
+    # batch mean = 4.0 -> adv = [-3, -1, 1, 3]
+    expected = torch.tensor([
+        [-3.0] * S,
+        [-1.0] * S,
+        [1.0] * S,
+        [3.0] * S,
+    ])
+    torch.testing.assert_close(adv, expected)
+
+
+def test_reinforce_batch_level_leave_one_out():
+    """batch_level_baseline + leave_one_out_baseline uses global leave-one-out."""
+    estimator = _make_reinforce_estimator(
+        leave_one_out_baseline=True, batch_level_baseline=True
+    )
+    B, S = 4, 4
+    prompt_ids = torch.tensor([[0], [0], [1], [1]])
+    rewards = torch.tensor([2.0, 4.0, 6.0, 8.0])
+    mask = torch.ones(B, S)
+
+    adv = estimator.compute_advantage(prompt_ids, rewards, mask)
+
+    # baseline = (20 - r) / 3 -> adv = [-4, -4/3, 4/3, 4]
+    expected = torch.tensor([
+        [-4.0] * S,
+        [-4.0 / 3.0] * S,
+        [4.0 / 3.0] * S,
+        [4.0] * S,
+    ])
+    torch.testing.assert_close(adv, expected, rtol=1e-5, atol=1e-6)
+
+
+def test_reinforce_batch_level_leave_one_out_single_sample():
+    """Global leave-one-out with a single sample in the batch yields zero advantage."""
+    estimator = _make_reinforce_estimator(
+        leave_one_out_baseline=True, batch_level_baseline=True
+    )
+    B, S = 1, 3
+    prompt_ids = torch.arange(B).unsqueeze(1)
+    rewards = torch.tensor([2.0])
+    mask = torch.ones(B, S)
+
+    adv = estimator.compute_advantage(prompt_ids, rewards, mask)
+
+    torch.testing.assert_close(adv, torch.zeros(B, S))
 
 
 def test_reinforce_mask_applied():
