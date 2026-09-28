@@ -1,5 +1,5 @@
-
 import gc
+import inspect
 import os
 import re
 import warnings
@@ -20,6 +20,11 @@ from megatron.bridge.training.utils.train_utils import (
 )
 from megatron.bridge.utils.common_utils import get_rank_safe
 from megatron.core import parallel_state
+from megatron.core.dist_checkpointing.strategies.async_utils import _disable_gc
+from megatron.core.dist_checkpointing.strategies.filesystem_async import (
+    FileSystemWriterAsync,
+    _write_item,
+)
 from megatron.core.distributed import DistributedDataParallel
 from megatron.core.distributed.fsdp.mcore_fsdp_adapter import (
     FullyShardedDataParallel as custom_FSDP,
@@ -86,6 +91,86 @@ from nemo_rl.utils.nsys import wrap_with_nvtx_name
 from nemo_rl.utils.nvml import log_gpu_memory_diagnostics
 from nemo_rl.utils.packed_tensor import packed_broadcast_producer
 from nemo_rl.utils.timer import Timer
+
+
+def _nrl_stream_preload_tensors(write_buckets, non_blocking=True):
+    """Return write buckets unchanged so tensor D2H staging happens inside the writer."""
+    return write_buckets
+
+
+@_disable_gc()
+def _nrl_stream_write_preloaded_data(
+    transform_list,
+    local_proc_idx,
+    write_bucket,
+    results_queue,
+    count_queue,
+    use_fsync,
+    **kwargs,
+):
+    """Write a bucket, moving each GPU tensor to CPU immediately before it is written."""
+    use_msc = kwargs.get("use_msc", False)
+
+    local_results = []
+    try:
+        file_name, storage_key, (bytes_data, tensor_data) = write_bucket
+        extra_kwargs = {}
+        if "serialization_format" in inspect.signature(_write_item).parameters:
+            from torch.distributed.checkpoint.filesystem import SerializationFormat
+
+            extra_kwargs["serialization_format"] = SerializationFormat.TORCH_SAVE
+        if use_msc:
+            import multistorageclient as msc
+
+            open_file = msc.open
+        else:
+            open_file = open
+        with open_file(file_name, "wb") as stream:
+            for write_item, data in bytes_data:
+                local_results.append(
+                    _write_item(
+                        *transform_list,
+                        stream,
+                        data,
+                        write_item,
+                        storage_key,
+                        **extra_kwargs,
+                    )
+                )
+
+            for write_item, tensor in tensor_data:
+                if not tensor.is_cpu:
+                    tensor = tensor.to("cpu")
+                local_results.append(
+                    _write_item(
+                        *transform_list,
+                        stream,
+                        tensor,
+                        write_item,
+                        storage_key,
+                        **extra_kwargs,
+                    )
+                )
+                del tensor
+
+            if use_fsync:
+                if use_msc:
+                    stream.fsync()
+                else:
+                    os.fsync(stream.fileno())
+        local_output = (local_proc_idx, local_results)
+    except Exception as e:
+        local_output = (local_proc_idx, e)
+    if results_queue is not None:
+        results_queue.put(local_output)
+    if count_queue is not None:
+        count_queue.get()
+        count_queue.task_done()
+    return local_output
+
+
+FileSystemWriterAsync.preload_tensors = staticmethod(_nrl_stream_preload_tensors)
+FileSystemWriterAsync.write_preloaded_data = staticmethod(_nrl_stream_write_preloaded_data)
 
 TokenizerType = TypeVar("TokenizerType", bound=PreTrainedTokenizerBase)
 
@@ -475,6 +560,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
             if mtp_metrics:
                 metrics["mtp_metrics"] = mtp_metrics
         self.timer.stop("train")
+        gc.collect()
         return metrics
 
     @wrap_with_nvtx_name("megatron_policy_worker/get_logprobs")
@@ -536,6 +622,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         if is_pipeline_last_stage(ignore_virtual=True):
             all_log_probs_padded = []
             all_logprobs = [l["logprobs"] for l in list_of_logprobs]
+            del list_of_logprobs
             for lp in all_logprobs:
                 padding_needed = seq_length - lp.shape[1]
                 if padding_needed > 0:
@@ -543,8 +630,9 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
                         lp, (0, padding_needed), mode="constant", value=0.0
                     )
                 all_log_probs_padded.append(lp)
-
+            del all_logprobs
             logprobs = torch.cat(all_log_probs_padded, dim=0)
+            del all_log_probs_padded
             tensors = {"logprobs": logprobs}
         else:
             tensors = {"logprobs": None}
@@ -553,6 +641,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         no_grad.__exit__(None, None, None)
         self.timer.stop("get_logprobs")
         result = BatchedDataDict[LogprobOutputSpec](logprobs=logprobs).to("cpu")
+        del logprobs
         gc.collect()
         torch.cuda.empty_cache()
         return result
@@ -1118,6 +1207,10 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         )
 
     def prepare_for_lp_inference(self):
+        self.finalize_async_save()
+        gc.collect()
+        torch.cuda.empty_cache()
+
         self.model = self.move_model(self.model, "cuda", move_grads=False)
         self.model.eval()
 
@@ -1140,6 +1233,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         torch.cuda.empty_cache()
 
     def prepare_for_training(self, *args, **kwargs):
+        self.finalize_async_save()
         gc.collect()
         torch.cuda.empty_cache()
 
@@ -1167,6 +1261,8 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         self.timer.start("offload_before_refit")
         no_grad = torch.no_grad()
         no_grad.__enter__()
+        gc.collect()
+        torch.cuda.empty_cache()
         allocated = torch.cuda.memory_allocated() / (1024**3)  # Convert to GB
         reserved = torch.cuda.memory_reserved() / (1024**3)  # Convert to GB
         print(
@@ -1320,6 +1416,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         is_async = self.mcore_state.cfg.checkpoint.async_save
 
         try:
+            gc.collect()
             # Block until any previous async save is fully written to disk.
             # With sync save this is a no-op.
             maybe_finalize_async_save(

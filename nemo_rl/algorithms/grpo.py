@@ -1,4 +1,3 @@
-
 import gc
 import json
 import os
@@ -2171,6 +2170,10 @@ def async_grpo_train(
                         }
                     )
                     train_data.to("cpu")
+                    flat_token_mask = flat_messages["token_loss_mask"]
+                    # Save content for logging before deleting flat_messages
+                    flat_messages_content = flat_messages.get("content", [])
+                    del flat_messages
 
                 # Pad teacher logprobs to match train_data sequence length.
                 # from_batches pads to max(S_i); train_data may be longer
@@ -2214,6 +2217,8 @@ def async_grpo_train(
                 else:
                     print("▶ Preparing for logprob inference...")
                     with timer.time("logprob_inference_prep"):
+                        gc.collect()
+                        torch.cuda.empty_cache()
                         policy.prepare_for_lp_inference()
 
                 print("▶ Computing logprobs...", flush=True)
@@ -2428,10 +2433,6 @@ def async_grpo_train(
                         trajectory_collector.resume.remote()
                 # Get flat advantages and token mask for masked metrics computation
                 flat_advantages = train_data["advantages"]
-                flat_token_mask = flat_messages["token_loss_mask"]
-                # Save content for logging before deleting flat_messages
-                flat_messages_content = flat_messages.get("content", [])
-                del flat_messages
 
                 # Filter advantages using token mask (only valid response tokens)
                 response_advantages = torch.masked_select(
@@ -2455,6 +2456,10 @@ def async_grpo_train(
                     if response_advantages.numel() > 0
                     else 0.0,
                 }
+                del flat_advantages
+                del flat_token_mask
+                del response_advantages
+                gc.collect()
                 if "moe_metrics" in train_results:
                     metrics.update(
                         {f"moe/{k}": v for k, v in train_results["moe_metrics"].items()}
@@ -2591,6 +2596,8 @@ def async_grpo_train(
                             actual_dataloader_state,
                             os.path.join(checkpoint_path, "train_dataloader.pt"),
                         )
+                        del actual_dataloader_state
+                        gc.collect()
                         # Save replay buffer state for resumption
                         print("📦 Saving replay buffer state...")
                         replay_buffer_state = ray.get(
@@ -2603,6 +2610,8 @@ def async_grpo_train(
                         print(
                             f"✅ Saved replay buffer with {len(replay_buffer_state['trajectories'])} trajectories"
                         )
+                        del replay_buffer_state
+                        gc.collect()
                         rollouts_state = ray.get(
                             trajectory_collector.get_rollouts_state.remote()
                         )
@@ -2610,6 +2619,8 @@ def async_grpo_train(
                             rollouts_state,
                             os.path.join(checkpoint_path, "rollouts.pt"),
                         )
+                        del rollouts_state
+                        gc.collect()
                         checkpointer.begin_finalization(
                             checkpoint_path,
                             wait_fn=policy.finalize_async_save,
@@ -2657,6 +2668,7 @@ def async_grpo_train(
             del log_data
             del train_data
             del flat_messages_content
+            gc.collect()
 
             timing_metrics: dict[str, float] = timer.get_timing_metrics(
                 reduction_op="sum"

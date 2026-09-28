@@ -1,4 +1,4 @@
-
+import gc
 import os
 import warnings
 from collections import defaultdict
@@ -339,9 +339,13 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
                     "pipeline_parallel",
                 ],
             )
+        del sharded_data
+        gc.collect()
         logprobs: BatchedDataDict[LogprobOutputSpec] = BatchedDataDict.from_batches(
             self.worker_group.get_all_worker_results(futures)
         )
+        del futures
+        gc.collect()
 
         # dynamic batching sorts the inputs by sequence length to improve load balancing,
         # so change it back here
@@ -415,11 +419,15 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
                 ],
                 common_kwargs={"micro_batch_size": micro_batch_size},
             )
+        del sharded_data
+        gc.collect()
         logprobs: BatchedDataDict[ReferenceLogprobOutputSpec] = (
             BatchedDataDict.from_batches(
                 self.worker_group.get_all_worker_results(futures)
             )
         )
+        del futures
+        gc.collect()
 
         # dynamic batching sorts the inputs by sequence length to improve load balancing,
         # so change it back here
@@ -486,6 +494,8 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
                 ],
                 common_kwargs={"k": k, "micro_batch_size": micro_batch_size},
             )
+        del sharded_data
+        gc.collect()
 
         # Avoid BatchedDataDict.from_batches here because it flattens rows for tensors with ndim>2 ([B,S,k] -> [B,S*k]).
         worker_batches = self.worker_group.get_all_worker_results(futures)
@@ -495,6 +505,11 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
         stacked: BatchedDataDict[TopkLogitsOutputSpec] = BatchedDataDict()
         stacked["topk_logits"] = torch.cat(all_topk_logits, dim=0)
         stacked["topk_indices"] = torch.cat(all_topk_indices, dim=0)
+        del futures
+        del worker_batches
+        del all_topk_logits
+        del all_topk_indices
+        gc.collect()
 
         if self.use_dynamic_batches or self.use_sequence_packing:
             stacked.reorder_data(unsorted_data_indices)
@@ -573,7 +588,11 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
                     "mbs": micro_batch_size,
                 },
             )
+        del sharded_data
+        gc.collect()
         results = self.worker_group.get_all_worker_results(futures)
+        del futures
+        gc.collect()
 
         # Aggregate the results
         aggregated_results = {
