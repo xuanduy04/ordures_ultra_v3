@@ -1169,6 +1169,39 @@ def _create_advantage_estimator(master_config: MasterConfig):
     return adv_estimator
 
 
+def _malloc_trim() -> None:
+    """Return freed glibc heap arenas to the OS to reduce RSS.
+
+    CPython frees objects back to glibc, but glibc often retains the arena for
+    reuse, so RSS stays at its high-water mark. This is a no-op if malloc_trim
+    is unavailable.
+    """
+    try:
+        import ctypes
+
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
+
+
+def _log_rss(tag: str) -> None:
+    """Print current and peak resident set size for memory diagnostics."""
+    try:
+        import resource
+
+        with open("/proc/self/statm") as statm_file:
+            resident_pages = int(statm_file.read().split()[1])
+        page_size_bytes = os.sysconf("SC_PAGE_SIZE")
+        current_gib = resident_pages * page_size_bytes / (1024**3)
+        peak_gib = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024**2)
+        print(
+            f"  [rss] {tag}: current={current_gib:.2f} GiB, peak={peak_gib:.2f} GiB",
+            flush=True,
+        )
+    except Exception:
+        pass
+
+
 def refit_policy_generation(
     policy: ColocatablePolicyInterface,
     policy_generation: GenerationInterface,
@@ -1188,6 +1221,8 @@ def refit_policy_generation(
         timer: Optional Timer used to time the prepare/transfer/update phase
         kv_scales: Optional dictionary of KV cache scales for FP8 quantization.
     """
+    gc.collect()
+    _malloc_trim()
     if colocated_inference:
         policy.offload_before_refit()
         policy_generation.prepare_for_generation(tags=["weights"])
@@ -1233,6 +1268,8 @@ def refit_policy_generation(
             update_success = all(result for result in results if result is not None)
             policy.prepare_for_training()
 
+        del futures_train, futures_inference, results
+
         # check if update is successful
         if not update_success:
             error_tag = "cuda-ipc" if colocated_inference else "nccl"
@@ -1243,9 +1280,15 @@ def refit_policy_generation(
             )
             raise RuntimeError(error_message)
 
+    gc.collect()
+
     if colocated_inference:
         policy.offload_after_refit()
         policy_generation.prepare_for_generation(tags=["kv_cache"])
+
+    gc.collect()
+    _malloc_trim()
+    _log_rss("refit/exit")
 
 
 def compute_and_apply_seq_logprob_error_masking(
@@ -1539,6 +1582,8 @@ def validate(
             "rewards": total_rewards,
         }
         logger.log_batched_dict_as_jsonl(val_log_data, f"val_data_step{step}.jsonl")
+        del val_log_data
+    del all_message_logs, total_rewards, total_lengths
 
     # Make sure to reset the timer after validation
     timer.reset()
@@ -1546,6 +1591,8 @@ def validate(
     # Explicit GPU memory cleanup after validation
     gc.collect()
     torch.cuda.empty_cache()
+    _malloc_trim()
+    _log_rss("validation/exit")
 
     return val_metrics, timing_metrics
 
@@ -1981,6 +2028,7 @@ def async_grpo_train(
                                     "(high = many turns per trajectory)"
                                 )
 
+                        del buffer_debug
                         collector_status = ray.get(trajectory_collector.get_status.remote())
                         if collector_status["data_exhausted"] and not collector_status["running"] and collector_status["inflight_workers"] == 0:
                             raise RuntimeError(
@@ -2047,6 +2095,9 @@ def async_grpo_train(
                             # For mean/rate metrics, take the average
                             aggregated_rollout_metrics[k] = sum(v) / len(v)
                     rollout_metrics = aggregated_rollout_metrics
+                    del sample_result, trajectories, per_prompt_batches
+                    gc.collect()
+                    _malloc_trim()
 
                 # Enforce fixed training batch: num_prompts_per_step * num_generations_per_prompt
                 expected_batch_size = (
@@ -2289,7 +2340,7 @@ def async_grpo_train(
                         generation_logprobs=train_data["generation_logprobs"],
                         sample_mask=train_data["sample_mask"],
                     )
-                    del prompt_ids_for_adv
+                    del prompt_ids_for_adv, mask, token_mask, sample_mask
 
                     # Log advantages stats
                     # Note: For GRPOAdvantageEstimator with normalize_rewards=True, these are
@@ -2340,6 +2391,12 @@ def async_grpo_train(
                                 train_data["advantages"][i, token_offset:token_offset + msg_len].add_(empty_neg_adv).clamp_(max=empty_neg_adv)
                             token_offset += msg_len
 
+                del trajectory_teacher_logprobs
+                del repeated_batch["message_log"]
+                gc.collect()
+                _malloc_trim()
+                _log_rss("pre-train")
+
                 print("▶ Preparing for training...")
                 with timer.time("training_prep"):
                     policy.prepare_for_training()
@@ -2352,6 +2409,12 @@ def async_grpo_train(
                         loss_fn,
                         timer=timer,
                     )
+
+                del train_data["reference_policy_logprobs"]
+                del fprop_logprobs, reference_logprobs
+                gc.collect()
+                _malloc_trim()
+                _log_rss("post-train")
 
                 print("🔄 Synchronizing policy weights to trajectory collector…")
                 generation_logger_metrics = None
@@ -2371,6 +2434,9 @@ def async_grpo_train(
                         )
 
                     # Only the actual refit/weight transfer should be counted as weight_sync
+                    gc.collect()
+                    _malloc_trim()
+                    _log_rss("pre-refit")
                     print("🔄 Performing policy generation refit...")
                     with timer.time("weight_sync"):
                         refit_policy_generation(
@@ -2384,6 +2450,9 @@ def async_grpo_train(
                         trajectory_collector.resume_after_refit.remote()
 
                     timer.stop("idle/refit_bubble")
+                    gc.collect()
+                    _malloc_trim()
+                    _log_rss("post-refit")
 
                 # Clear logger metrics after each refit (weight sync), starting a new logging cycle
                 if policy_generation is not None:
@@ -2424,10 +2493,11 @@ def async_grpo_train(
                         logger.log_metrics(val_metrics, step + 1, prefix="validation")
 
                         # Explicit GPU memory cleanup after validation in async mode
-                        import gc
 
                         gc.collect()
                         torch.cuda.empty_cache()
+                        _malloc_trim()
+                        _log_rss("post-validation")
 
                         # Resume trajectory collection after validation
                         trajectory_collector.resume.remote()
@@ -2459,6 +2529,7 @@ def async_grpo_train(
                 del flat_advantages
                 del flat_token_mask
                 del response_advantages
+                del advantages
                 gc.collect()
                 if "moe_metrics" in train_results:
                     metrics.update(
@@ -2494,6 +2565,7 @@ def async_grpo_train(
                     else:
                         metrics[k] = np.sum(v).item()
                 metrics.update(rollout_metrics)
+                del rollout_metrics, aggregated_rollout_metrics
                 
                 if hasattr(adv_estimator, "last_metrics") and adv_estimator.last_metrics:
                     metrics.update(adv_estimator.last_metrics)
@@ -2640,6 +2712,10 @@ def async_grpo_train(
                         with open(cp_info_path, "w") as f:
                             json.dump(cp_info, f)
 
+                        del cp_info
+                        _malloc_trim()
+                        _log_rss("post-checkpoint")
+
             # Logging
             # NeMo Gym responses can be very large and expensive to log; when
             # env.should_log_nemo_gym_responses is true, skip this jsonl (see
@@ -2668,7 +2744,10 @@ def async_grpo_train(
             del log_data
             del train_data
             del flat_messages_content
+            del repeated_batch
+            del input_lengths
             gc.collect()
+            _malloc_trim()
 
             timing_metrics: dict[str, float] = timer.get_timing_metrics(
                 reduction_op="sum"
@@ -2741,6 +2820,8 @@ def async_grpo_train(
             metrics.pop("generation_logger_metrics", None)
             for _hk in [k for k in metrics if k.startswith("histogram/")]:
                 del metrics[_hk]
+            del train_results, generation_logger_metrics
+            gc.collect()
 
             # Merge collector-side efficiency metrics and print summary
             collector_efficiency = ray.get(
@@ -2772,6 +2853,12 @@ def async_grpo_train(
             logger.log_metrics(
                 efficiency_loggable, step + 1, prefix="", step_finished=True
             )
+
+            del metrics, timing_metrics, performance_metrics, efficiency_loggable
+            del rewards
+            gc.collect()
+            _malloc_trim()
+            _log_rss("end-step")
 
             timer.reset()
             step += 1
