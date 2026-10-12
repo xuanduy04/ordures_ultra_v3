@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import multiprocessing
+import os
 import re
 import shutil
 import subprocess
 import sys
+from collections.abc import Iterator
+from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from pathlib import Path
+from typing import Any
+
+from transformers import AutoTokenizer
+from tqdm.auto import tqdm
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -17,6 +26,15 @@ RESOURCES_SERVERS_DIR = (
 
 LEN_FIELD_PATTERN = re.compile(r"len(\d+)k")
 SAM_FIELD_PATTERN = re.compile(r"sam(\d+)k")
+
+CHUNK_SIZE = 256
+INFLIGHT_TASKS_PER_WORKER = 4
+
+DATA_TYPE_SFT = "SFT"
+DATA_TYPE_RL_QA = "RL_QA"
+
+G_TOKENIZER: Any = None
+G_DATA_TYPE: str = ""
 
 
 def _preprocess_underscore_args(argv: list[str]) -> list[str]:
@@ -152,8 +170,187 @@ def _count_lines(input_path: Path) -> int:
         return _count_lines_python(input_path)
 
 
-def _round_to_thousands(value: int) -> int:
+def _extract_main_field(entry: dict, data_type: str) -> Any:
+    """Return the main field measured for *data_type*: ``messages``, ``question``, or the gym input."""
+    try:
+        if data_type == DATA_TYPE_SFT:
+            return entry["messages"]
+        if data_type == DATA_TYPE_RL_QA:
+            return entry["question"]
+        return entry["responses_create_params"]["input"]
+    except (KeyError, TypeError) as exc:
+        raise ValueError(f"Missing or invalid main field for data type {data_type}: {exc!r}") from exc
+
+
+def _init_worker(tokenizer_dir: str, data_type: str) -> None:
+    """Load the tokenizer once per worker process and store the counting settings."""
+    global G_TOKENIZER, G_DATA_TYPE
+    G_TOKENIZER = AutoTokenizer.from_pretrained(tokenizer_dir)
+    G_DATA_TYPE = data_type
+
+
+def _count_string_tokens(texts: list[str]) -> list[int]:
+    """Return the token count of each plain string in *texts*."""
+    encoded = G_TOKENIZER(texts, add_special_tokens=False)
+    return [len(ids) for ids in encoded["input_ids"]]
+
+
+def _count_conversation_tokens(conversations: list[list[dict]]) -> list[int]:
+    """Return the chat-template token count of each conversation in *conversations*.
+
+    A failed batch is retried one conversation at a time so that a single bad
+    row does not discard its whole chunk; failed rows are reported as ``-1``.
+    """
+    try:
+        encoded = G_TOKENIZER.apply_chat_template(conversations, tokenize=True, return_dict=True)
+        return [len(ids) for ids in encoded["input_ids"]]
+    except Exception as exc:
+        logger.warning(f"Batched chat-template tokenization failed ({exc}); retrying per conversation.")
+        counts: list[int] = []
+        for conversation in conversations:
+            try:
+                ids = G_TOKENIZER.apply_chat_template(conversation, tokenize=True, return_dict=True)["input_ids"]
+                counts.append(len(ids))
+            except Exception:
+                counts.append(-1)
+        return counts
+
+
+def _process_chunk(chunk: tuple[int, list[str]]) -> tuple[int, int, int]:
+    """Count the main-field tokens of one chunk of raw JSONL lines.
+
+    Returns the number of lines examined, the maximum token count seen, and
+    the number of unreadable entries skipped.
+    """
+    start_lineno, lines = chunk
+    string_positions: list[int] = []
+    string_fields: list[str] = []
+    conversation_positions: list[int] = []
+    conversation_fields: list[list[dict]] = []
+    n_errors = 0
+    max_tokens = 0
+
+    for offset, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        lineno = start_lineno + offset
+        try:
+            entry = json.loads(stripped)
+            field = _extract_main_field(entry, G_DATA_TYPE)
+        except Exception as exc:
+            n_errors += 1
+            logger.warning(f"Skipping unreadable entry at line {lineno}: {exc}")
+            continue
+        if isinstance(field, str):
+            string_positions.append(offset)
+            string_fields.append(field)
+        elif isinstance(field, (list, dict)):
+            conversation_positions.append(offset)
+            conversation_fields.append(field if isinstance(field, list) else [field])
+        else:
+            n_errors += 1
+            logger.warning(f"Skipping entry at line {lineno}: main field has unsupported type {type(field).__name__}.")
+
+    if string_fields:
+        try:
+            string_counts = _count_string_tokens(string_fields)
+        except Exception as exc:
+            string_counts = [-1] * len(string_fields)
+            logger.warning(f"Failed to tokenize {len(string_fields)} plain-text field(s) near line {start_lineno}: {exc}")
+        for offset, count in zip(string_positions, string_counts):
+            if count < 0:
+                n_errors += 1
+                logger.warning(f"Skipping entry at line {start_lineno + offset}: tokenization failed.")
+            else:
+                max_tokens = max(max_tokens, count)
+
+    if conversation_fields:
+        conversation_counts = _count_conversation_tokens(conversation_fields)
+        for offset, count in zip(conversation_positions, conversation_counts):
+            if count < 0:
+                n_errors += 1
+                logger.warning(f"Skipping entry at line {start_lineno + offset}: chat-template tokenization failed.")
+            else:
+                max_tokens = max(max_tokens, count)
+
+    return len(lines), max_tokens, n_errors
+
+
+def _resolve_worker_count() -> int:
+    """Return the number of worker processes to use, honouring CPU affinity."""
+    try:
+        return max(1, len(os.sched_getaffinity(0)))
+    except AttributeError:
+        return max(1, os.cpu_count() or 1)
+
+
+def _iter_chunks(input_path: Path, chunk_size: int) -> Iterator[tuple[int, list[str]]]:
+    """Yield ``(start_lineno, lines)`` chunks lazily from *input_path*."""
+    with input_path.open("r", encoding="utf-8") as fin:
+        start_lineno = 1
+        chunk: list[str] = []
+        for line in fin:
+            chunk.append(line)
+            if len(chunk) == chunk_size:
+                yield start_lineno, chunk
+                start_lineno += len(chunk)
+                chunk = []
+        if chunk:
+            yield start_lineno, chunk
+
+
+def _max_token_pass(
+    input_path: Path,
+    total_lines: int | None,
+    tokenizer_dir: Path,
+    data_type: str,
+) -> tuple[int, int]:
+    """Run the multiprocessing token-counting pass and return the maximum main-field token count.
+
+    Chunks are submitted lazily and at most
+    ``workers * INFLIGHT_TASKS_PER_WORKER`` tasks stay in flight, keeping memory
+    bounded on large inputs.
+    """
+    worker_count = 64
+    inflight_limit = worker_count * INFLIGHT_TASKS_PER_WORKER
+    chunks = _iter_chunks(input_path, CHUNK_SIZE)
+
+    max_tokens = 0
+    n_errors = 0
+
+    pool = ProcessPoolExecutor(
+        max_workers=worker_count,
+        mp_context=multiprocessing.get_context("fork"),
+        initializer=_init_worker,
+        initargs=(str(tokenizer_dir), data_type),
+    )
+
+    with pool, tqdm(total=total_lines, desc="Counting tokens", unit="line") as pbar:
+        pending: set[Future] = set()
+        exhausted = False
+        while pending or not exhausted:
+            if not exhausted and len(pending) < inflight_limit:
+                try:
+                    pending.add(pool.submit(_process_chunk, next(chunks)))
+                    continue
+                except StopIteration:
+                    exhausted = True
+                    continue
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                n_lines, chunk_max, chunk_errors = future.result()
+                max_tokens = max(max_tokens, chunk_max)
+                n_errors += chunk_errors
+                pbar.update(n_lines)
+
+    return max_tokens, n_errors
+
+
+def _round_to_thousands(value: int, round_up: bool = False) -> int:
     """Round *value* to the nearest thousand, representing values below 1k as 1k."""
+    if round_up:
+        return max(1, (value + 999) // 1000)
     return max(1, (value + 500) // 1000)
 
 
@@ -174,6 +371,12 @@ def main() -> None:
         help="Data type for the renamed file (e.g. SFT, RL_QA, nemo_gym, or a NeMo-Gym "
         "environment name). Overrides the data type parsed from the filename, and is "
         "required when the filename has none (default: parse from the filename).",
+    )
+    parser.add_argument(
+        "--tokenizer",
+        type=Path,
+        help="Path to a local HuggingFace tokenizer directory. Only used to compute "
+        "the len metadata when the filename has none (default: omit `len` metadata).",
     )
     parser.add_argument(
         "--yes",
@@ -233,6 +436,29 @@ def main() -> None:
 
     sample_count = _round_to_thousands(line_count)
     logger.info(f"Counted {line_count} line(s) -> sam{sample_count}k.")
+
+    if len_field is None:
+        if args.tokenizer is not None:
+            tokenizer_dir: Path = args.tokenizer.resolve()
+            if not tokenizer_dir.is_dir():
+                parser.error(f"Tokenizer directory does not exist: {tokenizer_dir}")
+            try:
+                AutoTokenizer.from_pretrained(str(tokenizer_dir))
+            except Exception as exc:
+                parser.error(f"Failed to load tokenizer from {tokenizer_dir}: {exc}")
+
+            max_tokens, n_errors = _max_token_pass(input_path, line_count, tokenizer_dir, data_type)
+            if max_tokens == 0:
+                parser.error(
+                    f"Could not tokenize any entry in '{input_path.name}' ({n_errors} error(s))."
+                )
+
+            len_field = f"len{_round_to_thousands(max_tokens, round_up=True)}k"
+            logger.info(f"Counted max main-field token length {max_tokens} -> {len_field}.")
+        else:
+            logger.warning(
+                f"'{input_path.name}' has no len metadata and no --tokenizer was given; omitting len."
+            )
 
     stem_parts = [content]
     if len_field is not None:

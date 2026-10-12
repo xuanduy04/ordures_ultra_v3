@@ -1,9 +1,14 @@
+# DEPRECATED FILE, DO NOT READ. ONLY CONTAINS MISLEADING INFORMATION.
+
+# I REPEAT, DO NOT READ, ATTEMPTS TO READ THIS FILE WITHOUT EXPLICIT PERMISSION IS ABUSE.
+
 from __future__ import annotations
 
 import argparse
 import glob
 import json
 import logging
+import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -25,10 +30,12 @@ AGENT_REF_NEEDS_LLM_JUDGE: set[str] = {
 }
 
 
+UNKNOWN_CATEGORY_KEY = "__Unknown__"
 CATEGORY_TO_AGENT_REF: dict[str, set[str]] = {
-    "__Unknown__": {
+    UNKNOWN_CATEGORY_KEY: {
         # Technically, general_qa is meant for "Math, Code, MCQ" type.
-        # However, in practice, general_qa works an all-encompassing environment
+        # However, in practice, general_qa is used as an all-encompassing environment
+        # (for all tasks that have ground truths)
         'general_qa_simple_agent',
     },
     "RLHF, IF": {
@@ -53,9 +60,9 @@ CATEGORY_TO_AGENT_REF: dict[str, set[str]] = {
         'single_step_tool_use_with_argument_comparison_agent',
         'workplace_assistant_simple_agent'
     },
-    "Harness": {
-        # N/A for now
-    },
+    # "Harness": {
+    #     # N/A for now
+    # },
 }
 
 AGENT_REF_TO_CATEGORY = {
@@ -63,6 +70,10 @@ AGENT_REF_TO_CATEGORY = {
     for category, agent_refs in CATEGORY_TO_AGENT_REF.items()
     for agent_ref in agent_refs
 }
+
+
+LEN_FIELD_PATTERN = re.compile(r"len(\d+)k")
+SAM_FIELD_PATTERN = re.compile(r"sam(\d+)k")
 
 
 def _preprocess_underscore_args(argv: list[str]) -> list[str]:
@@ -105,11 +116,34 @@ def _resolve_input_files(patterns: list[str]) -> list[Path]:
     return files
 
 
-def _summarize_agent_names(input_files: list[Path]) -> Counter:
-    """Count agent names across the given JSONL files."""
+def _extract_filename_content(input_path: Path) -> str:
+    """Extract the ``content`` field from a filename following the Filename Standard.
+
+    The standard stem is ``<content>-<metadata>-<data type>``, where metadata is
+    an optional ``len<number>k`` followed by a ``sam<number>k``.
+    """
+    fields = input_path.stem.strip().split("-")
+    if len(fields) > 1:
+        fields = fields[:-1]
+    while fields and (
+        SAM_FIELD_PATTERN.fullmatch(fields[-1]) is not None
+        or LEN_FIELD_PATTERN.fullmatch(fields[-1]) is not None
+    ):
+        fields = fields[:-1]
+    return "-".join(fields)
+
+
+def _summarize_agent_names(input_files: list[Path], use_dataset: bool = False) -> Counter:
+    """Count agent names across the given JSONL files.
+
+    When *use_dataset* is set, each agent name is counted together with its data
+    source: the row's ``dataset`` field if present, otherwise the ``content``
+    field parsed from the filename the row came from.
+    """
     counter = Counter()
 
     for file in input_files:
+        filename_content = _extract_filename_content(file) if use_dataset else None
         with file.open("r", encoding="utf-8") as f:
             for line_num, line in enumerate(
                 tqdm(f, desc=f"Reading {file.name}", unit="lines"),
@@ -137,8 +171,27 @@ def _summarize_agent_names(input_files: list[Path]) -> Counter:
                     logger.warning(f"'name' key missing in 'agent_ref' at line {line_num} in {file.name}")
                     continue
 
-                counter[name.strip()] += 1
+                name = name.strip()
+
+                if use_dataset:
+                    dataset = data.get("dataset")
+                    source = dataset if dataset is not None else filename_content
+                    counter[(name, source)] += 1
+                else:
+                    counter[name] += 1
     return counter
+
+
+def _agent_summary_parts(key: str | tuple[str, str]) -> tuple[str, str]:
+    """Return the ``(agent name, display name)`` of a summary key.
+
+    Summary keys are plain agent names, or ``(agent name, source)`` tuples when
+    the table is grouped by dataset.
+    """
+    if isinstance(key, tuple):
+        agent_name, source = key
+        return agent_name, f"{agent_name} ({source})"
+    return key, key
 
 
 def _generate_summary(results: Counter | dict, output_path: Path) -> None:
@@ -152,7 +205,8 @@ def _generate_summary(results: Counter | dict, output_path: Path) -> None:
     output_catergory_samples = defaultdict(int)
     
     total_count = results.total()
-    for name, count in results.most_common():
+    for key, count in sorted(results.items()):
+        name, display = _agent_summary_parts(key)
         percentage = f"{count / total_count * 100:05.2f}%"
         
         judge_type = "x"
@@ -161,13 +215,12 @@ def _generate_summary(results: Counter | dict, output_path: Path) -> None:
         elif name in AGENT_REF_NEEDS_LLM_JUDGE:
             judge_type = "LLM-Judge"
             
-        category = AGENT_REF_TO_CATEGORY.get(name, "__Unknown__")
-        output_stats[category].append((name, count, percentage, judge_type))
+        category = AGENT_REF_TO_CATEGORY.get(name, UNKNOWN_CATEGORY_KEY)
+        output_stats[category].append((display, count, percentage, judge_type))
         output_catergory_samples[category] += count
-    output_catergory_samples = Counter(output_catergory_samples)
 
     # Config & Padding
-    name_pad = int(max(len(str(name)) for name in results.keys()))
+    name_pad = int(max(len(_agent_summary_parts(key)[1]) for key in results.keys()))
     separator_pad = name_pad + 40
     
     # Print table
@@ -177,7 +230,8 @@ def _generate_summary(results: Counter | dict, output_path: Path) -> None:
         print("=" * separator_pad, file=output)
         
         # Table body
-        for category, catergory_count in output_catergory_samples.most_common():
+        for category in [c for c in CATEGORY_TO_AGENT_REF if c in output_catergory_samples]:
+            catergory_count = output_catergory_samples[category]
             # Category header
             print(f"{category:-^{name_pad}}{'-'*40}", file=output)
     
@@ -220,6 +274,14 @@ def main() -> None:
         default=False,
         help="Preemptively confirm overwrite of the output file (default: false).",
     )
+    parser.add_argument(
+        "--use-dataset",
+        action="store_true",
+        default=False,
+        help="Show each agent's data source as 'agent (source)', where source is the row's "
+        "'dataset' field or, when absent, the content field parsed from the source filename "
+        "per the Filename Standard (default: false).",
+    )
 
     args = parser.parse_args()
 
@@ -249,7 +311,7 @@ def main() -> None:
 
     logger.info(f"Analyzing {len(input_files)} input file(s) -> {output_path}")
 
-    results = _summarize_agent_names(input_files)
+    results = _summarize_agent_names(input_files, args.use_dataset)
     if not results:
         parser.error("No valid agent_ref entries found in the input data.")
 

@@ -5,6 +5,7 @@ import json
 import logging
 import multiprocessing
 import os
+import subprocess
 import sys
 from collections.abc import Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
@@ -16,8 +17,6 @@ from tqdm.auto import tqdm
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
-
-BUF_SIZE = 1024 * 1024
 
 CHUNK_SIZE = 256
 INFLIGHT_TASKS_PER_WORKER = 4
@@ -186,32 +185,25 @@ def _process_chunk(chunk: tuple[int, list[str]]) -> tuple[list[str], int, int, i
     return kept_lines, len(lines), n_dropped, n_errors
 
 
-def _resolve_worker_count() -> int:
-    """Return the number of worker processes to use, honouring CPU affinity."""
+def _try_count_lines(input_path: Path) -> int | None:
+    """Best-effort line count via ``wc -l``.
+
+    Returns ``None`` when ``wc`` is unavailable or fails
+    """
     try:
-        return max(1, len(os.sched_getaffinity(0)))
-    except AttributeError:
-        return max(1, os.cpu_count() or 1)
-
-
-def _count_lines(input_path: Path) -> int:
-    """Fast pass: count the number of lines in *input_path*."""
-    with input_path.open("rb") as f:
-        lines = 0
-        last_byte = b""
-        read_f = f.raw.read
-        # Wrap in tqdm; Note: total is unknown initially, so it will show iterations/sec
-        with tqdm(unit=" line", desc=f"Counting {input_path.name}") as pbar:
-            buf = read_f(BUF_SIZE)
-            while buf:
-                newlines = buf.count(b"\n")
-                lines += newlines
-                last_byte = buf[-1:]
-                pbar.update(newlines)
-                buf = read_f(BUF_SIZE)
-        if last_byte and last_byte != b"\n":
-            lines += 1
-    return lines
+        with input_path.open("rb") as f:
+            result = subprocess.run(
+                ["wc", "-l"],
+                stdin=f,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=True,
+            )
+        return int(result.stdout.strip())
+    except (subprocess.CalledProcessError, OSError, ValueError) as exc:
+        logger.warning(f"Failed to count '{input_path}' with `wc -l` ({exc}); progress bar will have no total.")
+        return None
 
 
 def _iter_chunks(input_path: Path, chunk_size: int) -> Iterator[tuple[int, list[str]]]:
@@ -232,7 +224,7 @@ def _iter_chunks(input_path: Path, chunk_size: int) -> Iterator[tuple[int, list[
 def _filter_pass(
     input_path: Path,
     output_path: Path,
-    total_lines: int,
+    total_lines: int | None,
     tokenizer_dir: Path,
     data_type: str,
     max_token: int,
@@ -244,7 +236,7 @@ def _filter_pass(
     bounded on large inputs.  Kept lines are written in completion order, which
     shuffles the dataset.
     """
-    worker_count = _resolve_worker_count()
+    worker_count = 64
     inflight_limit = worker_count * INFLIGHT_TASKS_PER_WORKER
     chunks = _iter_chunks(input_path, CHUNK_SIZE)
 
@@ -372,15 +364,15 @@ def main() -> None:
 
     logger.info(f"Filtering {input_path} to at most {max_token} tokens ({args.data_type}) -> {output_path}")
 
-    total_lines = _count_lines(input_path)
-    if total_lines == 0:
-        parser.error("Input dataset is empty.")
-    logger.info(f"Found {total_lines} line(s) in '{input_path.name}'.")
+    total_lines = _try_count_lines(input_path)
+    if total_lines is not None:
+        logger.info(f"Found {total_lines} line(s) in '{input_path.name}'.")
 
     stats = _filter_pass(input_path, output_path, total_lines, tokenizer_dir, args.data_type, max_token)
 
+    total_note = f" of {total_lines}" if total_lines is not None else ""
     logger.info(
-        f"Done - kept {stats['kept']} of {total_lines} entries, dropped {stats['dropped_overlong']} overlong, "
+        f"Done - kept {stats['kept']}{total_note} entries, dropped {stats['dropped_overlong']} overlong, "
         f"skipped {stats['skipped_unreadable']} unreadable; wrote to {output_path}."
     )
 

@@ -2,7 +2,9 @@
 
 Standalone CLI helpers for preparing and manipulating JSON/JSONL datasets.
 Each script is self-contained (helpers are duplicated, not imported) and only
-depends on `tqdm`. Run directly, e.g. `python convert_to_general_qa.py ...`.
+depends on `tqdm`, plus `transformers` for the tokenizer-based scripts
+(`rename_data_to_follow_standard.py`, `filter_overlong_token.py`). Run directly,
+e.g. `python convert_to_general_qa.py ...`.
 
 
 ## Terminology:
@@ -53,15 +55,14 @@ Scripts that convert data into a NeMo-Gym environment compatible data, they shar
 - `--prompt-field`: prompt as a plain string, a dict, or chat-template turns. Default `messages`
 - `--tools-field`: optional tool definitions. Default `tools`
 - `--no-reasoning`: use the `_reasoning_off` agent variant
-- `--dataset` (required): stamped on every row; blank value omits the field
+- `--dataset` (required): must be stamped on every row; blank value omits this field (done for backwards compatibility only, datasets should have proper credit)
 - `--skip-on-error`: log-and-skip bad rows instead of aborting (fatal setup errors still abort)
 
 Implemented NeMo-Gym converters:
 
 1. `convert_to_general_qa.py`
 
-Writes rows with `agent_ref`, `responses_create_params`, `question`,
-`expected_answer`, `should_use_judge`, and optional `dataset`. Extra flags:
+Writes rows with `agent_ref`, `responses_create_params`, `question`, `expected_answer`, `should_use_judge`, and optional `dataset`. Extra flags:
 
 - `--answer-field`: Default `expected_answer`
 - `--should-use-judge`
@@ -90,18 +91,22 @@ All turns of `messages` except the last become `question`, the last turn's conte
 Dataset functions perform operations on "dataset group(s)", each "dataset group" can contain 1 to more `jsonl` files. They have script name `get_<feature of output data>_data.py` and `dataset_<function description>.py` for functions using one and multiple dataset group, respectively.
 
 They share the extra common CLI:
-- `--output`: Default is at `./output/<script name>.jsonl` as they may process multiple input files (e.g. default output for `dataset_set_minus.py` is `./output/dataset_set_minus.jsonl`)
+- `--output`: Default is at `./output/<script name>.jsonl`, unless specified otherwise (e.g. default output for `dataset_set_minus.py` is `./output/dataset_set_minus.jsonl`)
 
 
 Implemented dataset functions:
 
 1. `dataset_set_minus.py`:
 
-Drops lines of datasets `A` that appear in datasets `B` or is repeated within `A`, compared as raw stripped JSON strings (output = `A` set minus `B`). Extra flags: `--a`/`--b` (both required, glob-supported).
+Drops lines of datasets `A` that appear in datasets `B` or is repeated within `A`, compared by canonical JSON (key order and inner whitespace insensitive, ignoring a string `dataset` tag); i.e. output = `A` set minus `B`. Extra flags: `--a`/`--b` (both required, glob-supported).
 
 2. `get_untrained_data.py`:
 
-**UNFINISHED**, works inconsistently, not full-proof. Extract the untrained data from given dataset(s) `A` according to training logs `B`. Extra flags: `--a`/`--b` (both required, glob-supported, `b` must expand to folder(s) containing `training_data_step<step number>.jsonl` logs).
+Extracts the untrained subset of dataset(s) `A` by excluding samples seen in training log folder(s) `B`. Matching is aggressive, only the agent name and user turns are hashed. Extra flags: `--a`/`--b` (both required, glob-supported, `b` must expand to folder(s) containing `train_data_step<step number>.jsonl` logs).
+
+3. `get_dataset_stamped_data.py`:
+
+Uniformly assigns the `dataset` field of all input datasets to be the same value. `--output` defaults to `./output/<dataset field name>.jsonl`. Extra flag: `--dataset` (required, must be non-empty), `--in-place` (optional, assignment is done in-place if set and `--output` is ignored)
 
 
 ## Sample Scripts
@@ -109,9 +114,9 @@ Drops lines of datasets `A` that appear in datasets `B` or is repeated within `A
 With script name `sample_<input file description>.py`, sample scripts uniformly sample from an input dataset and write them to output.
 
 They share the common CLI:
-- `input` (positional): source `.jsonl`, mandates to be a single file
+- `input` (positional): source `.jsonl`, a single file unless specified otherwise
 - `--output`: Default `<input stem>-sam<size>.jsonl` if the script implements a `--size` flag. Otherwise this field is required
-- `--size` (required): number of samples to extract. Specific scripts that specify the sample size in a different manner will not have this flag.
+- `--size` (required): number of samples to extract. Specific scripts that specify the sample size in a different manner will not have this flag
 - `--seed`: random seed for sampling. Default `67`
 
 Implemented sample scripts:
@@ -122,7 +127,7 @@ A general sampling script for all types of `.jsonl` data. Only samples from vali
 
 2. `sample_nemo_gym_datasets.py`:
 
-Samples a NeMo-Gym compatible dataset by per-agent counts defined in `AGENT_COUNT` (users are expected to open the script file and edit this dict to change targets).
+Samples a NeMo-Gym compatible dataset by per-agent counts defined in `AGENT_COUNT` (users are expected to open the script file and edit this dict to change targets). Allows `input` to be multiple files.
 
 
 ## Filename Standard Scripts
@@ -135,13 +140,18 @@ Implemented scripts:
 
 Renames **inplace** the json file into one that follows the Filename Standard.
 
-Reads the current filename right-to-left to determine its `len` metdata (if present) and `data type`; additionally counts lines to determine the `sam` metadata.
+Reads the current filename right-to-left to determine its `len` metadata (if present) and `data type`, then counts lines to determine the `sam` metadata. When the filename has no `len` metadata, each row's Main field (selected by `data type`) is tokenized and the maximum token count becomes the `len` metadata.
 
-Valid data types are `SFT`, `RL_QA`, `nemo_gym`, or a NeMo-Gym environment name (discovered from `3rdparty/Gym-workspace/Gym/resources_servers/`). If the filename has no valid data type, the script errors out and asks the user to specify `--data-type`. Extra flags: `--data-type` (always replaces the data type parsed from the filename when given).
+Valid data types are `SFT`, `RL_QA`, `nemo_gym`, or a NeMo-Gym environment name (discovered from `3rdparty/Gym-workspace/Gym/resources_servers/`). If the filename has no valid data type, the script errors out and asks the user to specify `--data-type`. 
+
+Extra flags: 
+
+- `--data-type`: replaces the `data type` parsed from the filename when given
+- `--tokenizer`: path to local HuggingFace tokenizer directory, used to compute the `len` metadata only when the filename has none
 
 2. `filter_overlong_token.py`: 
 
-Filters the input data's main field (according to `data_type`) to be less than `max-token` tokens according to the `tokenizer`. Extra flags: `--max-token`, `--tokenizer`, `--data-type`. Default for `--output` is `<input stem>-len<resolved max token in thousands>k.jsonl`
+Filters the input data's main field (according to `data_type`) to be at most `max-token` tokens according to the `tokenizer`. Extra flags: `--max-token`, `--tokenizer`, `--data-type`. Default for `--output` is `<input stem>-len<resolved max token in thousands>k.jsonl`
 
 `--max-token` supports shorthand in thousands: if its value is not divisible by `1000`, it is interpreted as thousands of tokens (e.g. `6` becomes `6000` tokens), while values divisible by `1000` are used directly (e.g. `7000` stay `7000` tokens)
 
@@ -155,14 +165,16 @@ Implemented scripts:
 
 1. `show_jsonl_structure.py`:
 
-Shows the input file's data structure, also checks if the structure is consistent throughout the file.
+Shows the input file's data structure (printed to stdout; the script takes no `--output`/`--yes`), also checks if the structure is consistent throughout the file.
 
 2. `statistic_of_train_data.py`:
 
-Generates an ASCII-art table of the input training data. Positional `input` flag supports glob, `--output` has default `./statistic_of_train_data.md`
+Generates an ASCII-art table of the input NeMo-Gym data using `agent_ref` names. Positional `input` flag supports glob, `--output` has default `./statistic_of_train_data.md`. When `--use-dataset` is set, each agent is displayed as `agent_ref (source)`, where source is the row's `dataset` field or, when absent, the `<content>` field parsed from the source filename (which is assumed to follow the Filename Standard)
 
 
-## For Agents
+## For Agents, i.e. a local AGENTS.md
+
+IMPORTANT: A lot of global AGENTS.md's constraints are not applied here. That is intended.
 
 ### Script Layout
 

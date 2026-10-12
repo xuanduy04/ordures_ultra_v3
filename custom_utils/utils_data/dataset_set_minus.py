@@ -54,13 +54,28 @@ def _resolve_input_files(patterns: list[str]) -> list[Path]:
     return files
 
 
-def dataset_set_minus(A_files: list[Path], B_files: list[Path], output_path: Path) -> dict[str, int]:
-    """Perform a set-minus operation (A \\ B) on JSONL datasets.
+def _canonical_json_key(obj: object) -> str:
+    """Canonical JSON serialization used to compare rows order-insensitively."""
+    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
-    Lines are compared as raw stripped strings; invalid JSON lines in B are
-    silently skipped, invalid JSON lines in A are warned about and skipped.
+
+def _strip_dataset_field(line_dict: dict) -> dict:
+    """Return *line_dict* without its string ``dataset`` tag, which is not part of a row's identity."""
+    if not isinstance(line_dict.get("dataset"), str):
+        return line_dict
+    return {key: value for key, value in line_dict.items() if key != "dataset"}
+
+
+def _dataset_set_minus(A_files: list[Path], B_files: list[Path], output_path: Path) -> dict[str, int]:
+    r"""Perform a set-minus operation (A \\ B) on JSONL datasets.
+
+    Rows are compared by their canonical JSON serialization (object keys
+    sorted) with any string ``dataset`` tag removed, so rows that are the same
+    sample serialized differently are treated as the same sample.
+
+    Invalid JSON lines in B are silently skipped, invalid JSON lines in A are
+    warned about and skipped.
     """
-
     logger.info("Loading exclusion dataset(s) (B)...")
     exclude_data: set[str] = set()
     for b_path in tqdm(B_files, desc="B files processed", unit="file"):
@@ -70,16 +85,19 @@ def dataset_set_minus(A_files: list[Path], B_files: list[Path], output_path: Pat
                 if not line_str:
                     continue
                 try:
-                    json.loads(line_str)
-                    exclude_data.add(line_str)
+                    line_dict = json.loads(line_str)
                 except json.JSONDecodeError:
                     continue
+                if not isinstance(line_dict, dict):
+                    continue
+                exclude_data.add(_canonical_json_key(_strip_dataset_field(line_dict)))
 
     logger.info(f"Loaded {len(exclude_data)} unique exclusion signatures. Processing dataset(s) (A)...")
 
     seen_in_A: set[str] = set()
     kept_count = 0
     excluded_count = 0
+    internal_dupes = 0
     skipped_count = 0
 
     with output_path.open("w", encoding="utf-8") as outfile:
@@ -93,23 +111,33 @@ def dataset_set_minus(A_files: list[Path], B_files: list[Path], output_path: Pat
                         continue
 
                     try:
-                        json.loads(line_str)
+                        line_dict = json.loads(line_str)
                     except json.JSONDecodeError:
                         skipped_count += 1
                         logger.warning(f"Skipping invalid JSON on line {line_num} in {a_path}. It was not copied.")
                         continue
 
-                    if line_str in exclude_data or line_str in seen_in_A:
-                        excluded_count += 1
+                    if not isinstance(line_dict, dict):
+                        skipped_count += 1
+                        logger.warning(f"Skipping non-object JSON on line {line_num} in {a_path}. It was not copied.")
                         continue
 
-                    seen_in_A.add(line_str)
+                    line_key = _canonical_json_key(_strip_dataset_field(line_dict))
+                    if line_key in exclude_data:
+                        excluded_count += 1
+                        continue
+                    if line_key in seen_in_A:
+                        internal_dupes += 1
+                        continue
+
+                    seen_in_A.add(line_key)
                     outfile.write(line_str + "\n")
                     kept_count += 1
 
     return {
         "unique_lines_kept": kept_count,
-        "excluded_or_internal_dupes": excluded_count,
+        "excluded": excluded_count,
+        "internal_dupes": internal_dupes,
         "invalid_json_skipped": skipped_count,
     }
 
@@ -169,6 +197,8 @@ def main() -> None:
 
     try:
         _validate_output_path(output_path)
+    except ValueError as exc:
+        parser.error(str(exc))
     except FileExistsError:
         if not args.yes:
             response = input(f"{output_path} already exists. Override? Type [y]es/[n]o: ").strip().lower()
@@ -178,7 +208,7 @@ def main() -> None:
 
     logger.info(f"Computing A \\ B from {len(A_files)} A file(s) and {len(B_files)} B file(s) -> {output_path}")
 
-    stats = dataset_set_minus(A_files, B_files, output_path)
+    stats = _dataset_set_minus(A_files, B_files, output_path)
 
     logger.info(f"Done - set-minus complete:\n{pprint.pformat(stats)}.")
     logger.info(f"Resulting dataset saved to: {output_path}")
