@@ -1,6 +1,3 @@
-
-
-
 import asyncio
 import json
 import threading
@@ -152,7 +149,6 @@ def _make_collector(**overrides):
     collector_cls = AsyncTrajectoryCollector.__ray_metadata__.modified_class
     defaults = {
         "on_policy_distillation_cfg": {},
-        "_opd_outsource": True,
         "_has_opd_teachers": False,
         "_teacher_logprob_client": None,
     }
