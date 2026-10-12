@@ -2661,15 +2661,13 @@ def async_grpo_train(
                         _log_rss("post-checkpoint")
 
             # Logging
-            # NeMo Gym responses can be very large and expensive to log; when
-            # env.should_log_nemo_gym_responses is false, skip this jsonl (see
-            # _should_log_nemo_gym_responses).
+            # NeMo Gym responses can be very large and expensive to log; 
+            # when `env.should_log_nemo_gym_responses`` is false, skip writing this jsonl
             if _should_log_nemo_gym_responses(master_config):
-                # TODO: this should be changed. If you don't understand what I mean, then you can safely ignore this TODO
                 log_data = {}
                 if "agent_ref" in repeated_batch:
                     log_data["agent_ref"] = repeated_batch["agent_ref"]
-                log_data["content"] = flat_messages_content
+                # log_data["content"] = flat_messages_content
                 log_data["rewards"] = rewards.tolist()
                 # log_data["input_lengths"] = input_lengths.tolist()
                 # log_data["token_ids"] = train_data["input_ids"].tolist()

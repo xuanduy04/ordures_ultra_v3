@@ -756,8 +756,8 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
                 # vLLM does not accept `strict` tool definitions and reporting it to the user is not useful either.
                 return (
                     "Added request" not in msg
-                    and "The following fields were present in the request but ignored: {'strict'}"
-                    not in msg
+                    and "The following fields were present in the request but ignored: {'strict'}" not in msg
+                    and "The following fields were present in the request but ignored: {'metadata'}" not in msg
                 )
 
         vllm_async_llm_logger.addFilter(CleanLoggingFilter())

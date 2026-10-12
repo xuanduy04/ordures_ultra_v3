@@ -1564,7 +1564,10 @@ def _postprocess_single_group(
     final_batch = BatchedDataDict[DatumSpec](
         {
             "agent_ref": [r["agent_ref"] for r in results],
-            "full_result": [r["full_result"] for r in results],
+            "full_result": [
+                {"responses_create_params": {"input": row["responses_create_params"]["input"]}}
+                for row in nemo_gym_rows
+            ],
             "message_log": [r["message_log"] for r in results],
             # length is used downstream for mean_prompt_length
             "length": torch.tensor(

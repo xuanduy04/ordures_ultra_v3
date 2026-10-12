@@ -92,7 +92,7 @@ def _compute_n_gram_repetition_penalty(
 
 
 def apply_reward_shaping(
-    batch: BatchedDataDict, cfg: RewardShapingConfig
+    batch: BatchedDataDict, cfg: RewardShapingConfig, verbose: bool = True
 ) -> BatchedDataDict:
     """Process rewards by applying custom reward shaping penalties.
 
@@ -149,6 +149,8 @@ def apply_reward_shaping(
                     assistant_token_ids, n_gram_size, n_gram_threshold
                 )
                 rewards[i] = rewards[i] - n_gram_repetition_weight * penalty
+                if verbose:
+                    print("[INFO] n_gram_penalty: Applied successfully")
 
             if use_overlong_penalty:
                 response_length = assistant_token_ids.shape[0]
@@ -157,6 +159,8 @@ def apply_reward_shaping(
                     -exceed_length / overlong_buffer_length * overlong_buffer_penalty, 0
                 )
                 rewards[i] = rewards[i] + overlong_reward
+                if verbose:
+                    print("[INFO] overlong_penalty: Applied successfully")
 
         # Update the rewards in the batch
         batch["total_reward"] = rewards
@@ -178,17 +182,19 @@ def apply_reward_shaping(
             # For truncated samples, shift the reward by stop_properly_penalty_coef
             rewards = rewards - truncated.to(rewards.dtype) * stop_properly_penalty_coef
             batch["total_reward"] = rewards
-            print(
-                f"[INFO] stop properly penalty applied: {num_truncated}/{len(truncated)} samples truncated, "
-                f"coef={stop_properly_penalty_coef}, "
-                f"original_reward_mean={original_rewards[truncated].mean().item():.4f}, "
-                f"shaped_reward_mean={rewards[truncated].mean().item():.4f}",
-                flush=True,
-            )
+            if verbose:
+                print(
+                    f"[INFO] stop properly penalty applied: {num_truncated}/{len(truncated)} samples truncated, "
+                    f"coef={stop_properly_penalty_coef}, "
+                    f"original_reward_mean={original_rewards[truncated].mean().item():.4f}, "
+                    f"shaped_reward_mean={rewards[truncated].mean().item():.4f}",
+                    flush=True,
+                )
         else:
-            print(
-                "[INFO] stop properly penalty: no truncated samples (truncation_rate=0)",
-                flush=True,
-            )
+            if verbose:
+                print(
+                    "[INFO] stop properly penalty: no truncated samples (truncation_rate=0)",
+                    flush=True,
+                )
 
     return batch
