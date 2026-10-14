@@ -991,7 +991,8 @@ class Logger(LoggerInterface):
                 for key, value in sample.items():
                     if isinstance(value, torch.Tensor):
                         sample[key] = value.tolist()
-                f.write(json.dumps({**sample, "idx": i}) + "\n")
+                json.dump({**sample, "idx": i}, f)
+                f.write("\n")
 
         print(f"Logged data to {filepath}")
 

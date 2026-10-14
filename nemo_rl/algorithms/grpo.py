@@ -79,6 +79,7 @@ from nemo_rl.models.policy import PolicyConfig
 from nemo_rl.models.policy.interfaces import ColocatablePolicyInterface
 from nemo_rl.models.policy.lm_policy import Policy
 from nemo_rl.utils.checkpoint import CheckpointingConfig, CheckpointManager
+from nemo_rl.utils.hash import get_user_turns, hash_list_dicts
 from nemo_rl.utils.logger import (
     Logger,
     LoggerConfig,
@@ -1037,17 +1038,36 @@ def _should_log_nemo_gym_responses(master_config: MasterConfig) -> bool:
     When **True**, we **skip** the expensive per-step ``train_data_step*.jsonl`` dump and
     **keep** ``full_result``-style keys in rollout metrics (large payloads).
 
-    When **False** (default if unset), we **strip** ``full_result`` from rollout metrics and
-    **write** the ``train_data_step*.jsonl`` file (can be very large for Gym).
+    When **False** (default if unset), we take ``full_result`` from rollout metrics and
+    **write** the ``train_data_step*.jsonl`` file (can be very large for Gym if not hashed).
 
-    Set via ``env.should_log_nemo_gym_responses`` in the master config.
+    Set via ``env.should_log_nemo_gym_responses`` or ``env.should_log_hashed_nemo_gym_responses`` in the master config.
     """
     env_config = master_config.get("env") or dict()
-    should_log_nemo_gym_responses = bool(
-        env_config.get("should_log_nemo_gym_responses")
+    should_log_nemo_gym_responses = (
+        bool(env_config.get("should_log_nemo_gym_responses"))
+        or bool(env_config.get("should_log_hashed_nemo_gym_responses"))
     )
 
     return should_log_nemo_gym_responses
+
+
+def _should_log_hashed_nemo_gym_responses(master_config: MasterConfig) -> bool:
+    """Whether NeMo Gym is responsible for full response logging (wandb/metrics paths).
+
+    When **True**, ``full_result`` from rollout metrics is **hashed** in the ``train_data_step*.jsonl`` file
+
+    When **False** (default if unset), we take ``full_result`` from rollout metrics **as-is** and
+    **write** the ``train_data_step*.jsonl`` file (can be very large for Gym).
+
+    Set via ``env.should_log_hashed_nemo_gym_responses`` in the master config.
+    """
+    env_config = master_config.get("env") or dict()
+    should_log_hashed_nemo_gym_responses = bool(
+        env_config.get("should_log_hashed_nemo_gym_responses")
+    )
+
+    return should_log_hashed_nemo_gym_responses
 
 
 def _create_advantage_estimator(master_config: MasterConfig):
@@ -2677,8 +2697,21 @@ def async_grpo_train(
                 # log_data["generation_logprobs"] = train_data["generation_logprobs"].tolist()
                 # log_data["prev_logprobs"] = train_data["prev_logprobs"].tolist()
 
-                if _should_log_nemo_gym_responses(master_config) and "full_result" in repeated_batch:
-                    log_data["full_result"] = repeated_batch["full_result"]
+                if "full_result" in repeated_batch:
+                    if _should_log_hashed_nemo_gym_responses(master_config):
+                        log_data["full_result"] = [
+                            {
+                                "full_hash": hash_list_dicts(
+                                    fr["responses_create_params"]["input"]
+                                ),
+                                "user_hash": hash_list_dicts(
+                                    get_user_turns(fr["responses_create_params"]["input"])
+                                ),
+                            }
+                            for fr in repeated_batch["full_result"]
+                        ]
+                    else:
+                        log_data["full_result"] = repeated_batch["full_result"]
 
                 logger.log_batched_dict_as_jsonl(
                     log_data, f"train_data_step{step + 1}.jsonl"
