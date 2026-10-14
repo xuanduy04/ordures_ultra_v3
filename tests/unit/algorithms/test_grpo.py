@@ -15,7 +15,6 @@ from nemo_rl.algorithms.grpo import (
     _default_grpo_save_state,
     async_grpo_train,
     compute_and_apply_seq_logprob_error_masking,
-    validate,
 )
 from nemo_rl.algorithms.loss_functions import ClippedPGLossFn
 from nemo_rl.data.interfaces import DatumSpec, LLMMessageLogType
@@ -200,20 +199,9 @@ def mock_async_grpo_infrastructure(mock_batch, mock_rollout_metrics):
         patch("ray.kill", return_value=None)
     )  # Mock ray.kill for cleanup
 
-    # Patch the rollout functions used inside async_grpo_train
-    stack.enter_context(
-        patch(
-            "nemo_rl.algorithms.grpo.run_async_multi_turn_rollout",
-            return_value=(mock_batch, mock_rollout_metrics),
-        )
-    )
-
-    # Patch refit and validate functions
+    # Patch refit function
     stack.enter_context(
         patch("nemo_rl.algorithms.grpo.refit_policy_generation", return_value=None)
-    )
-    stack.enter_context(
-        patch("nemo_rl.algorithms.grpo.validate", return_value=({}, {}))
     )
 
     # Mock print_performance_metrics to avoid needing real timing metrics
@@ -1062,37 +1050,6 @@ def test_reinforce_plus_plus_global_normalization():
     # Check the normalized advantages have correct relative ordering
     # Lower rewards should have negative advantages, higher should have positive
     assert result[0, 0] < result[1, 0] < result[2, 0] < result[3, 0]
-
-
-# ============================================================================
-# Tests for validate function
-# ============================================================================
-
-
-class TestValidateFunction:
-    """Tests for the validate() function."""
-
-    def test_validate_returns_empty_when_no_dataloader(self):
-        """Test that validate returns empty dicts when no dataloader is provided."""
-        mock_policy_gen = MagicMock()
-        mock_tokenizer = MagicMock()
-
-        mock_config = {
-            "dpo": {"val_period": 0},  # Required for the assertion
-        }
-
-        val_metrics, timing = validate(
-            mock_policy_gen,
-            None,  # No dataloader
-            mock_tokenizer,
-            None,
-            step=0,
-            master_config=mock_config,
-            logger=None,
-        )
-
-        assert val_metrics == {}
-        assert timing == {}
 
 
 # ============================================================================

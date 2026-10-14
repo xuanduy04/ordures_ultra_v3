@@ -47,7 +47,6 @@ from nemo_rl.data.datasets import AllTaskProcessedDataset
 from nemo_rl.data.interfaces import DatumSpec
 from nemo_rl.data.llm_message_utils import (
     batched_message_log_to_flat_message,
-    get_keys_from_message_log,
 )
 from nemo_rl.data.utils import extract_necessary_env_names
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
@@ -69,10 +68,6 @@ from nemo_rl.environments.nemo_gym import (
     get_nemo_gym_uv_cache_dir,
     get_nemo_gym_venv_dir,
 )
-from nemo_rl.experience.rollouts import (
-    run_async_multi_turn_rollout,
-    run_async_nemo_gym_rollout,
-)
 from nemo_rl.models.generation.interfaces import GenerationInterface
 from nemo_rl.models.generation.vllm import VllmConfig, VllmGeneration
 from nemo_rl.models.policy import PolicyConfig
@@ -83,7 +78,6 @@ from nemo_rl.utils.hash import get_user_turns, hash_list_dicts
 from nemo_rl.utils.logger import (
     Logger,
     LoggerConfig,
-    print_message_log_samples,
 )
 from nemo_rl.utils.nsys import maybe_gpu_profile_step
 from nemo_rl.utils.timer import TimeoutChecker, Timer
@@ -199,9 +193,6 @@ class GRPOSaveState(TypedDict):
     current_epoch: int
     total_steps: int
     total_valid_tokens: int  # Track total number of non-padding tokens during training
-    val_reward: NotRequired[
-        float
-    ]  # Optional field - may not be present during training
 
 
 def _default_grpo_save_state() -> GRPOSaveState:
@@ -211,7 +202,6 @@ def _default_grpo_save_state() -> GRPOSaveState:
         "current_epoch": 0,
         "total_steps": 0,
         "total_valid_tokens": 0,
-        "val_reward": -99999999.0,
     }
 
 
@@ -239,7 +229,7 @@ def setup(
     master_config: MasterConfig,
     tokenizer: TokenizerType,
     dataset: AllTaskProcessedDataset,
-    val_dataset: Optional[AllTaskProcessedDataset],
+    val_dataset: Optional[AllTaskProcessedDataset] = None,
     processor: Optional[AutoProcessor] = None,
 ) -> tuple[
     ColocatablePolicyInterface,
@@ -317,29 +307,6 @@ def setup(
         dataloader.load_state_dict(dataloader_state_dict)
 
     print(f"  ✓ Training dataloader loaded with {len(dataset)} samples", flush=True)
-
-    # Load validation dataset if provided
-    val_dataloader: Optional[StatefulDataLoader] = None
-    # If validation is enabled, load the validation dataloader
-    if (
-        grpo_config["val_period"] > 0
-        or grpo_config["val_at_start"]
-        or grpo_config["val_at_end"]
-    ):
-        assert val_dataset is not None, (
-            "Validation dataset is required if validation is enabled"
-        )
-        val_dataloader = StatefulDataLoader(
-            val_dataset,
-            batch_size=grpo_config["val_batch_size"],
-            shuffle=False,
-            collate_fn=rl_collate_fn,
-            num_workers=data_config["num_workers"],
-        )
-        print(
-            f"  ✓ Validation dataloader loaded with {len(val_dataset)} samples",
-            flush=True,
-        )
 
     # ==========================
     #        Loss Function
@@ -952,7 +919,7 @@ def setup(
         nemo_gym_actor,
         (train_cluster, inference_cluster),
         dataloader,
-        val_dataloader,
+        None,
         loss_fn,
         logger,
         checkpointer,
@@ -1403,175 +1370,6 @@ def compute_and_apply_seq_logprob_error_masking(
 # Training & Validation
 # ===============================================================================
 
-def validate(
-    policy_generation: GenerationInterface,
-    val_dataloader: Optional[StatefulDataLoader],
-    tokenizer,
-    val_task_to_env: Optional[dict[str, EnvironmentInterface]],
-    step: int,
-    master_config: MasterConfig,
-    logger: Optional[Logger] = None,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Run validation on the validation dataset."""
-    if val_dataloader is None:
-        assert val_dataloader is not None or master_config["dpo"]["val_period"] == 0, (
-            "val_dataloader is None, so dpo.val_period must be 0"
-        )
-        print("  ⚠️ No validation dataloader provided, skipping validation", flush=True)
-        return {}, {}
-
-    timer = Timer(context={"worker": "validator"})
-    with timer.time("total_validation_time"):
-        print(f"▶ Starting validation at step {step}...", flush=True)
-
-        num_val_gens = master_config["grpo"].get("num_val_generations_per_prompt", 1)
-
-        total_rewards = []
-        total_lengths = []
-        all_message_logs = []  # Collect all message logs
-
-        max_batches = (
-            master_config["grpo"]["max_val_samples"]
-            // master_config["grpo"]["val_batch_size"]
-        )
-        for batch_idx, val_batch in enumerate(val_dataloader):
-            if batch_idx >= max_batches:
-                break
-
-            additional_metrics_to_report = dict()
-
-            # Duplicate prompts for multiple generations per prompt during validation
-            # Similar to training, this allows evaluating model consistency and diversity
-            if num_val_gens > 1:
-                val_batch_for_rollout = val_batch.repeat_interleave(num_val_gens)
-            else:
-                val_batch_for_rollout = val_batch
-
-            # Generate responses (updates the LLMMessageLogType in batch_with_msg_logs)
-            # Use async rollouts if vLLM async engine is enabled
-            # We cascade NeMo-Gym first since NeMo-Gym also uses async rollouts.
-            if _should_use_nemo_gym(master_config):
-                generation_config = master_config["policy"]["generation"]
-
-                async def _async_target():
-                    nemo_gym_rollout_result = None
-                    async for nemo_gym_rollout_result in run_async_nemo_gym_rollout(
-                        policy_generation=policy_generation,
-                        input_batch=val_batch_for_rollout,
-                        tokenizer=tokenizer,
-                        task_to_env=val_task_to_env,
-                        max_seq_len=None,
-                        generation_config=generation_config,
-                        num_generations=val_batch_for_rollout.size,
-                        max_rollout_turns=None,
-                        greedy=False,
-                        master_config=master_config,
-                        returns_entire_batch=True,
-                    ):
-                        pass
-                    assert nemo_gym_rollout_result is not None, "NeMo Gym rollouts did not return any valid generations for this batch!"
-                    return nemo_gym_rollout_result
-
-                import asyncio
-                nemo_gym_rollout_result = asyncio.run(_async_target())
-
-                val_batch = nemo_gym_rollout_result.final_batch
-                gen_metrics = nemo_gym_rollout_result.rollout_metrics
-                additional_metrics_to_report = gen_metrics
-            elif _should_use_async_rollouts(master_config):
-                val_batch, gen_metrics = run_async_multi_turn_rollout(
-                    policy_generation,
-                    val_batch_for_rollout,
-                    tokenizer,
-                    val_task_to_env,
-                    max_seq_len=master_config["policy"]["max_total_sequence_length"],
-                    max_rollout_turns=master_config["grpo"]["max_rollout_turns"],
-                    greedy=False,
-                )
-
-            total_rewards.extend(val_batch["total_reward"].tolist())
-            total_lengths.append(gen_metrics["mean_gen_tokens_per_sample"])
-
-            # Collect message logs for later display
-            to_env = [
-                get_keys_from_message_log(
-                    val_batch["message_log"][i], ["role", "content"]
-                )
-                for i in range(len(val_batch["message_log"]))
-            ]
-
-            all_message_logs.extend(to_env)
-
-        # Calculate validation metrics
-        num_samples = len(total_rewards)
-        if num_samples > 0:
-            rewards_t = torch.tensor(total_rewards, dtype=torch.float32)
-            accuracy = rewards_t.mean().item()
-        else:
-            accuracy = 0.0
-
-        avg_length = (
-            sum(total_lengths) / len(total_lengths) if len(total_lengths) > 0 else 0.0
-        )
-
-        val_metrics = {
-            "accuracy": accuracy,
-            "avg_length": avg_length,
-            **additional_metrics_to_report,
-        }
-
-        # Print sample conversations only once at the end of validation
-        try:
-            print_message_log_samples(
-                all_message_logs,
-                total_rewards,
-                num_samples=min(
-                    master_config["logger"]["num_val_samples_to_print"],
-                    len(all_message_logs),
-                ),
-                step=step,
-            )
-        except Exception as e:
-            print(f"\n  ⚠️ Error displaying message samples: {str(e)}")
-            print("  ⚠️ Continuing validation without displaying samples...", flush=True)
-
-    # Get timing metrics
-    timing_metrics = timer.get_timing_metrics(reduction_op="sum")
-    validation_time = timing_metrics.get("total_validation_time", 0)
-
-    # Print summary of validation results
-    print("\n📊 Validation Results:")
-    print(f"    • Accuracy: {accuracy:.4f}")
-    print(f"    • Average response length: {avg_length:.1f} tokens")
-    print(f"    • Samples processed: {len(total_rewards)}", flush=True)
-
-    # Print timing information
-    print("\n  ⏱️  Validation Timing:")
-    validation_time = timing_metrics.get("total_validation_time", 0)
-    print(f"    • Total validation time: {validation_time:.2f}s", flush=True)
-
-    # Log validation data to JSONL file
-    if logger is not None:
-        val_log_data = {
-            "content": all_message_logs,
-            "rewards": total_rewards,
-        }
-        logger.log_batched_dict_as_jsonl(val_log_data, f"val_data_step{step}.jsonl")
-        del val_log_data
-    del all_message_logs, total_rewards, total_lengths
-
-    # Make sure to reset the timer after validation
-    timer.reset()
-
-    # Explicit GPU memory cleanup after validation
-    gc.collect()
-    torch.cuda.empty_cache()
-    _malloc_trim()
-    _log_rss("validation/exit")
-
-    return val_metrics, timing_metrics
-
-
 def async_grpo_train(
     policy: ColocatablePolicyInterface,
     policy_generation: Optional[GenerationInterface],
@@ -1648,9 +1446,15 @@ def async_grpo_train(
     total_valid_tokens = grpo_save_state.get(
         "total_valid_tokens", 0
     )  # Default to 0 for backward compatibility with older checkpoints
-    val_period = master_config["grpo"]["val_period"]
-    val_at_start = master_config["grpo"]["val_at_start"]
-    val_at_end = master_config["grpo"]["val_at_end"]
+    if (
+        master_config["grpo"]["val_period"] > 0
+        or master_config["grpo"]["val_at_start"]
+        or master_config["grpo"]["val_at_end"]
+    ):
+        print(
+            "⚠️ Validation is not supported by this codebase; skipping validation and continuing training.",
+            flush=True,
+        )
     colocated_inference = master_config["policy"]["generation"]["colocated"]["enabled"]
 
     # Initialize advantage estimator
@@ -1827,37 +1631,7 @@ def async_grpo_train(
             traceback.print_exc()
             return
 
-    print("✅ Policy generation setup complete, proceeding to validation...")
-
-    # Run validation at start if configured
-    if val_at_start and step == 0:
-        print("\n🔍 Running initial validation...")
-        # Pause trajectory collection during initial validation
-        trajectory_collector.pause.remote()
-
-        try:
-            val_metrics, validation_timings = validate(
-                policy_generation,
-                val_dataloader,
-                tokenizer,
-                val_task_to_env,
-                step=0,
-                master_config=master_config,
-                logger=logger,
-            )
-            policy_generation.finish_generation()
-            logger.log_metrics(val_metrics, step, prefix="validation")
-            logger.log_metrics(validation_timings, step, prefix="timing/validation")
-            print("✅ Initial validation completed successfully")
-        except Exception as e:
-            print(f"❌ Initial validation failed: {e}")
-            import traceback
-
-            traceback.print_exc()
-            # Continue anyway since validation is optional
-        finally:
-            # Resume trajectory collection after initial validation
-            trajectory_collector.resume.remote()
+    print("✅ Policy generation setup complete, starting training...")
 
     print("✅ All setup complete, starting buffer wait...")
     # Clear logger metrics at start of training
@@ -2422,47 +2196,8 @@ def async_grpo_train(
                 if policy_generation is not None:
                     policy_generation.clear_logger_metrics()
 
-                # Validation
-                val_metrics, validation_timings = None, None
                 is_last_step = step + 1 == master_config["grpo"]["max_num_steps"]
 
-                # Run validation if it's a validation step or last step with val_at_end
-                if (val_period > 0 and (step + 1) % val_period == 0) or (
-                    val_at_end and is_last_step
-                ):
-                    with timer.time("idle/validation"):
-                        # Pause trajectory collection during validation to reduce memory pressure
-                        trajectory_collector.pause.remote()
-
-                        if NEED_REFIT and POLICY_GENERATION_STALE:
-                            refit_policy_generation(
-                                policy, policy_generation, colocated_inference
-                            )
-                            POLICY_GENERATION_STALE = False
-                        else:
-                            policy_generation.prepare_for_generation()
-                        val_metrics, validation_timings = validate(
-                            policy_generation,
-                            val_dataloader,
-                            tokenizer,
-                            val_task_to_env,
-                            step=step + 1,
-                            master_config=master_config,
-                            logger=logger,
-                        )
-                        policy_generation.finish_generation()
-                        logger.log_metrics(
-                            validation_timings, step + 1, prefix="timing/validation"
-                        )
-                        logger.log_metrics(val_metrics, step + 1, prefix="validation")
-
-                        gc.collect()
-                        torch.cuda.empty_cache()
-                        _malloc_trim()
-                        _log_rss("post-validation")
-
-                        # Resume trajectory collection after validation
-                        trajectory_collector.resume.remote()
                 # Get flat advantages and token mask for masked metrics computation
                 flat_advantages = train_data["advantages"]
 
@@ -2568,10 +2303,6 @@ def async_grpo_train(
                 ):
                     grpo_save_state["current_step"] = step + 1
                     grpo_save_state["total_valid_tokens"] = total_valid_tokens
-                    if val_metrics is not None:
-                        grpo_save_state["val_reward"] = val_metrics["accuracy"]
-                    elif "val_reward" in grpo_save_state:
-                        del grpo_save_state["val_reward"]
                     grpo_save_state["consumed_samples"] = consumed_samples
 
                     full_metric_name = master_config["checkpointing"]["metric_name"]
@@ -2585,23 +2316,19 @@ def async_grpo_train(
                             f" e.g. 'val_reward --> 'val:accuracy'"
                         )
                         prefix, metric_name = full_metric_name.split(":", 1)
-                        metrics_source = metrics if prefix == "train" else val_metrics
-                        if not metrics_source:
-                            warnings.warn(
-                                f"You asked to save checkpoints based on {metric_name} but no {prefix} metrics were collected. "
-                                "This checkpoint will not be saved as top-k.",
-                                stacklevel=2,
+                        if prefix == "val":
+                            print(
+                                f"⚠️ Validation is not supported by this codebase; skipping checkpoint metric {full_metric_name}.",
+                                flush=True,
                             )
                             if full_metric_name in grpo_save_state:
                                 del grpo_save_state[full_metric_name]
-                        elif metric_name not in metrics_source:
-                            raise ValueError(
-                                f"Metric {metric_name} not found in {prefix} metrics"
-                            )
                         else:
-                            grpo_save_state[full_metric_name] = metrics_source[
-                                metric_name
-                            ]
+                            if metric_name not in metrics:
+                                raise ValueError(
+                                    f"Metric {metric_name} not found in {prefix} metrics"
+                                )
+                            grpo_save_state[full_metric_name] = metrics[metric_name]
 
                     with timer.time("checkpointing"):
                         checkpointer.finalize_pending()
@@ -2806,7 +2533,6 @@ def async_grpo_train(
                     "init/total",
                     "idle/buffer_starvation",
                     "idle/refit_bubble",
-                    "idle/validation",
                 ]
                 if cat in timer._timers
             }

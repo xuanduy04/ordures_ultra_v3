@@ -1,4 +1,3 @@
-
 import os
 import subprocess
 from pathlib import Path
@@ -283,9 +282,6 @@ Depending on your data shape, you may want to change these values."""
 Seen token IDs: {seen_token_ids.tolist()}
 Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
 """
-
-            n_seen = len(seen_token_ids)
-
             # Create tensors for new tokens
             new_prompt_token_ids = torch.tensor(
                 output_item_dict["prompt_token_ids"][n_seen:], dtype=torch.int64
