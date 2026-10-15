@@ -5,7 +5,6 @@
 
 import asyncio
 import copy
-import json
 import math
 import statistics
 from collections import defaultdict
@@ -1050,7 +1049,8 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
          negative-advantage clamp in grpo.py.
 
       3. penalize_eos_token (token-based)
-         The EOS token (default id 2, configurable via token_ids.eos) should never
+         The EOS token(s) (default ids "2,11", configurable via token_ids.eos as a 
+         single integer or comma-separated integers, e.g. "2,177") should never
          appear in any assistant generation. Checks message_log assistant entries.
          Data: message_log[i]["token_ids"] where role == "assistant".
          Advantage-level flag (grpo.penalize_eos_token): additionally marks every
@@ -1167,11 +1167,36 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
     # --- Penalty 3: EOS token in generation ---
     if master_config.get("penalize_eos_token", False) or grpo_cfg.get("penalize_eos_token", False):
         token_ids_cfg = master_config.get("token_ids", {})
-        eos_token_id = token_ids_cfg.get("eos", 2)
+        eos_cfg = token_ids_cfg.get("eos", "2,11")
+        if isinstance(eos_cfg, str):
+            eos_token_ids: set[int] = set()
+            for part in eos_cfg.split(","):
+                part = part.strip()
+                if not part:
+                    continue
+                try:
+                    eos_token_ids.add(int(part))
+                except ValueError:
+                    raise ValueError(
+                        f"Invalid token_ids.eos entry {part!r} in {eos_cfg!r}; "
+                        "expected comma-separated integer token IDs."
+                    ) from None
+            if not eos_token_ids:
+                raise ValueError(
+                    f"token_ids.eos value {eos_cfg!r} contains no token IDs."
+                )
+        else:
+            try:
+                eos_token_ids: set[int] = {int(eos_cfg)}
+            except ValueError:
+                raise ValueError(
+                    f"Invalid token_ids.eos entry '{eos_cfg!r}'; expected integer token IDs."
+                ) from None
+            
         for result in results:
             first_eos_idx = None
             for idx, msg in enumerate(result["message_log"]):
-                if msg["role"] == "assistant" and eos_token_id in msg["token_ids"]:
+                if msg["role"] == "assistant" and any(eos_token_id in msg["token_ids"] for eos_token_id in eos_token_ids):
                     first_eos_idx = idx
                     counts["eos_token"] += 1
                     break

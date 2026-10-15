@@ -4,6 +4,7 @@ import os
 import re
 import sys
 
+import pytest
 import torch
 
 # apply_reward_penalties only needs torch, but rollouts.py imports ray/vllm/zmq.
@@ -262,6 +263,64 @@ class TestPenalizeEosToken:
         counts = apply_reward_penalties([result], cfg)
         assert result["full_result"]["reward"] == 0.0
 
+    def test_multi_eos_token_ids_comma_separated(self):
+        cfg = {"penalize_eos_token": True, "token_ids": {"eos": "2,177"}}
+        result = _make_result(reward=1.0, message_log=[
+            _msg("user", [100]),
+            _msg("assistant", [300, 177, 400]),  # token 177 = second configured EOS
+        ])
+        counts = apply_reward_penalties([result], cfg)
+        assert result["full_result"]["reward"] == 0.0
+        assert counts["eos_token"] == 1
+
+    def test_multi_eos_token_ids_dedup_and_strip(self):
+        cfg = {"penalize_eos_token": True, "token_ids": {"eos": "2,1 ,6,,7,  "}}
+        result = _make_result(reward=1.0, message_log=[
+            _msg("user", [100]),
+            _msg("assistant", [300, 7, 400]),
+        ])
+        counts = apply_reward_penalties([result], cfg)
+        assert result["full_result"]["reward"] == 0.0
+        assert counts["eos_token"] == 1
+
+    def test_multi_eos_no_match_not_penalized(self):
+        cfg = {"penalize_eos_token": True, "token_ids": {"eos": "2,1 ,6,,7,  "}}
+        result = _make_result(reward=1.0, message_log=[
+            _msg("user", [100]),
+            _msg("assistant", [300, 400]),
+        ])
+        counts = apply_reward_penalties([result], cfg)
+        assert result["full_result"]["reward"] == 1.0
+        assert counts["eos_token"] == 0
+
+    def test_single_string_eos_token_id(self):
+        cfg = {"penalize_eos_token": True, "token_ids": {"eos": "99"}}
+        result = _make_result(reward=1.0, message_log=[
+            _msg("user", [100]),
+            _msg("assistant", [300, 99, 400]),
+        ])
+        counts = apply_reward_penalties([result], cfg)
+        assert result["full_result"]["reward"] == 0.0
+        assert counts["eos_token"] == 1
+
+    def test_invalid_eos_entry_raises_value_error(self):
+        cfg = {"penalize_eos_token": True, "token_ids": {"eos": "2,abc"}}
+        result = _make_result(reward=1.0, message_log=[
+            _msg("user", [100]),
+            _msg("assistant", [300, 2]),
+        ])
+        with pytest.raises(ValueError):
+            apply_reward_penalties([result], cfg)
+
+    def test_empty_eos_value_raises_value_error(self):
+        cfg = {"penalize_eos_token": True, "token_ids": {"eos": " ,, "}}
+        result = _make_result(reward=1.0, message_log=[
+            _msg("user", [100]),
+            _msg("assistant", [300, 2]),
+        ])
+        with pytest.raises(ValueError):
+            apply_reward_penalties([result], cfg)
+
     def test_multi_turn_eos_in_second_turn(self):
         result = _make_result(reward=1.0, message_log=[
             _msg("user", [100]),
@@ -479,7 +538,7 @@ class TestAdvantageLevelMalformedThinkTag:
         ])
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
-        assert counts["malformed_think_tag"] == 0
+        assert counts["malformed_think_tag"] == 1
         ml = result["message_log"]
         assert "has_malformed_thinking" not in ml[0]
         assert "has_malformed_thinking" not in ml[1]
@@ -557,7 +616,7 @@ class TestAdvantageLevelEosToken:
         ])
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
-        assert counts["eos_token"] == 0
+        assert counts["eos_token"] == 1
         ml = result["message_log"]
         assert "has_eos_token" not in ml[0]  # user
         assert "has_eos_token" not in ml[1]  # assistant before first EOS
@@ -593,6 +652,17 @@ class TestAdvantageLevelEosToken:
         ])
         counts = apply_reward_penalties([result], cfg)
         assert result["full_result"]["reward"] == 1.0
+        assert result["message_log"][1]["has_eos_token"] is True
+
+    def test_custom_multi_eos_token_ids(self):
+        cfg = {"grpo": {"penalize_eos_token": True}, "token_ids": {"eos": "2,1 ,6,,7,  "}}
+        result = _make_result(reward=1.0, message_log=[
+            _msg("user", [100]),
+            _msg("assistant", [300, 6, 400]),
+        ])
+        counts = apply_reward_penalties([result], cfg)
+        assert result["full_result"]["reward"] == 1.0
+        assert counts["eos_token"] == 1
         assert result["message_log"][1]["has_eos_token"] is True
 
     def test_both_levels_reward_zeroed_and_flagged(self):
@@ -632,7 +702,7 @@ class TestAdvantageLevelEmptyFinalAnswer:
         ])
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
-        assert counts["empty_final_answer"] == 0
+        assert counts["empty_final_answer"] == 1
         assert "has_empty_final_answer" not in result["message_log"][0]
         assert result["message_log"][1]["has_empty_final_answer"] is True
 
@@ -695,7 +765,7 @@ class TestAdvantageLevelEmptyFinalAnswer:
         result = _make_result(reward=1.0, output_items=[])
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
-        assert counts["empty_final_answer"] == 0
+        assert counts["empty_final_answer"] == 1
 
     def test_grpo_flag_triggers_roles_guard(self):
         result = _make_result(reward=1.0, message_log=[
