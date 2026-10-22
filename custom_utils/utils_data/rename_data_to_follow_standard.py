@@ -61,9 +61,11 @@ def _load_valid_data_types() -> set[str] | None:
 
     The fixed types ``SFT``, ``RL_QA``, and ``nemo_gym`` are always valid.
     NeMo-Gym data containing exactly 1 environment uses that environment's
-    name, so every subdirectory of the Gym ``resources_servers`` directory is
-    accepted as well.  If that directory is unavailable, ``None`` is returned
-    to signal that any trailing filename field is accepted as a data type.
+    name, so every subdirectory of the Gym ``resources_servers`` directory and
+    every config file stem under those subdirectories' ``configs`` directories
+    are accepted as well.  If that directory is unavailable, ``None`` is
+    returned to signal that any trailing filename field is accepted as a data
+    type.
     """
     valid_data_types = {"SFT", "RL_QA", "nemo_gym"}
     if not RESOURCES_SERVERS_DIR.is_dir():
@@ -75,6 +77,17 @@ def _load_valid_data_types() -> set[str] | None:
     valid_data_types.update(
         entry.name for entry in RESOURCES_SERVERS_DIR.iterdir() if entry.is_dir()
     )
+    for entry in RESOURCES_SERVERS_DIR.iterdir():
+        if not entry.is_dir():
+            continue
+        configs_dir = entry / "configs"
+        if not configs_dir.is_dir():
+            continue
+        valid_data_types.update(
+            config_path.stem
+            for config_path in configs_dir.iterdir()
+            if config_path.suffix == ".yaml"
+        )
     return valid_data_types
 
 
@@ -170,6 +183,67 @@ def _count_lines(input_path: Path) -> int:
         return _count_lines_python(input_path)
 
 
+def _parse_tool_arguments(arguments: Any) -> Any:
+    """Return *arguments* decoded from JSON when it is a valid JSON string, else unchanged."""
+    if not isinstance(arguments, str):
+        return arguments
+    try:
+        return json.loads(arguments)
+    except json.JSONDecodeError:
+        return arguments
+
+
+def _sanitize_nemo_gym_conversation(conversation: list[dict]) -> list[dict]:
+    """Convert raw agent execution traces into valid HF chat-template messages."""
+    hf_messages: list[dict] = []
+
+    for msg in conversation:
+        # 1. If it's already a standard chat message with a role, keep it and fix argument types if needed
+        if "role" in msg:
+            fixed = dict(msg)
+            if "tool_calls" in fixed:
+                for tc in fixed["tool_calls"]:
+                    function = tc.get("function", {})
+                    if "arguments" in function:
+                        function["arguments"] = _parse_tool_arguments(function["arguments"])
+            hf_messages.append(fixed)
+            continue
+
+        # 2. Handle internal trace items that lack a 'role' key
+        msg_type = msg.get("type")
+
+        if msg_type == "reasoning":
+            continue
+
+        if msg_type == "function_call":
+            # Map to standard assistant tool_calls message format
+            hf_messages.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": msg.get("call_id"),
+                        "type": "function",
+                        "function": {
+                            "name": msg.get("name"),
+                            "arguments": _parse_tool_arguments(msg.get("arguments", {})),
+                        },
+                    }
+                ],
+            })
+            continue
+
+        if msg_type == "function_call_output":
+            # Map to standard tool response format
+            hf_messages.append({
+                "role": "tool",
+                "tool_call_id": msg.get("call_id"),
+                "content": str(msg.get("output", "")),
+            })
+
+    return hf_messages
+
+
 def _extract_main_field(entry: dict, data_type: str) -> Any:
     """Return the main field measured for *data_type*: ``messages``, ``question``, or the gym input."""
     try:
@@ -177,7 +251,7 @@ def _extract_main_field(entry: dict, data_type: str) -> Any:
             return entry["messages"]
         if data_type == DATA_TYPE_RL_QA:
             return entry["question"]
-        return entry["responses_create_params"]["input"]
+        return _sanitize_nemo_gym_conversation(entry["responses_create_params"]["input"])
     except (KeyError, TypeError) as exc:
         raise ValueError(f"Missing or invalid main field for data type {data_type}: {exc!r}") from exc
 

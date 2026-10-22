@@ -4,7 +4,6 @@ import argparse
 import json
 import logging
 import multiprocessing
-import os
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -72,6 +71,67 @@ def _resolve_max_token(value: int) -> int:
     return value if value % 1000 == 0 else value * 1000
 
 
+def _parse_tool_arguments(arguments: Any) -> Any:
+    """Return *arguments* decoded from JSON when it is a valid JSON string, else unchanged."""
+    if not isinstance(arguments, str):
+        return arguments
+    try:
+        return json.loads(arguments)
+    except json.JSONDecodeError:
+        return arguments
+
+
+def _sanitize_nemo_gym_conversation(conversation: list[dict]) -> list[dict]:
+    """Convert raw agent execution traces into valid HF chat-template messages."""
+    hf_messages: list[dict] = []
+
+    for msg in conversation:
+        # 1. If it's already a standard chat message with a role, keep it and fix argument types if needed
+        if "role" in msg:
+            fixed = dict(msg)
+            if "tool_calls" in fixed:
+                for tc in fixed["tool_calls"]:
+                    function = tc.get("function", {})
+                    if "arguments" in function:
+                        function["arguments"] = _parse_tool_arguments(function["arguments"])
+            hf_messages.append(fixed)
+            continue
+
+        # 2. Handle internal trace items that lack a 'role' key
+        msg_type = msg.get("type")
+
+        if msg_type == "reasoning":
+            continue
+
+        if msg_type == "function_call":
+            # Map to standard assistant tool_calls message format
+            hf_messages.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": msg.get("call_id"),
+                        "type": "function",
+                        "function": {
+                            "name": msg.get("name"),
+                            "arguments": _parse_tool_arguments(msg.get("arguments", {})),
+                        },
+                    }
+                ],
+            })
+            continue
+
+        if msg_type == "function_call_output":
+            # Map to standard tool response format
+            hf_messages.append({
+                "role": "tool",
+                "tool_call_id": msg.get("call_id"),
+                "content": str(msg.get("output", "")),
+            })
+
+    return hf_messages
+
+
 def _extract_main_field(entry: dict, data_type: str) -> Any:
     """Return the main field measured for *data_type*: ``messages``, ``question``, or the gym input."""
     try:
@@ -80,7 +140,7 @@ def _extract_main_field(entry: dict, data_type: str) -> Any:
         if data_type == DATA_TYPE_RL_QA:
             return entry["question"]
         if data_type == DATA_TYPE_NEMO_GYM:
-            return entry["responses_create_params"]["input"]
+            return _sanitize_nemo_gym_conversation(entry["responses_create_params"]["input"])
     except (KeyError, TypeError) as exc:
         raise ValueError(f"Missing or invalid main field for data type {data_type}: {exc!r}") from exc
     raise ValueError(f"Unsupported data type: {data_type}")
@@ -365,6 +425,8 @@ def main() -> None:
     logger.info(f"Filtering {input_path} to at most {max_token} tokens ({args.data_type}) -> {output_path}")
 
     total_lines = _try_count_lines(input_path)
+    if total_lines == 0:
+        parser.error("Input dataset is empty.")
     if total_lines is not None:
         logger.info(f"Found {total_lines} line(s) in '{input_path.name}'.")
 

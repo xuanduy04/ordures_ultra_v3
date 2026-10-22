@@ -28,7 +28,7 @@ The filename stem for finalized files should follow `<content>-<metadata>-<data 
 - `data type`: the dataset type:
     - SFT data: `SFT`
     - RL QA data: `RL_QA`
-    - NeMo-Gym data containing exactly 1 environment: that environment's name
+    - NeMo-Gym data containing exactly 1 environment: that environment's name (an environment folder name under `3rdparty/Gym-workspace/Gym/resources_servers/`, or the stem of a config file under such a folder's `configs/` directory)
     - NeMo-Gym data containing multiple environments: `nemo_gym`
 
 Not all input files processed by scripts are expected to follow this standard. Users should run `rename_data_to_follow_standard.py` when a finalized file is ready to be renamed. Other scripts do not enforce or depend on this filename format, although their default output names help show the chronological data-processing pipeline that `rename_data_to_follow_standard.py` uses when renaming finalized files.
@@ -142,7 +142,7 @@ Renames **inplace** the json file into one that follows the Filename Standard.
 
 Reads the current filename right-to-left to determine its `len` metadata (if present) and `data type`, then counts lines to determine the `sam` metadata. When the filename has no `len` metadata, each row's Main field (selected by `data type`) is tokenized and the maximum token count becomes the `len` metadata.
 
-Valid data types are `SFT`, `RL_QA`, `nemo_gym`, or a NeMo-Gym environment name (discovered from `3rdparty/Gym-workspace/Gym/resources_servers/`). If the filename has no valid data type, the script errors out and asks the user to specify `--data-type`. 
+Valid data types are `SFT`, `RL_QA`, `nemo_gym`, or a NeMo-Gym environment name (discovered from the environment folder names and the `configs/*.yaml` stems under `3rdparty/Gym-workspace/Gym/resources_servers/`). If the filename has no valid data type, the script errors out and asks the user to specify `--data-type`. 
 
 Extra flags: 
 
