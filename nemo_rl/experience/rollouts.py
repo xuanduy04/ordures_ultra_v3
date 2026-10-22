@@ -1019,6 +1019,76 @@ def _calculate_single_metric(
     }
 
 
+def apply_empty_generation_gate(results: list[dict], master_config: dict | None) -> int:
+    """Treat empty assistant generations as a single EOS token.
+
+    A model that emits EOS as its very first token generates zero output
+    tokens. Such assistant messages carry empty token_ids and empty
+    generation_logprobs, which leaves the sample with zero trainable tokens
+    and makes every per-token advantage penalty a no-op. This gate rewrites
+    empty assistant generations to contain exactly one token — the smallest
+    configured EOS token id (token_ids.eos) — with a 0.0 logprob, so the
+    sample flows through reward shaping, penalties and training like any
+    1-token generation. Gated messages are marked with has_empty_generation
+    so advantage calibration can special-case them later.
+
+    Args:
+        results: List of rollout result dicts with a "message_log".
+        master_config: Full master config; must contain token_ids.eos.
+
+    Returns:
+        Number of assistant messages gated.
+    """
+    if not master_config or not results:
+        return 0
+
+    eos_cfg = master_config["token_ids"]["eos"]
+    if isinstance(eos_cfg, str):
+        eos_token_ids: list[int] = []
+        for part in eos_cfg.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                eos_token_ids.append(int(part))
+            except ValueError:
+                raise ValueError(
+                    f"Invalid token_ids.eos entry {part!r} in {eos_cfg!r}; "
+                    "expected comma-separated integer token IDs."
+                ) from None
+        if not eos_token_ids:
+            raise ValueError(
+                f"token_ids.eos value {eos_cfg!r} contains no token IDs."
+            )
+    else:
+        try:
+            eos_token_ids = [int(eos_cfg)]
+        except ValueError:
+            raise ValueError(
+                f"Invalid token_ids.eos entry '{eos_cfg!r}'; expected integer token IDs."
+            ) from None
+
+    gate_token_id = min(eos_token_ids)
+
+    num_gated = 0
+    for result in results:
+        for msg in result["message_log"]:
+            if msg.get("role") != "assistant":
+                continue
+            if msg["token_ids"].numel() > 0:
+                continue
+            msg["token_ids"] = torch.tensor(
+                [gate_token_id], dtype=msg["token_ids"].dtype
+            )
+            msg["generation_logprobs"] = torch.tensor(
+                [0.0], dtype=msg["generation_logprobs"].dtype
+            )
+            msg["has_empty_generation"] = True
+            num_gated += 1
+
+    return num_gated
+
+
 def apply_reward_penalties(results: list[dict], master_config: dict | None) -> dict[str, int]:
     """Apply reward penalties to results, setting reward to 0.0 when triggered.
 
@@ -1405,6 +1475,8 @@ def _postprocess_single_group(
     tokenizer: TokenizerType,
     master_config = None,
 ) -> AsyncNemoGymRolloutResult:
+    apply_empty_generation_gate(results, master_config)
+
     # for effort level
     len_reward_low = []
     reward_low = []
