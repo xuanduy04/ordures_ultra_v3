@@ -1951,6 +1951,16 @@ def async_grpo_train(
                         ],
                     )
 
+                    if input_lengths.numel() > 0 and (input_lengths <= 0).any():
+                        n_zero = int((input_lengths <= 0).sum().item())
+                        print(
+                            f"⚠ Clamping {n_zero} sample(s) with zero sequence length to 1 "
+                            f"(empty-message-log rollouts are already loss-masked; "
+                            f"this keeps sequence packing alive).",
+                            flush=True,
+                        )
+                        input_lengths = input_lengths.clamp(min=1)
+
                     # Create training data
                     # Note: advantages will be computed and added after logprobs are available
                     train_data = BatchedDataDict[ClippedPGLossDataDict](
@@ -2131,6 +2141,20 @@ def async_grpo_train(
                                 print(f"Setting negative advantage ({empty_neg_adv}) for empty final answer in assistant message {i} turn {j}", flush=True)
                                 train_data["advantages"][i, token_offset:token_offset + msg_len].add_(empty_neg_adv).clamp_(max=empty_neg_adv)
                             token_offset += msg_len
+
+                    empty_gen_sample_idxs = [
+                        i
+                        for i, message_log in enumerate(repeated_batch["message_log"])
+                        if any(message.get("has_empty_generation") for message in message_log)
+                    ]
+                    if empty_gen_sample_idxs:
+                        max_abs_adv = train_data["advantages"].abs().max().item()
+                        train_data["advantages"][empty_gen_sample_idxs] = -max_abs_adv
+                        print(
+                            f"⚖️ Advantage calibration: {len(empty_gen_sample_idxs)} empty-generation sample(s) "
+                            f"set to -max|adv| = {-max_abs_adv:.4f}",
+                            flush=True,
+                        )
                 del trajectory_teacher_logprobs
                 gc.collect()
                 _malloc_trim()
