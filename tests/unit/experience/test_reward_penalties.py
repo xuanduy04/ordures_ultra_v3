@@ -357,11 +357,11 @@ class TestPenalizeEosToken:
 
 
 # =====================================================================
-# Penalty 4: penalize_malformed_think_tag
+# Penalty 4: penalize_malformed_thinking
 # =====================================================================
 
 class TestPenalizeMultiEndThink:
-    CFG = {"penalize_malformed_think_tag": True}
+    CFG = {"penalize_malformed_thinking": True}
 
     # --- 4a: Token ID checks ---
 
@@ -391,7 +391,7 @@ class TestPenalizeMultiEndThink:
         ])
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 0.0
-        assert counts["malformed_think_tag"] == 1
+        assert counts["malformed_thinking"] == 1
 
     def test_missing_think_close_penalized(self):
         """No </think> token at all."""
@@ -444,7 +444,7 @@ class TestPenalizeMultiEndThink:
 
     def test_custom_token_ids(self):
         cfg = {
-            "penalize_malformed_think_tag": True,
+            "penalize_malformed_thinking": True,
             "token_ids": {"think_open": 50, "think_close": 51},
         }
         result = _make_result(reward=1.0, message_log=[
@@ -542,7 +542,7 @@ class TestPenalizeMultiEndThink:
 
 
 class TestAdvantageLevelMalformedThinkTag:
-    CFG = {"grpo": {"penalize_malformed_think_tag": True}}
+    CFG = {"grpo": {"penalize_malformed_thinking": True}}
 
     def test_token_violation_marks_only_violating_turns(self):
         """Turn 1 valid, turn 2 has double  response — only turn 2 marked."""
@@ -554,7 +554,7 @@ class TestAdvantageLevelMalformedThinkTag:
         ])
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
-        assert counts["malformed_think_tag"] == 1
+        assert counts["malformed_thinking"] == 1
         ml = result["message_log"]
         assert "has_malformed_thinking" not in ml[0]
         assert "has_malformed_thinking" not in ml[1]
@@ -599,8 +599,8 @@ class TestAdvantageLevelMalformedThinkTag:
 
     def test_both_levels_reward_zeroed_and_flagged(self):
         cfg = {
-            "penalize_malformed_think_tag": True,
-            "grpo": {"penalize_malformed_think_tag": True},
+            "penalize_malformed_thinking": True,
+            "grpo": {"penalize_malformed_thinking": True},
         }
         result = _make_result(reward=1.0, message_log=[
             _msg("user", [100, 13, 13, 12]),  # unexpected prompt pattern
@@ -608,7 +608,7 @@ class TestAdvantageLevelMalformedThinkTag:
         ])
         counts = apply_reward_penalties([result], cfg)
         assert result["full_result"]["reward"] == 0.0
-        assert counts["malformed_think_tag"] == 1
+        assert counts["malformed_thinking"] == 1
         assert result["message_log"][1]["has_malformed_thinking"] is True
 
 

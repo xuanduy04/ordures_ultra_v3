@@ -1089,6 +1089,53 @@ def apply_empty_generation_gate(results: list[dict], master_config: dict | None)
     return num_gated
 
 
+def _n_gram_repetition_mask(
+    token_ids: torch.Tensor, n_gram_size: int, repetition_threshold: int
+) -> torch.Tensor:
+    """Per-token overlap-count mask for repeated N-grams via rolling hash.
+
+    Each position holds how many N-gram windows, whose occurrence rank is at
+    least `repetition_threshold`, cover it. The first
+    `repetition_threshold - 1` occurrences of each distinct N-gram are exempt.
+
+    Uses a single-modulus polynomial hash (2^61 - 1) for O(T) counting.
+    """
+    _N_GRAM_HASH_BASE = 1_000_003
+    _N_GRAM_HASH_MODULUS = (1 << 61) - 1
+
+    token_id_list = token_ids.tolist()
+    num_tokens = len(token_id_list)
+    repetition_mask = torch.zeros(num_tokens)
+    if num_tokens < n_gram_size:
+        return repetition_mask
+    rolling_hash = 0
+    for token_id in token_id_list[:n_gram_size]:
+        rolling_hash = (
+            rolling_hash * _N_GRAM_HASH_BASE + token_id
+        ) % _N_GRAM_HASH_MODULUS
+    oldest_token_multiplier = pow(
+        _N_GRAM_HASH_BASE, n_gram_size - 1, _N_GRAM_HASH_MODULUS
+    )
+    occurrence_counts = {}
+    for window_end in range(n_gram_size - 1, num_tokens):
+        occurrence_counts[rolling_hash] = occurrence_counts.get(rolling_hash, 0) + 1
+        if occurrence_counts[rolling_hash] >= repetition_threshold:
+            repetition_mask[
+                window_end - n_gram_size + 1 : window_end + 1
+            ] += 1.0
+        if window_end < num_tokens - 1:
+            rolling_hash = (
+                (
+                    rolling_hash
+                    - token_id_list[window_end - n_gram_size + 1]
+                    * oldest_token_multiplier
+                )
+                * _N_GRAM_HASH_BASE
+                + token_id_list[window_end + 1]
+            ) % _N_GRAM_HASH_MODULUS
+    return repetition_mask
+
+
 def apply_reward_penalties(results: list[dict], master_config: dict | None) -> dict[str, int]:
     """Apply reward penalties to results, setting reward to 0.0 when triggered.
 
@@ -1127,7 +1174,7 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
          assistant message from the first EOS-bearing message to the final message
          with has_eos_token for the negative-advantage clamp in grpo.py.
 
-      4. penalize_malformed_think_tag (token-based + string-based)
+      4. penalize_malformed_thinking (token-based + string-based)
          Two complementary checks to catch malformed think tags:
          a) Token ID check: infers thinking mode from prompt token counts.
             If prompt has open==close: enable_thinking=False, expect 0 open
@@ -1141,15 +1188,23 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
             item: "<think>" count must be 0 (always in prompt, never generated),
             "</think>" count must be 0 or 1.
          Data: message_log pairs for token IDs, full_result output items for strings.
-         Advantage-level flag (grpo.penalize_malformed_think_tag): additionally marks
+         Advantage-level flag (grpo.penalize_malformed_thinking): additionally marks
          each violative assistant message with has_malformed_thinking for the
          negative-advantage clamp in grpo.py
+
+      5. penalize_n_gram_repetition (token-based)
+         Counts repeated N-gram windows (grpo.n_gram_repetition_size / grpo.n_gram_repetition_threshold)
+         within each assistant generation via rolling hash and attaches a per-token overlap-count mask 
+         (n_gram_repetition_mask) to each assistant message. grpo.py subtracts (mask).clamp(min=0) * grpo.n_gram_repetition_weight 
+         from the token advantages.
+         Data: message_log[i]["token_ids"] where role == "assistant".
     """
     counts = {
         "duplicated_reasoning": 0,
         "empty_final_answer": 0,
         "eos_token": 0,
-        "malformed_think_tag": 0,
+        "malformed_thinking": 0,
+        "n_gram_repetition": 0,
     }
     if not master_config or not results:
         return counts
@@ -1160,12 +1215,12 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
     any_penalty_enabled = any(
         master_config.get(flag, False)
         for flag in ("penalize_duplicated_reasoning", "penalize_empty_final_answer",
-                     "penalize_eos_token", "penalize_malformed_think_tag")
+                     "penalize_eos_token", "penalize_malformed_thinking")
     )
     any_penalty_enabled = any_penalty_enabled or any(
         bool((master_config.get("grpo") or {}).get(flag, False))
         for flag in ("penalize_empty_final_answer", "penalize_eos_token",
-                     "penalize_malformed_think_tag")
+                     "penalize_malformed_thinking", "penalize_n_gram_repetition")
     )
     if any_penalty_enabled:
         for result in results:
@@ -1281,7 +1336,7 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
                             msg["has_eos_token"] = True
 
     # --- Penalty 4: Malformed think tags (token ID + string) ---
-    if master_config.get("penalize_malformed_think_tag", False) or grpo_cfg.get("penalize_malformed_think_tag", False):
+    if master_config.get("penalize_malformed_thinking", False) or grpo_cfg.get("penalize_malformed_thinking", False):
         token_ids_cfg = master_config.get("token_ids", {})
         think_open_token_id = token_ids_cfg.get("think_open", 12)
         think_close_token_id = token_ids_cfg.get("think_close", 13)
@@ -1309,12 +1364,12 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
                     else:
                         # Unexpected prompt pattern — flag as violation
                         has_violation = True
-                        if grpo_cfg.get("penalize_malformed_think_tag", False):
+                        if grpo_cfg.get("penalize_malformed_thinking", False):
                             msgs[i + 1]["has_malformed_thinking"] = True
                         continue
                     if asst_open != expected_open or asst_close != expected_close:
                         has_violation = True
-                        if grpo_cfg.get("penalize_malformed_think_tag", False):
+                        if grpo_cfg.get("penalize_malformed_thinking", False):
                             msgs[i + 1]["has_malformed_thinking"] = True
             # 4b) String check on generation_str per output item
             output_items = result["full_result"].get("response", {}).get("output", [])
@@ -1326,13 +1381,29 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
                     continue
                 if gen_str.count("<think>") > 0 or gen_str.count("</think>") > 1:
                     has_violation = True
-                    if grpo_cfg.get("penalize_malformed_think_tag", False) and gen_item_idx < len(assistant_msgs):
+                    if grpo_cfg.get("penalize_malformed_thinking", False) and gen_item_idx < len(assistant_msgs):
                         assistant_msgs[gen_item_idx]["has_malformed_thinking"] = True
                 gen_item_idx += 1  # increment idx only for generation turns
             if has_violation:
-                counts["malformed_think_tag"] += 1
-                if master_config.get("penalize_malformed_think_tag", False):
+                counts["malformed_thinking"] += 1
+                if master_config.get("penalize_malformed_thinking", False):
                     result["full_result"]["reward"] = 0.0
+
+    # --- Penalty 5: N-gram repetition (token-based, advantage-level) ---
+    if grpo_cfg.get("penalize_n_gram_repetition", False):
+        n_gram_size = int(grpo_cfg.get("n_gram_repetition_size", 4))
+        n_gram_threshold = int(grpo_cfg.get("n_gram_repetition_threshold", 2))
+        for result in results:
+            sample_repeated = False
+            for msg in result["message_log"]:
+                if msg["role"] != "assistant":
+                    continue
+                repeat_mask = _n_gram_repetition_mask(msg["token_ids"], n_gram_size, n_gram_threshold)
+                msg["n_gram_repetition_mask"] = repeat_mask
+                if bool(repeat_mask.any()):
+                    sample_repeated = True
+            if sample_repeated:
+                counts["n_gram_repetition"] += 1
 
     return counts
 
@@ -1717,11 +1788,13 @@ def _postprocess_single_group(
         "duplicated_reasoning": ("penalize_duplicated_reasoning", "reasoning_equal_to_final_answer_rate"),
         "empty_final_answer": ("penalize_empty_final_answer", "empty_final_answer_rate"),
         "eos_token": ("penalize_eos_token", "eos_token_rate"),
-        "malformed_think_tag": ("penalize_malformed_think_tag", "malformed_think_tag_rate"),
+        "malformed_thinking": ("penalize_malformed_thinking", "malformed_thinking_rate"),
+        "n_gram_repetition": ("penalize_n_gram_repetition", "n_gram_repetition_rate"),
     }
     if master_config and results:
+        grpo_cfg = master_config.get("grpo") or {}
         for key, (flag, metric_name) in _PENALTY_METRICS.items():
-            if master_config.get(flag, False):
+            if master_config.get(flag, False) or grpo_cfg.get(flag, False):
                 rollout_metrics[metric_name] = penalty_counts[key] / len(results)
 
     ng_task_index = None
