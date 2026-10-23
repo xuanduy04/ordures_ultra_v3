@@ -1147,6 +1147,115 @@ def _log_rss(tag: str) -> None:
         pass
 
 
+def _distribution_stats(
+    values: torch.Tensor, mask: torch.Tensor
+) -> dict[str, Any]:
+    """Compute distribution statistics for masked values.
+
+    Args:
+        values: Tensor of values to summarize, e.g. advantages of one sample.
+        mask: Boolean mask selecting the positions of interest (e.g. valid
+            response tokens). Must be broadcastable to values' shape.
+
+    Returns:
+        A JSON-serializable dict of statistics (Python floats/ints) computed
+        over the finite masked values. Returns counts-only dict if there are
+        no masked or finite values.
+    """
+    arr = (
+        torch.masked_select(values, mask.bool())
+        .detach()
+        .float()
+        .cpu()
+    )
+    stats: dict[str, Any] = {
+        "count": int(arr.numel()),
+        "num_nan": int(torch.isnan(arr).sum()),
+        "num_pos_inf": int(torch.isposinf(arr).sum()),
+        "num_neg_inf": int(torch.isneginf(arr).sum()),
+    }
+    finite = arr[torch.isfinite(arr)]
+    if finite.numel() == 0:
+        return stats
+
+    mean = float(torch.mean(finite))
+    std = float(torch.std(finite, correction=1)) if finite.numel() > 1 else 0.0
+    quantiles = torch.quantile(
+        finite,
+        torch.tensor(
+            [0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99],
+            dtype=torch.float32,
+        ),
+    )
+    p1, p5, p10, p25, p50, p75, p90, p95, p99 = (
+        float(v) for v in quantiles
+    )
+    centered = finite - mean
+    skewness: float | None = None
+    kurtosis: float | None = None
+    if finite.numel() >= 3 and std > 0:
+        z = centered / std
+        n = finite.numel()
+        skewness = float((n / ((n - 1) * (n - 2))) * torch.sum(z.pow(3)))
+    if finite.numel() >= 4 and std > 0:
+        z = centered / std
+        n = finite.numel()
+        kurtosis = float(
+            (n * (n + 1) / ((n - 1) * (n - 2) * (n - 3)))
+            * torch.sum(z.pow(4))
+            - 3 * (n - 1) ** 2 / ((n - 2) * (n - 3))
+        )
+
+    # Histogram over the robust p1-p99 range, falling back to min-max
+    # (or a single guard bin) when the range collapses. p1/p99 are
+    # quantiles of `finite`, so they are always finite here.
+    hist_low, hist_high = p1, p99
+    if hist_high <= hist_low:
+        hist_low, hist_high = float(torch.min(finite)), float(torch.max(finite))
+    if hist_high <= hist_low:
+        hist_low -= 0.5
+        hist_high += 0.5
+    hist_counts, hist_edges = torch.histogram(
+        finite, bins=20, range=(hist_low, hist_high)
+    )
+
+    stats.update(
+        {
+            "mean": mean,
+            "median": float(torch.median(finite)),
+            "std": std,
+            "var": float(torch.var(finite, correction=1)) if finite.numel() > 1 else 0.0,
+            "sum": float(torch.sum(finite)),
+            "abs_mean": float(torch.mean(torch.abs(finite))),
+            "rms": float(torch.sqrt(torch.mean(finite.square()))),
+            "mad": float(torch.mean(torch.abs(centered))),
+            "min": float(torch.min(finite)),
+            "max": float(torch.max(finite)),
+            "range": float(torch.max(finite) - torch.min(finite)),
+            "p1": p1,
+            "p5": p5,
+            "p10": p10,
+            "p25": p25,
+            "p50": p50,
+            "p75": p75,
+            "p90": p90,
+            "p95": p95,
+            "p99": p99,
+            "iqr": p75 - p25,
+            "skewness": skewness,
+            "kurtosis": kurtosis,
+            "frac_positive": float(torch.mean((finite > 0).float())),
+            "frac_negative": float(torch.mean((finite < 0).float())),
+            "frac_zero": float(torch.mean((finite == 0).float())),
+            "histogram": {
+                "bin_edges": [float(edge) for edge in hist_edges],
+                "counts": [int(c) for c in hist_counts],
+            },
+        }
+    )
+    return stats
+
+
 def refit_policy_generation(
     policy: ColocatablePolicyInterface,
     policy_generation: GenerationInterface,
@@ -2444,7 +2553,13 @@ def async_grpo_train(
                 # log_data["token_ids"] = train_data["input_ids"].tolist()
                 # log_data["token_loss_mask"] = train_data["token_mask"].tolist()
                 # log_data["sample_loss_mask"] = train_data["sample_mask"].tolist()
-                log_data["advantages"] = train_data["advantages"].tolist()
+                log_data["advantages"] = [
+                    _distribution_stats(
+                        train_data["advantages"][i],
+                        train_data["token_mask"][i],
+                    )
+                    for i in range(train_data["advantages"].shape[0])
+                ]
                 # log_data["generation_logprobs"] = train_data["generation_logprobs"].tolist()
                 # log_data["prev_logprobs"] = train_data["prev_logprobs"].tolist()
 
