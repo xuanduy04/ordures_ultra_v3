@@ -1,7 +1,7 @@
 import os
 import subprocess
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, TypedDict
+from typing import Any, AsyncGenerator, Dict, List, NotRequired, Optional, Tuple, TypedDict
 
 import ray
 import torch
@@ -49,6 +49,7 @@ class NemoGymConfig(TypedDict):
     initial_global_config_dict: Dict[str, Any]
     invalid_tool_call_patterns: Optional[List[str]]  # Substrings in assistant text content that indicate an invalid tool call (default: ["<tool_call>", "</tool_call>", "<function_call>", "</function_call>"])
     thinking_tags: Optional[List[str]]  # Thinking tags to check for malformed usage (default: ["<think>", "</think>"])
+    max_total_sequence_length: NotRequired[int]
 
 
 @ray.remote(max_restarts=-1, max_task_retries=-1)  # pragma: no cover
@@ -254,9 +255,7 @@ Depending on your data shape, you may want to change these values."""
     def _postprocess_nemo_gym_to_nemo_rl_result(
         self, nemo_gym_result: dict, tokenizer: PreTrainedTokenizerBase
     ) -> dict:
-        assert isinstance(nemo_gym_result, dict), (
-            f"Hit a non-successful response when querying NeMo Gym for rollouts: {nemo_gym_result}"
-        )
+        assert isinstance(nemo_gym_result, dict), f"Hit a non-successful response when querying NeMo Gym for rollouts: {nemo_gym_result}"
 
         nemo_rl_message_log = []
         seen_token_ids = torch.tensor([], dtype=torch.int64)
@@ -267,13 +266,10 @@ Depending on your data shape, you may want to change these values."""
             # Here we map all the trainable messages to assistant and all the non-trainable messages to user.
             # Eventually we can maybe be smarter about this, but this is functional for now.
 
-            # Note that NeMo-Gym will only return token ids on "assistant" messages and not other message types.
             if "generation_token_ids" not in output_item_dict:
                 continue
 
-            prompt_token_ids_tensor = torch.tensor(
-                output_item_dict["prompt_token_ids"], dtype=torch.int64
-            )
+            prompt_token_ids_tensor = torch.tensor(output_item_dict["prompt_token_ids"], dtype=torch.int64)
             n_seen = len(seen_token_ids)
             if n_seen > 0:
                 assert torch.equal(
@@ -283,16 +279,9 @@ Seen token IDs: {seen_token_ids.tolist()}
 Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
 """
             # Create tensors for new tokens
-            new_prompt_token_ids = torch.tensor(
-                output_item_dict["prompt_token_ids"][n_seen:], dtype=torch.int64
-            )
-            generation_token_ids = torch.tensor(
-                output_item_dict["generation_token_ids"], dtype=torch.int64
-            )
-            generation_logprobs = torch.tensor(
-                output_item_dict["generation_log_probs"], dtype=torch.float32
-            )
-
+            new_prompt_token_ids = torch.tensor(output_item_dict["prompt_token_ids"][n_seen:], dtype=torch.int64)
+            generation_token_ids = torch.tensor(output_item_dict["generation_token_ids"], dtype=torch.int64)
+            generation_logprobs = torch.tensor(output_item_dict["generation_log_probs"], dtype=torch.float32)
 
             nemo_rl_message_log.append(
                 {
@@ -317,7 +306,7 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
             # Malformed thinking-tag detection moved to apply_reward_penalties in
             # nemo_rl/experience/rollouts.py (token-ID + string checks). The
             # per-message has_malformed_thinking flag is now set there when
-            # grpo.penalize_malformed_think_tag is enabled.
+            # grpo.penalize_malformed_thinking is enabled.
 
             if is_output_message:
                 assistant_message_content = output_item_dict["content"][0]["text"]
@@ -338,15 +327,11 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
                 }
             )
 
-            seen_token_ids = torch.cat(
-                [seen_token_ids, new_prompt_token_ids, generation_token_ids]
-            )
+            seen_token_ids = torch.cat([seen_token_ids, new_prompt_token_ids, generation_token_ids])
 
             # We pop to remove larger tensors from logging.
             prompt_token_ids_for_decode = output_item_dict.pop("prompt_token_ids")
-            generation_token_ids_for_decode = output_item_dict.pop(
-                "generation_token_ids"
-            )
+            generation_token_ids_for_decode = output_item_dict.pop("generation_token_ids")
 
             output_item_dict.pop("generation_log_probs")
 
@@ -371,23 +356,20 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
                 output_item_dict["prompt_str"] = prompt_str
                 output_item_dict["generation_str"] = generation_str
 
-        if not nemo_rl_message_log:
+        overlong_prompt = False
+        try:
+            input_messages = nemo_gym_result["responses_create_params"]["input"]
+            prompt_token_ids = tokenizer.apply_chat_template(input_messages, tokenize=True)
+            prompt_len_str = f"{len(prompt_token_ids)} tokens"
+            overlong_prompt = len(prompt_token_ids) >= self.cfg.get("max_total_sequence_length", 65535)
+        except Exception as e:
+            prompt_len_str = f"<unknown — apply_chat_template failed: {type(e).__name__}: {e}>"
+
+        if not nemo_rl_message_log or overlong_prompt:
             # Return a maskable dummy result so training can continue.
             # This covers legitimate cases (prompt exceeds vLLM max_model_len)
             # as well as bugged/malformed samples whose rollout was skipped.
-            try:
-                input_messages = nemo_gym_result["responses_create_params"]["input"]
-                prompt_token_ids = tokenizer.apply_chat_template(
-                    input_messages, tokenize=True
-                )
-                prompt_len_str = f"{len(prompt_token_ids)} tokens"
-            except Exception as e:
-                prompt_len_str = (
-                    f"<unknown — apply_chat_template failed: {type(e).__name__}: {e}>"
-                )
-            output_item_types = [
-                o.get("type") for o in nemo_gym_result["response"]["output"]
-            ]
+            output_item_types = [o.get("type") for o in nemo_gym_result["response"]["output"]]
             print(
                 f"NeMo Gym returned a result with no generation data. "
                 f"Possible causes: (1) the prompt for the first turn already exceeds the vLLM max_model_len, "
@@ -400,17 +382,13 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
                 f"  → If (2): inspect why no assistant content was produced for this rollout.\n"
                 f"This sample will be MASKED (loss_multiplier=0)."
             )
-            return {
-                "message_log": [],
-                "input_message_log": [
-                    {
-                        "role": "user",
-                        "content": "",
-                        "token_ids": torch.tensor([], dtype=torch.long),
-                    }
-                ],
-                "full_result": nemo_gym_result if isinstance(nemo_gym_result, dict) else {"reward": 0.0},
-            }
+            nemo_rl_message_log = [
+                {
+                    "role": "user",
+                    "content": tokenizer.decode([tokenizer.pad_token_id]),
+                    "token_ids": torch.tensor([tokenizer.pad_token_id], dtype=torch.long),
+                }
+            ]
 
         return {
             "message_log": nemo_rl_message_log,

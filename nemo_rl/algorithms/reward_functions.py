@@ -88,7 +88,7 @@ def _compute_n_gram_repetition_penalty(
     fraction_over = over_count / total_n_grams
     normalized_max = max_freq / (seq_len / n)
 
-    return max(fraction_over, normalized_max)
+    return min(max(fraction_over, normalized_max), 1.0)
 
 
 def apply_reward_shaping(
@@ -127,38 +127,38 @@ def apply_reward_shaping(
             # Calculate the expected response length
             expected_response_length = max_response_length - overlong_buffer_length
 
-        assert len(batch["message_log"]) == len(rewards), (
-            "The number of messages in the batch must match the number of rewards"
-        )
+        assert len(batch["message_log"]) == len(rewards), "The number of messages in the batch must match the number of rewards"
 
         for i, message_log in enumerate(batch["message_log"]):
+            if not message_log or len(message_log) == 1:
+                continue
             # Get the assistant response
             assistant_token_ids = None
             for message in message_log:
                 if message["role"] == "assistant":
                     assistant_token_ids = message["token_ids"]
                     break
-            assert assistant_token_ids is not None, (
-                "Assistant response not found during reward shaping. "
-                "This means the model has empty GENERATION (i.e. empty reasoning_content and empty content)."
-                "Something has gone horribly wrong"
-            )
+            if assistant_token_ids is None:
+                print(
+                    "Assistant response not found during reward shaping. "
+                    "This means the model SOMETIMES has empty GENERATION (i.e. empty reasoning_content and empty content)."
+                    "Something may have gone horribly wrong. Skipping this sample..."
+                )
+                continue
 
             if use_n_gram_penalty:
-                penalty = _compute_n_gram_repetition_penalty(
+                n_gram_penalty = _compute_n_gram_repetition_penalty(
                     assistant_token_ids, n_gram_size, n_gram_threshold
                 )
-                rewards[i] = rewards[i] - n_gram_repetition_weight * penalty
+                rewards[i] = rewards[i] - n_gram_repetition_weight * n_gram_penalty
                 if verbose:
                     print("[INFO] n_gram_penalty: Applied successfully")
 
             if use_overlong_penalty:
                 response_length = assistant_token_ids.shape[0]
                 exceed_length = response_length - expected_response_length
-                overlong_reward = min(
-                    -exceed_length / overlong_buffer_length * overlong_buffer_penalty, 0
-                )
-                rewards[i] = rewards[i] + overlong_reward
+                overlong_penalty = min(max(exceed_length / overlong_buffer_length, 0.0), 1.0)
+                rewards[i] = rewards[i] - overlong_buffer_penalty * overlong_penalty
                 if verbose:
                     print("[INFO] overlong_penalty: Applied successfully")
 
@@ -192,9 +192,6 @@ def apply_reward_shaping(
                 )
         else:
             if verbose:
-                print(
-                    "[INFO] stop properly penalty: no truncated samples (truncation_rate=0)",
-                    flush=True,
-                )
+                print("[INFO] stop properly penalty: no truncated samples (truncation_rate=0)", flush=True,)
 
     return batch

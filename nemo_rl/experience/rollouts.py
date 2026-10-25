@@ -1526,7 +1526,9 @@ def _apply_empty_message_log_mask(
     Returns loss_multiplier with zeroed entries for masked samples.
     If no samples need masking, returns the original tensor unchanged.
     """
-    masked = [i for i, result in enumerate(results) if not result["message_log"]]
+    masked = [i for i, result in enumerate(results) 
+              if not result["message_log"] 
+              or (len(result["message_log"]) == len(result["input_message_log"]))]
 
     if not masked:
         return loss_multiplier

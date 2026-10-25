@@ -125,7 +125,7 @@ def test_reward_shaping_missing_dapo_params_is_noop():
 
 
 def test_reward_shaping_missing_assistant_response():
-    """Test that missing assistant response raises assertion error."""
+    """User-only message logs (masked dummies) are skipped, reward untouched."""
     # Create a batch with only user messages (no assistant responses)
     message_logs = [
         [{"role": "user", "content": "Question", "token_ids": torch.tensor([1, 2, 3])}]
@@ -148,10 +148,50 @@ def test_reward_shaping_missing_assistant_response():
         max_response_length=25,
     )
 
-    with pytest.raises(
-        AssertionError, match="Assistant response not found during reward shaping"
-    ):
-        apply_reward_shaping(batch, config)
+    result_batch = apply_reward_shaping(batch, config)
+    assert torch.allclose(result_batch["total_reward"], torch.tensor([1.0]))
+
+
+def test_reward_shaping_skips_empty_message_log_samples():
+    """Masked dummy samples (empty message_log) are skipped, not asserted on."""
+    message_logs = [
+        [
+            {"role": "user", "content": "Q", "token_ids": torch.tensor([1, 2, 3])},
+            {
+                "role": "assistant",
+                "content": "A",
+                "token_ids": torch.arange(30, dtype=torch.long),
+            },
+        ],
+        [],  # masked dummy from an overlong NeMo-Gym rollout
+    ]
+
+    batch = BatchedDataDict[DatumSpec](
+        {
+            "task_name": ["math", "math"],
+            "message_log": message_logs,
+            "extra_env_info": [{}, {}],
+            "loss_multiplier": torch.ones(2),
+            "total_reward": torch.tensor([1.0, 0.5]),
+        }
+    )
+
+    config = RewardShapingConfig(
+        enabled=True,
+        overlong_buffer_length=5,
+        overlong_buffer_penalty=1.0,
+        max_response_length=25,
+        n_gram_size=5,
+        n_gram_threshold=2,
+        n_gram_repetition_weight=0.5,
+    )
+
+    result_batch = apply_reward_shaping(batch, config)
+
+    # Normal sample is shaped (response length 30 > expected 20 -> penalized)
+    assert result_batch["total_reward"][0] < 1.0
+    # Masked dummy's reward is untouched
+    assert torch.allclose(result_batch["total_reward"][1], torch.tensor(0.5))
 
 
 def test_reward_shaping_mismatched_lengths():

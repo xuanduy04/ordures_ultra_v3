@@ -205,7 +205,8 @@ def test_postprocess_nemo_gym_result_normalizes_tensor_dtypes():
             assert tokenize
             return [1, 2, 3]
 
-    env = NemoGym.__new__(NemoGym)
+    modified_class = getattr(NemoGym, "__ray_metadata__").modified_class
+    env = modified_class.__new__(modified_class)
     env.cfg = {}
 
     nemo_gym_result = {
@@ -229,3 +230,142 @@ def test_postprocess_nemo_gym_result_normalizes_tensor_dtypes():
     assert user_message["token_ids"].dtype == torch.int64
     assert assistant_message["token_ids"].dtype == torch.int64
     assert assistant_message["generation_logprobs"].dtype == torch.float32
+
+
+def _make_bare_nemo_gym():
+    modified_class = getattr(NemoGym, "__ray_metadata__").modified_class
+    env = modified_class.__new__(modified_class)
+    env.cfg = {}
+    return env
+
+
+class _DummyTokenizer:
+    pad_token_id = 0
+
+    def batch_decode(self, batch):
+        return ["decoded"] * len(batch)
+
+    def decode(self, token_ids):
+        return "decoded"
+
+    def apply_chat_template(self, input_messages, tokenize=True):
+        assert tokenize
+        return [1, 2, 3]
+
+
+def _model_call_message(text="hello", **extra):
+    message = {
+        "type": "message",
+        "role": "assistant",
+        "content": [{"text": text}],
+    }
+    message.update(extra)
+    return message
+
+
+def test_postprocess_nemo_gym_result_masks_first_turn_overlong_prompt():
+    # vLLM rejected the very first model call: empty completion with no token ids.
+    nemo_gym_result = {
+        "response": {
+            "output": [_model_call_message(text="")],
+            "incomplete_details": {"reason": "max_output_tokens"},
+        },
+        "responses_create_params": {"input": [{"role": "user", "content": "hi"}]},
+    }
+
+    result = _make_bare_nemo_gym()._postprocess_nemo_gym_to_nemo_rl_result(
+        nemo_gym_result, _DummyTokenizer()
+    )
+
+    # The masked dummy is a single user-only pad-token message: positive
+    # length for packing, no assistant message so the gradient is zero.
+    assert len(result["message_log"]) == 1
+    assert result["message_log"][0]["role"] == "user"
+    assert result["message_log"][0]["token_ids"].tolist() == [
+        _DummyTokenizer.pad_token_id
+    ]
+    assert result["input_message_log"][0]["token_ids"].tolist() == [
+        _DummyTokenizer.pad_token_id
+    ]
+
+
+def test_postprocess_nemo_gym_result_masks_mid_rollout_overlong_prompt():
+    # Turn 1 succeeded; turn 2 was rejected by vLLM for exceeding max_model_len.
+    nemo_gym_result = {
+        "response": {
+            "output": [
+                _model_call_message(
+                    text="ok",
+                    prompt_token_ids=[1, 2],
+                    generation_token_ids=[3, 4],
+                    generation_log_probs=[0.1, 0.2],
+                ),
+                {"type": "function_call_output", "call_id": "c1", "output": "done"},
+                _model_call_message(text=""),
+            ],
+        },
+        "responses_create_params": {"input": [{"role": "user", "content": "hi"}]},
+    }
+
+    result = _make_bare_nemo_gym()._postprocess_nemo_gym_to_nemo_rl_result(
+        nemo_gym_result, _DummyTokenizer()
+    )
+
+    # The whole sample is masked via the user-only dummy, including the
+    # prior successful turn.
+    assert len(result["message_log"]) == 1
+    assert result["message_log"][0]["role"] == "user"
+    assert result["message_log"][0]["token_ids"].numel() == 1
+    assert result["input_message_log"][0]["token_ids"].numel() == 1
+
+
+def test_postprocess_nemo_gym_result_does_not_mask_normal_reasoning_turn():
+    # Interleaved reasoning: the reasoning item has no token ids but the
+    # following message item does. This is a healthy model call.
+    nemo_gym_result = {
+        "response": {
+            "output": [
+                {"type": "reasoning", "summary": [{"text": "thinking..."}]},
+                _model_call_message(
+                    text="answer",
+                    prompt_token_ids=[1],
+                    generation_token_ids=[2],
+                    generation_log_probs=[0.0],
+                ),
+            ],
+        },
+        "responses_create_params": {"input": [{"role": "user", "content": "hi"}]},
+    }
+
+    result = _make_bare_nemo_gym()._postprocess_nemo_gym_to_nemo_rl_result(
+        nemo_gym_result, _DummyTokenizer()
+    )
+
+    assert len(result["message_log"]) == 2
+
+
+def test_postprocess_nemo_gym_result_masks_max_output_tokens_incomplete():
+    # Even a generation that did produce tokens gets masked when the final
+    # response reports incomplete_details reason "max_output_tokens".
+    nemo_gym_result = {
+        "response": {
+            "output": [
+                _model_call_message(
+                    text="hi",
+                    prompt_token_ids=[1],
+                    generation_token_ids=[2],
+                    generation_log_probs=[0.1],
+                ),
+            ],
+            "incomplete_details": {"reason": "max_output_tokens"},
+        },
+        "responses_create_params": {"input": [{"role": "user", "content": "hi"}]},
+    }
+
+    result = _make_bare_nemo_gym()._postprocess_nemo_gym_to_nemo_rl_result(
+        nemo_gym_result, _DummyTokenizer()
+    )
+
+    assert len(result["message_log"]) == 1
+    assert result["message_log"][0]["role"] == "user"
+    assert result["input_message_log"][0]["token_ids"].numel() == 1
