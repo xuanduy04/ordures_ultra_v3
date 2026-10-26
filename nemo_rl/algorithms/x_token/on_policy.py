@@ -27,6 +27,22 @@ def validate_on_policy_config(config):
         raise ValueError("OPD recipe requires fixed KD weighting and ce_loss_scale=0")
     if knobs["max_prompt_tokens"] <= 0 or knobs["refit_buffer_size_gb"] <= 0:
         raise ValueError("Prompt and refit buffer limits must be positive")
+    if "rollout_backend" in knobs and knobs["rollout_backend"] == "nemo_gym":
+        if not generation["vllm_cfg"]["async_engine"] or not generation["vllm_cfg"]["expose_http_server"]:
+            raise ValueError("Gym requires an async vLLM engine with its HTTP server exposed")
+        if generation["vllm_cfg"]["skip_tokenizer_init"]:
+            raise ValueError("Gym HTTP generation needs the student tokenizer initialized")
+        if knobs["prompt_source"] != "nemo_gym":
+            raise ValueError("Gym batches must retain their real responses_create_params input")
+        train = config.data["train"]
+        if isinstance(train, list):
+            if len(train) != 1:
+                raise ValueError("Initial Gym integration requires one explicit dataset")
+            train = train[0]
+        if train["dataset_name"] != "NemoGymDataset" or train["processor"] != "nemo_gym_data_processor":
+            raise ValueError("Use the existing Gym dataset and processor for Gym rollouts")
+        if config.distillation["val_period"] or config.distillation["val_at_start"] or config.distillation["val_at_end"]:
+            raise ValueError("Initial Gym integration requires separate held-out evaluation")
 
 
 class OnPolicyRollout:
@@ -106,14 +122,34 @@ def build_on_policy_rollout(config, student_policy, student_tokenizer,
         config.data["alignment_max_combination_length"],
     ) for index, teacher in enumerate(config.teachers)]
     generation = student_policy.xtoken_generation
+    gym_backend = "rollout_backend" in config.on_policy and config.on_policy["rollout_backend"] == "nemo_gym"
+    stop_ids = generation.cfg["stop_token_ids"]
+    if gym_backend:
+        stop_ids = [student_tokenizer.eos_token_id]
+        if "eos_token_ids" in config.on_policy["nemo_gym"]:
+            stop_ids = config.on_policy["nemo_gym"]["eos_token_ids"]
+        if not stop_ids or any(type(token) is not int or token < 0 for token in stop_ids):
+            raise ValueError("Gym requires explicit valid student terminal token IDs")
     collator = RolloutCrossTokenizerCollator(
         student_tokenizer, teacher_tokenizers, aligners,
         config.policy["max_total_sequence_length"],
         [item["max_total_sequence_length"] for item in teacher_configs],
         config.policy["make_sequence_length_divisible_by"],
         [item["make_sequence_length_divisible_by"] for item in teacher_configs],
-        generation.cfg["stop_token_ids"],
+        stop_ids,
     )
+    if gym_backend:
+        from nemo_rl.algorithms.x_token.gym_rollout import (
+            NemoGymOnPolicyRollout, create_gym_environment,
+        )
+
+        environment = create_gym_environment(config, generation)
+        return NemoGymOnPolicyRollout(
+            student_policy, generation, student_tokenizer, collator,
+            generation.cfg, config.on_policy, state["total_steps"],
+            refit_policy_generation, environment=environment,
+            gym_config=config.on_policy["nemo_gym"],
+        )
     return OnPolicyRollout(student_policy, generation, student_tokenizer, collator,
                            generation.cfg, config.on_policy, state["total_steps"],
                            refit_policy_generation)

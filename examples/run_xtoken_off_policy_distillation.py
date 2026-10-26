@@ -102,15 +102,14 @@ def main(*, require_on_policy=None) -> None:
     ) = setup(config, student_tokenizer, teacher_tokenizers, train_dataset, val_dataset)
 
     rollout_transform = None
-    if config.on_policy is not None:
-        from nemo_rl.algorithms.x_token.on_policy import build_on_policy_rollout
-
-        rollout_transform = build_on_policy_rollout(
-            config, student_policy, student_tokenizer, teacher_tokenizers,
-            off_policy_distillation_state,
-        )
-
     try:
+        if config.on_policy is not None:
+            from nemo_rl.algorithms.x_token.on_policy import build_on_policy_rollout
+
+            rollout_transform = build_on_policy_rollout(
+                config, student_policy, student_tokenizer, teacher_tokenizers,
+                off_policy_distillation_state,
+            )
         xtoken_off_policy_distillation_train(
             student_policy, teacher_policies, train_dataloader, val_dataloader,
             loss_fn, logger, checkpointer, off_policy_distillation_state,
@@ -119,9 +118,13 @@ def main(*, require_on_policy=None) -> None:
     finally:
         from nemo_rl.algorithms.x_token.remote_teacher import RemoteTeacherPolicy
 
-        for teacher in teacher_policies:
-            if isinstance(teacher, RemoteTeacherPolicy):
-                teacher.close()
+        try:
+            if rollout_transform is not None and hasattr(rollout_transform, "close"):
+                rollout_transform.close()
+        finally:
+            for teacher in teacher_policies:
+                if isinstance(teacher, RemoteTeacherPolicy):
+                    teacher.close()
 
 
 if __name__ == "__main__":

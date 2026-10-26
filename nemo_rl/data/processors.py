@@ -1,5 +1,3 @@
-
-
 """Contains data processors for evaluation."""
 
 import json
@@ -650,6 +648,155 @@ def multichoice_qa_processor(
     if "task_name" in datum_dict:
         output["task_name"] = datum_dict["task_name"]
     return output
+
+
+def _parse_tool_arguments(arguments: Any) -> Any:
+    """Return *arguments* decoded from JSON when it is a valid JSON string, else unchanged."""
+    if not isinstance(arguments, str):
+        return arguments
+    try:
+        return json.loads(arguments)
+    except json.JSONDecodeError:
+        return arguments
+
+
+def _sanitize_nemo_gym_messages(conversation: list[dict]) -> list[dict]:
+    """Convert raw agent execution traces into valid HF chat-template messages.
+
+    Mirrors the sanitization in ``custom_utils/utils_data/filter_overlong_token.py``
+    so in-training length filtering measures the same prompt shape as the offline
+    pre-filter: role-bearing messages pass through (with JSON-decoded tool-call
+    arguments), ``reasoning`` items are dropped, ``function_call`` items become
+    assistant tool_calls messages, and ``function_call_output`` items become
+    tool messages.
+    """
+    hf_messages: list[dict] = []
+
+    for msg in conversation:
+        if "role" in msg:
+            fixed = dict(msg)
+            if "tool_calls" in fixed:
+                for tc in fixed["tool_calls"]:
+                    function = tc.get("function", {})
+                    if "arguments" in function:
+                        function["arguments"] = _parse_tool_arguments(function["arguments"])
+            hf_messages.append(fixed)
+            continue
+
+        msg_type = msg.get("type")
+
+        if msg_type == "reasoning":
+            continue
+
+        if msg_type == "function_call":
+            hf_messages.append({
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": msg.get("call_id"),
+                        "type": "function",
+                        "function": {
+                            "name": msg.get("name"),
+                            "arguments": _parse_tool_arguments(msg.get("arguments", {})),
+                        },
+                    }
+                ],
+            })
+            continue
+
+        if msg_type == "function_call_output":
+            hf_messages.append({
+                "role": "tool",
+                "tool_call_id": msg.get("call_id"),
+                "content": str(msg.get("output", "")),
+            })
+
+    return hf_messages
+
+
+def _nemo_gym_prompt_token_count(raw_line: str, tokenizer: TokenizerType) -> int:
+    """Return the chat-templated token count of a raw Nemo Gym row.
+
+    Measures ``responses_create_params.input`` plus the optional
+    ``instructions`` (system prompt) and ``tools``, with a generation prompt,
+    mirroring what the generation side renders.
+    """
+    entry = json.loads(raw_line)
+    rcp = entry.get("responses_create_params") or {}
+    messages = _sanitize_nemo_gym_messages(rcp.get("input") or [])
+    instructions = rcp.get("instructions")
+    if instructions:
+        messages = [{"role": "system", "content": instructions}] + messages
+    tools = rcp.get("tools")
+    if tools:
+        result = tokenizer.apply_chat_template(
+            messages,
+            tools=tools,
+            tokenize=True,
+            return_dict=True,
+            add_generation_prompt=True,
+        )
+    else:
+        result = tokenizer.apply_chat_template(
+            messages,
+            tokenize=True,
+            return_dict=True,
+            add_generation_prompt=True,
+        )
+    ids = result["input_ids"]
+    return len(ids)
+
+
+_GYM_FILTER_TOKENIZER: TokenizerType | None = None
+_GYM_FILTER_MAX_LENGTH: int = 0
+
+
+def _gym_filter_keep_row(row: dict) -> bool:
+    """Return whether a Nemo Gym row's measured prompt length is within the limit.
+
+    Rows that cannot be measured are kept so malformed data still fails loudly
+    later instead of being silently dropped.
+    """
+    try:
+        tokenizer = _GYM_FILTER_TOKENIZER
+        if tokenizer is None:
+            return True
+        return (
+            _nemo_gym_prompt_token_count(row["extra_env_info"], tokenizer)
+            <= _GYM_FILTER_MAX_LENGTH
+        )
+    except Exception:
+        return True
+
+
+def filter_overlong_nemo_gym_dataset(
+    dataset,
+    tokenizer: TokenizerType,
+    max_seq_length: int,
+    num_proc: int = 8,
+):
+    """Drop Nemo Gym rows whose measured prompt length exceeds *max_seq_length*.
+
+    Rows over the limit would otherwise be rejected by vLLM at rollout time
+    (prompt exceeding ``max_model_len``) and enter training as empty-message-log
+    samples that break sequence packing. Returns the filtered dataset.
+    """
+    global _GYM_FILTER_TOKENIZER, _GYM_FILTER_MAX_LENGTH
+    _GYM_FILTER_TOKENIZER = tokenizer
+    _GYM_FILTER_MAX_LENGTH = max_seq_length
+    try:
+        filtered = dataset.filter(_gym_filter_keep_row, num_proc=num_proc)
+    finally:
+        _GYM_FILTER_TOKENIZER = None
+        _GYM_FILTER_MAX_LENGTH = 0
+
+    dropped = len(dataset) - len(filtered)
+    print(
+        f"  ✓ Nemo Gym length filter: dropped {dropped}/{len(dataset)} prompts "
+        f"exceeding max_input_seq_length={max_seq_length} tokens."
+    )
+    return filtered
 
 
 def nemo_gym_data_processor(

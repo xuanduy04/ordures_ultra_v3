@@ -133,17 +133,36 @@ def _sanitize_nemo_gym_conversation(conversation: list[dict]) -> list[dict]:
 
 
 def _extract_main_field(entry: dict, data_type: str) -> Any:
-    """Return the main field measured for *data_type*: ``messages``, ``question``, or the gym input."""
+    """Return the main field measured for *data_type*: ``messages``, ``question``, or the gym input.
+
+    For ``nemo_gym`` rows the optional ``responses_create_params.instructions``
+    (system prompt) is prepended as a system message so the measurement includes it.
+    """
     try:
         if data_type == DATA_TYPE_SFT:
             return entry["messages"]
         if data_type == DATA_TYPE_RL_QA:
             return entry["question"]
         if data_type == DATA_TYPE_NEMO_GYM:
-            return _sanitize_nemo_gym_conversation(entry["responses_create_params"]["input"])
+            rcp = entry["responses_create_params"]
+            messages = _sanitize_nemo_gym_conversation(rcp["input"])
+            instructions = rcp.get("instructions")
+            if instructions:
+                messages = [{"role": "system", "content": instructions}] + messages
+            return messages
     except (KeyError, TypeError) as exc:
         raise ValueError(f"Missing or invalid main field for data type {data_type}: {exc!r}") from exc
     raise ValueError(f"Unsupported data type: {data_type}")
+
+
+def _extract_tools(entry: dict, data_type: str) -> Any:
+    """Return the ``responses_create_params.tools`` list for a nemo_gym row, or None."""
+    if data_type != DATA_TYPE_NEMO_GYM:
+        return None
+    try:
+        return entry["responses_create_params"].get("tools")
+    except (KeyError, TypeError, AttributeError) as exc:
+        raise ValueError(f"Missing or invalid main field for data type {data_type}: {exc!r}") from exc
 
 
 def _init_worker(tokenizer_dir: str, data_type: str, max_token: int) -> None:
@@ -160,25 +179,44 @@ def _count_string_tokens(texts: list[str]) -> list[int]:
     return [len(ids) for ids in encoded["input_ids"]]
 
 
-def _count_conversation_tokens(conversations: list[list[dict]]) -> list[int]:
+def _count_conversation_tokens(
+    conversations: list[list[dict]], tools_list: list[Any]
+) -> list[int]:
     """Return the chat-template token count of each conversation in *conversations*.
 
-    A failed batch is retried one conversation at a time so that a single bad
-    row does not discard its whole chunk; failed rows are reported as ``-1``.
+    Each entry in *tools_list* holds the row's ``tools`` (or None). When any row
+    carries tools the template must be applied per conversation because
+    batched application cannot take per-row tools. ``add_generation_prompt`` is
+    enabled for nemo_gym rows to mirror the generation-side prompt. Failed
+    batch/rows are retried per conversation and reported as ``-1``.
     """
-    try:
-        encoded = G_TOKENIZER.apply_chat_template(conversations, tokenize=True, return_dict=True)
-        return [len(ids) for ids in encoded["input_ids"]]
-    except Exception as exc:
-        logger.warning(f"Batched chat-template tokenization failed ({exc}); retrying per conversation.")
-        counts: list[int] = []
-        for conversation in conversations:
-            try:
-                ids = G_TOKENIZER.apply_chat_template(conversation, tokenize=True, return_dict=True)["input_ids"]
-                counts.append(len(ids))
-            except Exception:
-                counts.append(-1)
-        return counts
+    add_generation_prompt = G_DATA_TYPE == DATA_TYPE_NEMO_GYM
+    if not any(tools for tools in tools_list):
+        try:
+            encoded = G_TOKENIZER.apply_chat_template(
+                conversations,
+                tokenize=True,
+                return_dict=True,
+                add_generation_prompt=add_generation_prompt,
+            )
+            return [len(ids) for ids in encoded["input_ids"]]
+        except Exception as exc:
+            logger.warning(f"Batched chat-template tokenization failed ({exc}); retrying per conversation.")
+    counts: list[int] = []
+    for conversation, tools in zip(conversations, tools_list):
+        try:
+            kwargs: dict[str, Any] = {
+                "tokenize": True,
+                "return_dict": True,
+                "add_generation_prompt": add_generation_prompt,
+            }
+            if tools:
+                kwargs["tools"] = tools
+            ids = G_TOKENIZER.apply_chat_template(conversation, **kwargs)["input_ids"]
+            counts.append(len(ids))
+        except Exception:
+            counts.append(-1)
+    return counts
 
 
 def _process_chunk(chunk: tuple[int, list[str]]) -> tuple[list[str], int, int, int]:
@@ -194,6 +232,7 @@ def _process_chunk(chunk: tuple[int, list[str]]) -> tuple[list[str], int, int, i
     string_fields: list[str] = []
     conversation_positions: list[int] = []
     conversation_fields: list[list[dict]] = []
+    conversation_tools: list[Any] = []
     n_errors = 0
 
     for offset, line in enumerate(lines):
@@ -204,6 +243,7 @@ def _process_chunk(chunk: tuple[int, list[str]]) -> tuple[list[str], int, int, i
         try:
             entry = json.loads(stripped)
             field = _extract_main_field(entry, G_DATA_TYPE)
+            tools = _extract_tools(entry, G_DATA_TYPE)
         except Exception as exc:
             n_errors += 1
             logger.warning(f"Skipping unreadable entry at line {lineno}: {exc}")
@@ -214,6 +254,7 @@ def _process_chunk(chunk: tuple[int, list[str]]) -> tuple[list[str], int, int, i
         elif isinstance(field, (list, dict)):
             conversation_positions.append(offset)
             conversation_fields.append(field if isinstance(field, list) else [field])
+            conversation_tools.append(tools)
         else:
             n_errors += 1
             logger.warning(f"Skipping entry at line {lineno}: main field has unsupported type {type(field).__name__}.")
@@ -232,7 +273,7 @@ def _process_chunk(chunk: tuple[int, list[str]]) -> tuple[list[str], int, int, i
                 keep[offset] = count <= G_MAX_TOKEN
 
     if conversation_fields:
-        conversation_counts = _count_conversation_tokens(conversation_fields)
+        conversation_counts = _count_conversation_tokens(conversation_fields, conversation_tools)
         for offset, count in zip(conversation_positions, conversation_counts):
             if count < 0:
                 n_errors += 1

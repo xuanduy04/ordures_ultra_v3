@@ -42,11 +42,11 @@ while IFS= read -r -d '' proj_file; do
     # We don't skip nested "3rdparty" path-segments as they have been cleaned in v0.7.0, duplicates are intentional (and exclusive)
 
     # Skip anything under a "Megatron-LM" or "Megatron-Bridge" directory - importing it causes conflict with the prebuilt packages.
-    if [[ "$proj_dir" == *"/Megatron-LM/"* || "$proj_dir" == *"/Megatron-LM" ]]; then
+    if [[ "$proj_dir" == *"/Megatron-LM/"* || "$proj_dir" == *"/Megatron-LM"* ]]; then
         printf "  [SKIP] (contains /Megatron-LM) $proj_dir\n"
         continue
     fi
-    if [[ "$proj_dir" == *"/Megatron-Bridge/"* || "$proj_dir" == *"/Megatron-Bridge" ]]; then
+    if [[ "$proj_dir" == *"/Megatron-Bridge/"* || "$proj_dir" == *"/Megatron-Bridge"* ]]; then
         printf "  [SKIP] (contains /Megatron-Bridge) $proj_dir\n"
         continue
     fi

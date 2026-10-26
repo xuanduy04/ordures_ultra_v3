@@ -1,0 +1,90 @@
+"""Materialize an immutable Gym smoke YAML inside the user's xtoken_all root."""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import sys
+
+from integrity import sha256, source_snapshot
+
+
+def within(path, root):
+    path = Path(path).resolve()
+    path.relative_to(root)
+    return path
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--run-id", required=True)
+    parser.add_argument("--student", type=Path, required=True)
+    parser.add_argument("--teacher-tokenizer", type=Path, required=True)
+    parser.add_argument("--projection", type=Path, required=True)
+    parser.add_argument("--data", type=Path, required=True)
+    parser.add_argument("--teacher-url", required=True)
+    parser.add_argument("--teacher-model", required=True)
+    parser.add_argument("--gym-python", type=Path, required=True)
+    parser.add_argument("--gym-venvs", type=Path, required=True)
+    parser.add_argument("--gym-source", type=Path, required=True)
+    parser.add_argument("--teacher-api-key-env")
+    args = parser.parse_args()
+    root = Path(os.environ["XTOKEN_ALL_ROOT"]).resolve()
+    run = within(root / "runs" / args.run_id, root)
+    if not args.run_id or Path(args.run_id).name != args.run_id or run.exists():
+        raise ValueError("Use a new, single-component run ID")
+    for path in (args.student, args.teacher_tokenizer, args.gym_venvs, args.gym_source):
+        if not path.is_dir():
+            raise FileNotFoundError(path)
+    for path in (args.projection, args.data, args.gym_python):
+        if not path.is_file():
+            raise FileNotFoundError(path)
+    within(args.data, root)
+    within(args.projection, root)
+    if args.teacher_url.rstrip("/").endswith("/v1") or "@" in args.teacher_url or "?" in args.teacher_url:
+        raise ValueError("Use teacher base URL without /v1 or embedded credentials")
+    if args.teacher_api_key_env and args.teacher_api_key_env not in os.environ:
+        raise ValueError("Teacher authentication variable is unavailable")
+    source = Path(__file__).resolve().parents[2]
+    within(source, root)
+    sys.path.insert(0, str(source))
+    from omegaconf import OmegaConf
+    from nemo_rl.utils.config import load_config, register_omegaconf_resolvers
+    from nemo_rl.algorithms.xtoken_off_policy_distillation import MasterConfig
+    from nemo_rl.algorithms.x_token.on_policy import validate_on_policy_config
+
+    os.environ.update(XTOKEN_GYM_PYTHON=str(args.gym_python.resolve()),
+                      XTOKEN_GYM_VENV_DIR=str(args.gym_venvs.resolve()),
+                      XTOKEN_GYM_SOURCE=str(args.gym_source.resolve()),
+                      XTOKEN_RUN_DIR=str(run), XTOKEN_STUDENT_MODEL=str(args.student.resolve()),
+                      XTOKEN_TRAIN_DATA=str(args.data.resolve()))
+    register_omegaconf_resolvers()
+    cfg = load_config(source / "examples/configs/xtoken_gym_qwen3_gemma4.yaml")
+    teacher = cfg["teachers"][0]
+    teacher["model_name"] = str(args.teacher_tokenizer.resolve())
+    teacher["tokenizer"]["name"] = str(args.teacher_tokenizer.resolve())
+    teacher["projection_matrix_path"] = str(args.projection.resolve())
+    teacher["remote"]["url"] = args.teacher_url.rstrip("/")
+    teacher["remote"]["model"] = args.teacher_model
+    teacher["remote"]["api_key_env"] = args.teacher_api_key_env
+    teacher["train_global_batch_size"] = 4
+    resolved = OmegaConf.to_container(cfg, resolve=True)
+    validate_on_policy_config(MasterConfig(**resolved))
+    model = json.loads((args.student / "config.json").read_text())
+    for key, expected in {"model_type": "qwen3", "hidden_size": 2048,
+                          "num_hidden_layers": 28, "tie_word_embeddings": True}.items():
+        if model[key] != expected:
+            raise ValueError("Unexpected student architecture: " + key)
+    run.mkdir(parents=True, exist_ok=False)
+    OmegaConf.save(OmegaConf.create(resolved), run / "effective.yaml")
+    provenance = {"mode": "on", "rollout_backend": "nemo_gym",
+                  "reward_used_in_loss": False, "source_root": str(source),
+                  "effective_config_sha256": sha256(run / "effective.yaml"),
+                  "data_sha256": sha256(args.data), "projection_sha256": sha256(args.projection),
+                  "source_sha256": source_snapshot(source)["sha256"]}
+    (run / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
+    print(json.dumps({"run_dir": str(run), "steps": 2, "backend": "nemo_gym"}))
+
+
+if __name__ == "__main__":
+    main()

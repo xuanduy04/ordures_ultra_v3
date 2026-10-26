@@ -361,7 +361,12 @@ def setup(
     if master_config.on_policy is not None:
         from nemo_rl.data.xtoken_rollout_collate import PromptCollator
 
-        collator = PromptCollator(master_config.on_policy["prompt_source"])
+        if "rollout_backend" in master_config.on_policy and master_config.on_policy["rollout_backend"] == "nemo_gym":
+            from nemo_rl.algorithms.x_token.gym_rollout import NemoGymPromptCollator
+
+            collator = NemoGymPromptCollator()
+        else:
+            collator = PromptCollator(master_config.on_policy["prompt_source"])
 
     # ==========================
     #           Data

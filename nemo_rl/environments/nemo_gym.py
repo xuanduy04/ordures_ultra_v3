@@ -1,7 +1,7 @@
 import os
 import subprocess
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple, TypedDict
+from typing import Any, AsyncGenerator, Dict, List, NotRequired, Optional, Tuple, TypedDict
 
 import ray
 import torch
@@ -47,6 +47,8 @@ class NemoGymConfig(TypedDict):
     ray_num_gpus_per_node: Optional[int]
     ray_namespace: Optional[str]
     initial_global_config_dict: Dict[str, Any]
+    skip_load_from_dotenv: NotRequired[bool]
+    retain_truncated_token_ids: NotRequired[bool]
     invalid_tool_call_patterns: Optional[List[str]]  # Substrings in assistant text content that indicate an invalid tool call (default: ["<tool_call>", "</tool_call>", "<function_call>", "</function_call>"])
     thinking_tags: Optional[List[str]]  # Thinking tags to check for malformed usage (default: ["<think>", "</think>"])
 
@@ -155,6 +157,9 @@ Depending on your data shape, you may want to change these values."""
         uvicorn_access_logger.addFilter(No200Filter())
         uvicorn_access_logger.addFilter(NoEmptyFilter())
 
+        parser_options = {}
+        if "skip_load_from_dotenv" in self.cfg:
+            parser_options["skip_load_from_dotenv"] = self.cfg["skip_load_from_dotenv"]
         self.rh = RunHelper()
         self.rh.start(
             global_config_dict_parser_config=GlobalConfigDictParserConfig(
@@ -162,6 +167,7 @@ Depending on your data shape, you may want to change these values."""
                 / "nemo_gym_env.yaml",
                 initial_global_config_dict=DictConfig(initial_global_config_dict),
                 skip_load_from_cli=True,
+                **parser_options,
             ),
         )
 
@@ -261,6 +267,9 @@ Depending on your data shape, you may want to change these values."""
         nemo_rl_message_log = []
         seen_token_ids = torch.tensor([], dtype=torch.int64)
 
+        # Addtional overlong sample detection.
+        last_model_call_item_had_token_ids = True
+
         batch_decode_items = []  # Collect (output_item_dict, prompt_token_ids, generation_token_ids) for batch decode
         for output_item_dict in nemo_gym_result["response"]["output"]:
             # Nemo RL really only has two types of messages: assistant and not assistant since that is all that it is concerned with (i.e. to train or not to train)
@@ -268,6 +277,12 @@ Depending on your data shape, you may want to change these values."""
             # Eventually we can maybe be smarter about this, but this is functional for now.
 
             # Note that NeMo-Gym will only return token ids on "assistant" messages and not other message types.
+            item_type = output_item_dict.get("type")
+            if item_type in ("reasoning", "function_call") or (
+                item_type == "message" and output_item_dict.get("role") == "assistant"
+            ):
+                last_model_call_item_had_token_ids = "generation_token_ids" in output_item_dict
+
             if "generation_token_ids" not in output_item_dict:
                 continue
 
@@ -317,7 +332,7 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
             # Malformed thinking-tag detection moved to apply_reward_penalties in
             # nemo_rl/experience/rollouts.py (token-ID + string checks). The
             # per-message has_malformed_thinking flag is now set there when
-            # grpo.penalize_malformed_think_tag is enabled.
+            # grpo.penalize_malformed_thinking is enabled.
 
             if is_output_message:
                 assistant_message_content = output_item_dict["content"][0]["text"]
@@ -371,7 +386,17 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
                 output_item_dict["prompt_str"] = prompt_str
                 output_item_dict["generation_str"] = generation_str
 
-        if not nemo_rl_message_log:
+        is_overlong_sample = (
+            not last_model_call_item_had_token_ids
+            or (nemo_gym_result["response"].get("incomplete_details") or {}).get("reason") == "max_output_tokens"
+        )
+
+        # X-Token can train the sampled prefix at an explicit output budget.
+        # Keep the company's GRPO masking behavior unless this adapter opts in.
+        if "retain_truncated_token_ids" in self.cfg and self.cfg["retain_truncated_token_ids"]:
+            is_overlong_sample = not last_model_call_item_had_token_ids
+
+        if not nemo_rl_message_log or is_overlong_sample:
             # Return a maskable dummy result so training can continue.
             # This covers legitimate cases (prompt exceeds vLLM max_model_len)
             # as well as bugged/malformed samples whose rollout was skipped.
@@ -400,15 +425,16 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
                 f"  → If (2): inspect why no assistant content was produced for this rollout.\n"
                 f"This sample will be MASKED (loss_multiplier=0)."
             )
+            dummy_message_log = [
+                {
+                    "role": "user",
+                    "content": tokenizer.decode([tokenizer.pad_token_id]),
+                    "token_ids": torch.tensor([tokenizer.pad_token_id], dtype=torch.long),
+                }
+            ]
             return {
-                "message_log": [],
-                "input_message_log": [
-                    {
-                        "role": "user",
-                        "content": "",
-                        "token_ids": torch.tensor([], dtype=torch.long),
-                    }
-                ],
+                "message_log": dummy_message_log,
+                "input_message_log": dummy_message_log,
                 "full_result": nemo_gym_result if isinstance(nemo_gym_result, dict) else {"reward": 0.0},
             }
 

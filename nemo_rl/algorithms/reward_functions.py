@@ -88,7 +88,7 @@ def _compute_n_gram_repetition_penalty(
     fraction_over = over_count / total_n_grams
     normalized_max = max_freq / (seq_len / n)
 
-    return max(fraction_over, normalized_max)
+    return min(max(fraction_over, normalized_max), 1.0)
 
 
 def apply_reward_shaping(
@@ -132,6 +132,8 @@ def apply_reward_shaping(
         )
 
         for i, message_log in enumerate(batch["message_log"]):
+            if not any(message.get("role") == "assistant" for message in message_log):  # Skip masked samples
+                continue
             # Get the assistant response
             assistant_token_ids = None
             for message in message_log:
@@ -145,20 +147,18 @@ def apply_reward_shaping(
             )
 
             if use_n_gram_penalty:
-                penalty = _compute_n_gram_repetition_penalty(
+                n_gram_penalty = _compute_n_gram_repetition_penalty(
                     assistant_token_ids, n_gram_size, n_gram_threshold
                 )
-                rewards[i] = rewards[i] - n_gram_repetition_weight * penalty
+                rewards[i] = rewards[i] - n_gram_repetition_weight * n_gram_penalty
                 if verbose:
                     print("[INFO] n_gram_penalty: Applied successfully")
 
             if use_overlong_penalty:
                 response_length = assistant_token_ids.shape[0]
                 exceed_length = response_length - expected_response_length
-                overlong_reward = min(
-                    -exceed_length / overlong_buffer_length * overlong_buffer_penalty, 0
-                )
-                rewards[i] = rewards[i] + overlong_reward
+                overlong_penalty = min(max(exceed_length / overlong_buffer_length, 0.0), 1.0)
+                rewards[i] = rewards[i] - overlong_buffer_penalty * overlong_penalty
                 if verbose:
                     print("[INFO] overlong_penalty: Applied successfully")
 

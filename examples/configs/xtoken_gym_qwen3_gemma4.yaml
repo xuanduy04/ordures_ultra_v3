@@ -1,0 +1,92 @@
+defaults: xtoken_qwen3_gemma4_on_policy_distillation.yaml
+
+# Render paths and runtime fields on the company node before launch.
+on_policy:
+  rollout_backend: nemo_gym
+  prompt_source: nemo_gym
+  nemo_gym:
+    worker_python: ${oc.env:XTOKEN_GYM_PYTHON}
+    venv_dir: ${oc.env:XTOKEN_GYM_VENV_DIR}
+    source_root: ${oc.env:XTOKEN_GYM_SOURCE}
+    skip_load_from_dotenv: true
+    retain_truncated_token_ids: true
+    result_timeout_s: 300
+    global_config:
+      config_paths:
+        - ${oc.env:XTOKEN_GYM_SOURCE}/responses_api_models/vllm_model/configs/vllm_model_for_training.yaml
+        - ${oc.env:XTOKEN_GYM_SOURCE}/resources_servers/general_qa/configs/general_qa.yaml
+      nemo_gym_log_dir: ${oc.env:XTOKEN_RUN_DIR}/gym-logs
+      skip_venv_if_present: true
+      port_range_low: 5000
+      port_range_high: 5999
+      general_qa:
+        resources_servers:
+          general_qa:
+            judge_server_url: ${teachers.0.remote.url}
+            judge_model: ${teachers.0.remote.model}
+            should_use_judge: false
+            judge_responses_create_params:
+              input: []
+      policy_model:
+        responses_api_models:
+          vllm_model:
+            num_workers: 4
+            num_groups_nemo_rl: 1
+            uses_reasoning_parser: false
+            chat_template_kwargs:
+              enable_thinking: false
+            sequential_reasoning_allowed: false
+      policy_model_reasoning_off:
+        _copy: policy_model
+        responses_api_models:
+          vllm_model:
+            chat_template_kwargs:
+              enable_thinking: false
+
+cluster:
+  num_nodes: 1
+  gpus_per_node: 4
+
+distillation:
+  num_prompts_per_step: 4
+  max_num_steps: 2
+  max_num_epochs: 1
+
+policy:
+  model_name: ${oc.env:XTOKEN_STUDENT_MODEL}
+  tokenizer:
+    name: ${oc.env:XTOKEN_STUDENT_MODEL}
+  train_global_batch_size: 4
+  train_micro_batch_size: 1
+  max_total_sequence_length: 256
+  generation:
+    max_new_tokens: 32
+    stop_token_ids: null
+    stop_strings: null
+    vllm_cfg:
+      async_engine: true
+      expose_http_server: true
+      skip_tokenizer_init: false
+      enforce_eager: true
+      gpu_memory_utilization: 0.2
+      max_model_len: 256
+      http_server_serving_chat_kwargs: {}
+
+data:
+  max_input_seq_length: null
+  num_workers: 0
+  shuffle: false
+  default:
+    prompt_file: null
+    system_prompt_file: null
+    env_name: nemo_gym
+  train:
+    _override_: true
+    dataset_name: NemoGymDataset
+    processor: nemo_gym_data_processor
+    data_path: ${oc.env:XTOKEN_TRAIN_DATA}
+  validation: null
+
+logger:
+  log_dir: ${oc.env:XTOKEN_RUN_DIR}/train-logs
+  monitor_gpus: false

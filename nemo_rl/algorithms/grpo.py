@@ -44,7 +44,6 @@ from nemo_rl.algorithms.utils import (
 from nemo_rl.data import DataConfig
 from nemo_rl.data.collate_fn import rl_collate_fn
 from nemo_rl.data.datasets import AllTaskProcessedDataset
-from nemo_rl.data.interfaces import DatumSpec
 from nemo_rl.data.llm_message_utils import (
     batched_message_log_to_flat_message,
 )
@@ -175,14 +174,33 @@ class GRPOConfig(TypedDict):
     # Sequence-level logprob error masking for training stability. If set, mask sequences with mult_prob_error exceeding this threshold (same scale as token_mult_prob_error metric, e.g., 1.5)
     # Note that this is slightly different than Masked Importance Sampling (MIS) because this uses the absolute value of the difference between the training and generation logprobs, whereas MIS just uses the difference between the training and generation logprobs.
     seq_logprob_error_threshold: float | None
-    penalize_invalid_tool_call: bool  # If True, assign a negative advantage to invalid tool call tokens
-    invalid_tool_call_advantage: NotRequired[float]  # Advantage value for invalid tool calls when penalize_invalid_tool_call is True (default: -5.0)
-    penalize_malformed_think_tag: bool  # If True, assign a negative advantage to messages with malformed thinking tags
-    malformed_thinking_advantage: NotRequired[float]  # Advantage value for malformed thinking when penalize_malformed_think_tag is True (default: -5.0)
-    penalize_eos_token: NotRequired[bool]  # If True, assign a negative advantage from the first EOS token in generation to the final token (assistant turns only)
-    eos_token_advantage: NotRequired[float]  # Advantage value for EOS tokens when penalize_eos_token is True (default: -5.0)
-    penalize_empty_final_answer: NotRequired[bool]  # If True, assign a negative advantage to the final assistant message when the final answer is empty
-    empty_final_answer_advantage: NotRequired[float]  # Advantage value for empty final answers when penalize_empty_final_answer is True (default: -5.0)
+    # ---- Advantage penalties ----
+    # Each penalty is enabled by a `penalize_*` flag and assigns a fixed
+    # negative advantage (default: -5.0) via the paired `*_advantage` value.
+
+    # 1. Invalid tool call tokens
+    penalize_invalid_tool_call: bool
+    invalid_tool_call_advantage: NotRequired[float]
+    # 2. Messages with malformed thinking
+    penalize_malformed_thinking: bool
+    malformed_thinking_advantage: NotRequired[float]
+    # 3. From the first EOS token in a generation to the final token (assistant turns only)
+    penalize_eos_token: NotRequired[bool]
+    eos_token_advantage: NotRequired[float]
+    # 4. Final assistant message when the final answer is empty
+    penalize_empty_final_answer: NotRequired[bool]
+    empty_final_answer_advantage: NotRequired[float]
+    # 5. N-gram repetition, subtracted from token advantages.
+    # n_gram_repetition_size: the N-gram size
+    # n_gram_repetition_threshold: occurrence count at which an N-gram is counted as a repeated phrase
+    # n_gram_repetition_weight: scale factor for the penalty magnitude.
+    # n_gram_repetition_penalty_cap: negative value bounding the per-token advantage reduction.
+    penalize_n_gram_repetition: NotRequired[bool]
+    n_gram_repetition_size: NotRequired[int]
+    n_gram_repetition_threshold: NotRequired[int]
+    n_gram_repetition_weight: NotRequired[float]
+    n_gram_repetition_penalty_cap: NotRequired[float]
+
     # Advantage estimator configuration (grpo or reinforce_plus_plus)
     adv_estimator: NotRequired[AdvEstimatorConfig]
 
@@ -1147,6 +1165,115 @@ def _log_rss(tag: str) -> None:
         pass
 
 
+def _distribution_stats(
+    values: torch.Tensor, mask: torch.Tensor
+) -> dict[str, Any]:
+    """Compute distribution statistics for masked values.
+
+    Args:
+        values: Tensor of values to summarize, e.g. advantages of one sample.
+        mask: Boolean mask selecting the positions of interest (e.g. valid
+            response tokens). Must be broadcastable to values' shape.
+
+    Returns:
+        A JSON-serializable dict of statistics (Python floats/ints) computed
+        over the finite masked values. Returns counts-only dict if there are
+        no masked or finite values.
+    """
+    arr = (
+        torch.masked_select(values, mask.bool())
+        .detach()
+        .float()
+        .cpu()
+    )
+    stats: dict[str, Any] = {
+        "count": int(arr.numel()),
+        "num_nan": int(torch.isnan(arr).sum()),
+        "num_pos_inf": int(torch.isposinf(arr).sum()),
+        "num_neg_inf": int(torch.isneginf(arr).sum()),
+    }
+    finite = arr[torch.isfinite(arr)]
+    if finite.numel() == 0:
+        return stats
+
+    mean = float(torch.mean(finite))
+    std = float(torch.std(finite, correction=1)) if finite.numel() > 1 else 0.0
+    quantiles = torch.quantile(
+        finite,
+        torch.tensor(
+            [0.01, 0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99],
+            dtype=torch.float32,
+        ),
+    )
+    p1, p5, p10, p25, p50, p75, p90, p95, p99 = (
+        float(v) for v in quantiles
+    )
+    centered = finite - mean
+    skewness: float | None = None
+    kurtosis: float | None = None
+    if finite.numel() >= 3 and std > 0:
+        z = centered / std
+        n = finite.numel()
+        skewness = float((n / ((n - 1) * (n - 2))) * torch.sum(z.pow(3)))
+    if finite.numel() >= 4 and std > 0:
+        z = centered / std
+        n = finite.numel()
+        kurtosis = float(
+            (n * (n + 1) / ((n - 1) * (n - 2) * (n - 3)))
+            * torch.sum(z.pow(4))
+            - 3 * (n - 1) ** 2 / ((n - 2) * (n - 3))
+        )
+
+    # Histogram over the robust p1-p99 range, falling back to min-max
+    # (or a single guard bin) when the range collapses. p1/p99 are
+    # quantiles of `finite`, so they are always finite here.
+    hist_low, hist_high = p1, p99
+    if hist_high <= hist_low:
+        hist_low, hist_high = float(torch.min(finite)), float(torch.max(finite))
+    if hist_high <= hist_low:
+        hist_low -= 0.5
+        hist_high += 0.5
+    hist_counts, hist_edges = torch.histogram(
+        finite, bins=20, range=(hist_low, hist_high)
+    )
+
+    stats.update(
+        {
+            "mean": mean,
+            "median": float(torch.median(finite)),
+            "std": std,
+            "var": float(torch.var(finite, correction=1)) if finite.numel() > 1 else 0.0,
+            "sum": float(torch.sum(finite)),
+            "abs_mean": float(torch.mean(torch.abs(finite))),
+            "rms": float(torch.sqrt(torch.mean(finite.square()))),
+            "mad": float(torch.mean(torch.abs(centered))),
+            "min": float(torch.min(finite)),
+            "max": float(torch.max(finite)),
+            "range": float(torch.max(finite) - torch.min(finite)),
+            "p1": p1,
+            "p5": p5,
+            "p10": p10,
+            "p25": p25,
+            "p50": p50,
+            "p75": p75,
+            "p90": p90,
+            "p95": p95,
+            "p99": p99,
+            "iqr": p75 - p25,
+            "skewness": skewness,
+            "kurtosis": kurtosis,
+            "frac_positive": float(torch.mean((finite > 0).float())),
+            "frac_negative": float(torch.mean((finite < 0).float())),
+            "frac_zero": float(torch.mean((finite == 0).float())),
+            "histogram": {
+                "bin_edges": [float(edge) for edge in hist_edges],
+                "counts": [int(c) for c in hist_counts],
+            },
+        }
+    )
+    return stats
+
+
 def refit_policy_generation(
     policy: ColocatablePolicyInterface,
     policy_generation: GenerationInterface,
@@ -1533,9 +1660,7 @@ def async_grpo_train(
                         current_training_step=step,
                     )
                 )
-                print(
-                    f"✅ Replay buffer restored from checkpoint"
-                )
+                print("✅ Replay buffer restored from checkpoint")
             except Exception as e:
                 print(f"⚠️ Failed to restore replay buffer state: {e}")
                 raise e
@@ -1878,18 +2003,21 @@ def async_grpo_train(
                         )
                     )
                     prompt_ids_for_adv = prompt_batched_flat["token_ids"]
-                    del initial_prompt_message_logs
-                    del prompt_batched_flat
+                    del initial_prompt_message_logs, prompt_batched_flat
+
+                    rewards = repeated_batch["total_reward"]
+                    print(
+                        f"  📊 Rewards stats (from the environment): min={rewards.min():.4f}, max={rewards.max():.4f}, mean={rewards.mean():.4f}, std={rewards.std():.4f}"
+                    )
 
                     if master_config["grpo"]["reward_shaping"]["enabled"]:
                         repeated_batch = apply_reward_shaping(
                             repeated_batch, master_config["grpo"]["reward_shaping"], verbose=False
                         )
-                    rewards = repeated_batch["total_reward"]
-
-                    print(
-                        f"  📊 Rewards stats: min={rewards.min():.4f}, max={rewards.max():.4f}, mean={rewards.mean():.4f}, std={rewards.std():.4f}"
-                    )
+                        rewards = repeated_batch["total_reward"]
+                        print(
+                            f"  📊 Rewards stats (after reward_shaping): min={rewards.min():.4f}, max={rewards.max():.4f}, mean={rewards.mean():.4f}, std={rewards.std():.4f}"
+                        )
 
                 # Prepare training data (same as sync version)
                 with timer.time("data_processing"):
@@ -1950,6 +2078,16 @@ def async_grpo_train(
                             "make_sequence_length_divisible_by"
                         ],
                     )
+
+                    if input_lengths.numel() > 0 and (input_lengths <= 0).any():
+                        n_zero = int((input_lengths <= 0).sum().item())
+                        print(
+                            f"⚠ Clamping {n_zero} sample(s) with zero sequence length to 1 "
+                            f"(empty-message-log rollouts are already loss-masked; "
+                            f"this keeps sequence packing alive).",
+                            flush=True,
+                        )
+                        input_lengths = input_lengths.clamp(min=1)
 
                     # Create training data
                     # Note: advantages will be computed and added after logprobs are available
@@ -2090,7 +2228,7 @@ def async_grpo_train(
                     # are globally normalized across valid tokens.
                     advantages = train_data["advantages"]
                     print(
-                        f"  📊 Advantages stats: min={advantages.min():.4f}, max={advantages.max():.4f}, mean={advantages.mean():.4f}, std={advantages.std():.4f}"
+                        f"  📊 Advantages stats (from estimator): min={advantages.min():.4f}, max={advantages.max():.4f}, mean={advantages.mean():.4f}, std={advantages.std():.4f}"
                     )
 
                     # Clip advantages to prevent extreme values from small std normalization
@@ -2106,7 +2244,7 @@ def async_grpo_train(
                     # flattened sequence. Use in-place additive clamping so that both
                     # penalty types can apply to the same message without clobbering.
                     penalize_invalid_tool_call = master_config["grpo"].get("penalize_invalid_tool_call", False)
-                    penalize_malformed_think_tag = master_config["grpo"].get("penalize_malformed_think_tag", False)
+                    penalize_malformed_thinking = master_config["grpo"].get("penalize_malformed_thinking", False)
                     invalid_neg_adv = master_config["grpo"].get("invalid_tool_call_advantage", -5.0)
                     malformed_neg_adv = master_config["grpo"].get("malformed_thinking_advantage", -5.0)
                     penalize_eos_token = master_config["grpo"].get("penalize_eos_token", False)
@@ -2121,7 +2259,7 @@ def async_grpo_train(
                             if is_assistant and penalize_invalid_tool_call and message.get("is_invalid_tool_call", False):
                                 print(f"Setting negative advantage ({invalid_neg_adv}) for invalid tool call in assistant message {i} turn {j}", flush=True)
                                 train_data["advantages"][i, token_offset:token_offset + msg_len].add_(invalid_neg_adv).clamp_(max=invalid_neg_adv)
-                            if is_assistant and penalize_malformed_think_tag and message.get("has_malformed_thinking", False):
+                            if is_assistant and penalize_malformed_thinking and message.get("has_malformed_thinking", False):
                                 print(f"Setting negative advantage ({malformed_neg_adv}) for malformed thinking in assistant message {i} turn {j}", flush=True)
                                 train_data["advantages"][i, token_offset:token_offset + msg_len].add_(malformed_neg_adv).clamp_(max=malformed_neg_adv)
                             if is_assistant and penalize_eos_token and message.get("has_eos_token", False):
@@ -2131,6 +2269,27 @@ def async_grpo_train(
                                 print(f"Setting negative advantage ({empty_neg_adv}) for empty final answer in assistant message {i} turn {j}", flush=True)
                                 train_data["advantages"][i, token_offset:token_offset + msg_len].add_(empty_neg_adv).clamp_(max=empty_neg_adv)
                             token_offset += msg_len
+
+                    # Apply n-gram repetition penalization per-token.
+                    penalize_n_gram_repetition = master_config["grpo"].get("penalize_n_gram_repetition", False)
+                    n_gram_repetition_weight = master_config["grpo"].get("n_gram_repetition_weight", 0.1)
+                    n_gram_repetition_penalty_cap = abs(master_config["grpo"].get("n_gram_repetition_penalty_cap", 0.0))
+                    if penalize_n_gram_repetition:
+                        for i, message_log in enumerate(repeated_batch["message_log"]):
+                            token_offset = 0
+                            for message in message_log:
+                                msg_len = len(message["token_ids"])
+                                if (
+                                    message["role"] == "assistant"
+                                    and "generation_logprobs" in message
+                                    and "n_gram_repetition_mask" in message
+                                ):
+                                    repeat_mask = message["n_gram_repetition_mask"].to(device=train_data["advantages"].device, dtype=train_data["advantages"].dtype)
+                                    repeat_penalty = repeat_mask * n_gram_repetition_weight
+                                    if n_gram_repetition_penalty_cap > 0:
+                                        repeat_penalty.clamp_(max=n_gram_repetition_penalty_cap)
+                                    train_data["advantages"][i, token_offset:token_offset + msg_len].sub_(repeat_penalty)
+                                token_offset += msg_len
 
                     empty_gen_sample_idxs = [
                         i
@@ -2145,6 +2304,9 @@ def async_grpo_train(
                             f"set to -max|adv| = {-max_abs_adv:.4f}",
                             flush=True,
                         )
+                    print(
+                        f"  📊 Advantages stats (post-penalties): min={advantages.min():.4f}, max={advantages.max():.4f}, mean={advantages.mean():.4f}, std={advantages.std():.4f}"
+                    )
                 del trajectory_teacher_logprobs
                 gc.collect()
                 _malloc_trim()
@@ -2434,7 +2596,13 @@ def async_grpo_train(
                 # log_data["token_ids"] = train_data["input_ids"].tolist()
                 # log_data["token_loss_mask"] = train_data["token_mask"].tolist()
                 # log_data["sample_loss_mask"] = train_data["sample_mask"].tolist()
-                log_data["advantages"] = train_data["advantages"].tolist()
+                log_data["advantages"] = [
+                    _distribution_stats(
+                        train_data["advantages"][i],
+                        train_data["token_mask"][i],
+                    )
+                    for i in range(train_data["advantages"].shape[0])
+                ]
                 # log_data["generation_logprobs"] = train_data["generation_logprobs"].tolist()
                 # log_data["prev_logprobs"] = train_data["prev_logprobs"].tolist()
 

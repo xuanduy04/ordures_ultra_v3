@@ -1,5 +1,6 @@
 
 
+import json
 import os
 import sys
 import tempfile
@@ -26,6 +27,7 @@ from nemo_rl.data.datasets.response_datasets import (
 )
 from nemo_rl.data.interfaces import TaskDataProcessFnCallable, TaskDataSpec
 from nemo_rl.data.processors import (
+    filter_overlong_nemo_gym_dataset,
     helpsteer3_data_processor,
     math_data_processor,
     math_hf_data_processor,
@@ -296,3 +298,118 @@ def test_helpsteer3_data_processor():
 
     # Length equals sum of token lengths
     assert out["length"] == sum(int(m["token_ids"].numel()) for m in msg_log)
+
+
+class FakeTemplateTokenizer:
+    """Deterministic stand-in for apply_chat_template(tokenize=True, return_dict=True).
+
+    Counts message content characters plus tool name/description characters so
+    that tools and instructions measurably contribute to the prompt length.
+    """
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def apply_chat_template(self, messages, **kwargs):
+        self.calls.append(kwargs)
+        total = 0
+        for msg in messages:
+            total += len(str(msg.get("content", "")))
+        for tool in kwargs.get("tools") or []:
+            function = tool.get("function", {})
+            total += len(str(function.get("name", ""))) + len(
+                str(function.get("description", ""))
+            )
+        if kwargs.get("add_generation_prompt"):
+            total += 1
+        return {"input_ids": list(range(total))}
+
+
+def _raw_gym_row(input_messages, instructions=None, tools=None):
+    rcp = {"input": input_messages}
+    if instructions is not None:
+        rcp["instructions"] = instructions
+    if tools is not None:
+        rcp["tools"] = tools
+    return json.dumps({"responses_create_params": rcp})
+
+
+def _gym_dataset(rows):
+    return Dataset.from_dict({"extra_env_info": rows})
+
+
+def test_filter_overlong_nemo_gym_dataset_drops_long_rows():
+    tokenizer = FakeTemplateTokenizer()
+    rows = [
+        _raw_gym_row([{"role": "user", "content": "hi"}]),
+        _raw_gym_row([{"role": "user", "content": "this is too long"}]),
+    ]
+    filtered = filter_overlong_nemo_gym_dataset(
+        _gym_dataset(rows), tokenizer, max_seq_length=10, num_proc=1
+    )
+    assert len(filtered) == 1
+    kept = json.loads(filtered["extra_env_info"][0])
+    assert kept["responses_create_params"]["input"][0]["content"] == "hi"
+
+
+def test_filter_overlong_nemo_gym_dataset_counts_tools():
+    tokenizer = FakeTemplateTokenizer()
+    tools = [
+        {
+            "type": "function",
+            "function": {"name": "search", "description": "look things up"},
+        }
+    ]
+    rows = [_raw_gym_row([{"role": "user", "content": "hi"}], tools=tools)]
+    filtered = filter_overlong_nemo_gym_dataset(
+        _gym_dataset(rows), tokenizer, max_seq_length=10, num_proc=1
+    )
+    assert len(filtered) == 0
+
+
+def test_filter_overlong_nemo_gym_dataset_counts_instructions():
+    tokenizer = FakeTemplateTokenizer()
+    rows = [
+        _raw_gym_row(
+            [{"role": "user", "content": "hi"}], instructions="You are helpful"
+        )
+    ]
+    filtered = filter_overlong_nemo_gym_dataset(
+        _gym_dataset(rows), tokenizer, max_seq_length=17, num_proc=1
+    )
+    assert len(filtered) == 0
+
+
+def test_filter_overlong_nemo_gym_dataset_keeps_unparseable_rows():
+    tokenizer = FakeTemplateTokenizer()
+    filtered = filter_overlong_nemo_gym_dataset(
+        _gym_dataset(["not json"]), tokenizer, max_seq_length=1, num_proc=1
+    )
+    assert len(filtered) == 1
+
+
+def test_filter_overlong_nemo_gym_dataset_sanitizes_trace_items():
+    tokenizer = FakeTemplateTokenizer()
+    rows = [
+        _raw_gym_row(
+            [
+                {"type": "reasoning", "summary": "should be dropped"},
+                {"type": "function_call", "name": "calc", "arguments": "{}", "call_id": "c1"},
+                {"type": "function_call_output", "output": "7", "call_id": "c1"},
+            ]
+        )
+    ]
+    filtered = filter_overlong_nemo_gym_dataset(
+        _gym_dataset(rows), tokenizer, max_seq_length=100, num_proc=1
+    )
+    assert len(filtered) == 1
+
+
+def test_filter_overlong_nemo_gym_dataset_noop_when_all_fit():
+    tokenizer = FakeTemplateTokenizer()
+    rows = [_raw_gym_row([{"role": "user", "content": "hi"}])]
+    filtered = filter_overlong_nemo_gym_dataset(
+        _gym_dataset(rows), tokenizer, max_seq_length=1000, num_proc=1
+    )
+    assert len(filtered) == 1
+    assert json.loads(filtered["extra_env_info"][0]) == json.loads(rows[0])
