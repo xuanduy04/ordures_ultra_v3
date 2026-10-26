@@ -55,8 +55,10 @@ class OnPolicyRollout:
         if self.pending_rollout is not None:
             raise RuntimeError("Previous rollout has not completed its optimizer update")
         prompt_ids = [list(self.tokenizer.apply_chat_template(
-            messages, tokenize=True, add_generation_prompt=True,
+            messages, tokenize=True, add_generation_prompt=True, return_dict=False,
         )) for messages in prompt_batch["prompts"]]
+        if any(not isinstance(token, int) for ids in prompt_ids for token in ids):
+            raise ValueError("Chat template must return integer token IDs")
         if any(not ids or len(ids) > self.knobs["max_prompt_tokens"] for ids in prompt_ids):
             raise ValueError("Empty or over-budget prompt; truncation is not implicit")
         if self.synced_version != self.policy_version:

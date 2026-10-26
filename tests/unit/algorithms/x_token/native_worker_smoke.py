@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 
 import torch
+from torch.distributed.tensor import DTensor
 from tokenizers import Tokenizer, models, pre_tokenizers
 from transformers import LlamaConfig, LlamaForCausalLM, PreTrainedTokenizerFast
 
@@ -105,11 +106,22 @@ def main():
                    "normalize_teacher_by_vocab": False, "student_vocab_size": 32,
                    "teacher_vocab_sizes": [32], "projection_matrix_paths": [None], "teacher_weights": [1.],
                    "teacher_gold_loss": [None], "teacher_xtoken_loss": [None]}
-    parameter = next(worker.model.parameters())
-    before = parameter.detach().clone()
+    def parameter_snapshot():
+        value = next(worker.model.parameters()).detach()
+        print("XTOKEN_PARAMETER_VIEW=" + json.dumps({"rank": rank,
+              "type": type(value).__name__, "shape": list(value.shape)}), flush=True)
+        if isinstance(value, DTensor):
+            value = value.full_tensor()
+        return value.float().cpu().clone()
+
+    before = parameter_snapshot()
     try:
         result = worker.train(batch, CrossTokenizerDistillationLossFn(loss_config))
         torch.cuda.synchronize()
+        after = parameter_snapshot()
+        assert before.shape == after.shape
+        assert not torch.equal(before, after), "Optimizer did not change student parameters"
+        assert all(torch.isfinite(value).all() for value in worker.model.parameters())
         parent.send("consumed")
         producer.join(30)
         assert producer.exitcode == 0
@@ -117,8 +129,6 @@ def main():
         if producer.is_alive():
             producer.terminate()
             producer.join(10)
-    assert not torch.equal(before, parameter.detach()), "Optimizer did not change student parameters"
-    assert all(torch.isfinite(value).all() for value in worker.model.parameters())
     worker.release_ipc_buffer()
     assert worker._teacher_ipc_storage is None
     print("XTOKEN_NATIVE_WORKER=" + json.dumps({"rank": rank, "world": world,

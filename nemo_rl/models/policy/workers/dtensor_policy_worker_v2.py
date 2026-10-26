@@ -144,12 +144,9 @@ def _maybe_adapt_tensor_to_hf(
 ) -> list[tuple[str, torch.Tensor]]:
     adapter = getattr(model_part, "state_dict_adapter", None)
     if adapter:
-        return adapter.convert_single_tensor_to_hf(
-            fqn,
-            tensor,
-            exclude_key_regex=r".*_extra_state.*",
-            quantization=quantization,
-        )
+        from nemo_rl.models.automodel.runtime_compat import tensor_to_hf
+
+        return tensor_to_hf(adapter, fqn, tensor, quantization=quantization)
     return [(fqn, tensor)]
 
 

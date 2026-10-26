@@ -145,8 +145,9 @@ fixtures with permuted teacher token IDs, not Llama-8B/Qwen-235B weights.
 The OPD end-to-end gate requires two successful updates with rollout versions
 0 then 1; a zero exit alone is insufficient. Logs, JUnit and JSON receipts are
 persisted in the specified Volume. Local console logs live under the existing
-ignored `internal_only/xtoken/` directory. See `tools/xtoken/validation.json` for
-the latest recorded outcome and unresolved gates.
+ignored `internal_only/xtoken/` directory. `tools/xtoken/validation.json` preserves
+the initial port outcome; see `tools/xtoken/http-validation.json` for the later
+external-teacher pipeline checks and unresolved gates.
 
 ## An existing vLLM teacher on another node
 
@@ -157,19 +158,22 @@ GPU workers and loads only the teacher tokenizer and projection. Set
 size, and local model/data/projection paths. For authentication set
 `remote.api_key_env` to the name of an already-provided environment variable;
 never put its value into YAML. The OPD recipe uses all eight student-node GPUs
-for training and colocated student generation, serially.
+for training and colocated student generation, serially. Start-up defaults are
+global batch 8 and context 256, with 128 prompt/128 generated tokens for OPD.
 
 `XTokenFullLogprobClient` subclasses the existing `VLLMTeacherLogprobClient` from
 `opd_outsource.py`, which came from the `vllm_teacher` branch. It reuses its worker
 thread, event loop, HTTP session and shutdown lifecycle. Unlike sampled-token OPD,
 it sends **teacher-tokenizer IDs** with `echo=true`, `max_tokens=0`,
-`prompt_logprobs=-1`, `logprobs=-1`, `return_token_ids=true` and
+`prompt_logprobs=-1`, `logprobs=null`, `return_token_ids=true` and
 `return_tokens_as_token_ids=true`. Full prompt distributions are indexed by
 numeric IDs. API position `i` predicts input token `i`, so the adapter moves it
 to X-Token predictor position `i-1`; the last predictor is unused. It validates
 the echoed IDs, positions, vocabulary coverage, normalization and response size.
 Missing scores, decoded-string keys, top-k-only output or HTTP rejection are
 errors. Requests have bounded retries and timeouts.
+Only `prompt_logprobs` requests the dense distribution; the ordinary `logprobs`
+field is null to avoid serializing a second copy in `top_logprobs`.
 
 The completions API returns **full log-probabilities**, not raw logits. These are
 equivalent for full-vocabulary KL, including temperature scaling, because a
@@ -187,6 +191,9 @@ million numbers, or 1.24 GB in float32 before JSON overhead. Start with short
 contexts and microbatch 1; response/element limits are upper bounds, not a claim
 that a long-context response fits the available host RAM. Production throughput
 has not been qualified.
+The element limit applies to the whole padded global teacher batch, as well as
+each HTTP request. The client preallocates the final tensor once instead of
+retaining all microbatch tensors and concatenating another full copy.
 
 The isolated Modal HTTP test uses a stock vLLM **0.31.0** teacher image pinned to
 its Linux AMD64 digest:
@@ -209,3 +216,153 @@ gradients, two finite training steps with nonzero gradients, complete teacher
 score receipts and, for OPD, fresh rollout versions 0 then 1. It does not qualify
 Llama-8B/Qwen-235B weights, eight-GPU full-model training, company-server
 capabilities, checkpoint trajectory parity or production throughput.
+
+## Approximation for an unchanged top-20 endpoint
+
+The company endpoint was observed to reject a full-vocabulary request: requested
+151,936 scores, maximum allowed 20. This prevents the original P-KL/Gold/H-KL
+transport, but does not prevent a separate top-k objective. The approximate
+recipes are `xtoken_topk_off_policy_distillation.yaml` and
+`xtoken_topk_on_policy_distillation.yaml`. They request `prompt_logprobs=20` and
+never request full scores. The server is neither changed nor restarted.
+
+The client preserves the original, globally normalized log-probabilities and
+numeric IDs. vLLM may additionally return the actual input token outside top-k;
+that token is retained as another explicit bucket. At teacher position `t`,
+let `S_t` be returned token IDs reachable through the projection. The teacher
+distribution used by the loss is:
+
+```text
+p_bar_t = [p_t(v) for v in S_t] + [1 - sum_{v in S_t} p_t(v)]
+```
+
+The last bucket is OTHER. It includes unreturned tokens and returned IDs that
+cannot be reached through the projection. Student mapping rows are normalized
+to sum to one when mapped; missing student rows contribute to OTHER. Student
+probabilities are averaged over the aligned response chunk, projected into the
+teacher vocabulary, then gathered on the same `S_t` with their own OTHER mass.
+The loss is KL between these two coarse distributions. `reverse_kl` selects
+its direction. Teacher-position losses are averaged within each chunk; chunks
+are weighted by their number of student response tokens and normalized by the
+global valid student-token count across data-parallel workers.
+
+This is **a separate approximation**, not original P-KL, Gold, H-KL, nor an
+unbiased estimator of their full-vocabulary losses. It does not reconstruct
+relative probabilities within OTHER. With one-to-one token alignment, complete
+projection coverage and all vocabulary IDs returned, it reduces to ordinary
+projected KL. Tests check the finite top-k case against an independent dense
+reference, including unequal chunk lengths, prompt masking, dropped samples,
+missing projection rows, forward/reverse gradients and zero tail mass.
+
+The top-k-plus-tail construction has prior art in
+[Tail-Aware Top-k OPD](https://arxiv.org/abs/2608.14728). This implementation adds
+cross-tokenizer projection/chunk handling; it does not claim to reproduce that
+paper's experiments or its sampled-token correction. No quality improvement is
+established by a two-step pipeline test.
+
+Initial restrictions: TP=CP=1 with data parallelism, temperature 1, static teacher
+weights, CE=0 and no dynamic scaling. Temperature cannot be changed after scores
+arrive because the hidden tail cannot be re-tempered exactly. Gold/H-KL flags
+are rejected in this mode. The student still computes its full distribution and
+sparse projection locally; only teacher transport is sparse.
+
+For the four free company GPUs in this run, start from the existing driver
+environment, with source/config already copied into its editable checkout:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 /opt/nemo_rl_venv/bin/python \
+  -m examples.run_xtoken_on_policy_distillation \
+  --config examples/configs/xtoken_topk_on_policy_distillation.yaml \
+  cluster.gpus_per_node=4 cluster.num_nodes=1 \
+  teachers.0.remote.url=http://teacher.internal:8000 \
+  teachers.0.remote.model=Qwen3-235B-A22B-Instruct \
+  policy.model_name=/models/Llama-3.1-8B-Instruct \
+  policy.tokenizer.name=/models/Llama-3.1-8B-Instruct \
+  teachers.0.tokenizer.name=/models/exact-teacher-tokenizer \
+  teachers.0.projection_matrix_path=/data/projections/llama31-qwen3.pt \
+  data.train.data_files=/data/xtoken/train.parquet \
+  distillation.max_num_steps=2
+```
+
+Replace the endpoint and local paths with the actual staged resources. Do not
+copy dependency manifests, bundled third-party code or a replacement venv into
+the deployed image. The company runtime inspection reported Python 3.12.12,
+Torch 2.10.0+cu129, Transformers 4.57.1 and Automodel 0.2.0, with the legacy FSDP
+constructor and public `to_hf` adapter. Those observed APIs are handled by the
+source compatibility layer; a real four-GPU company run remains a separate gate.
+
+The Modal `http-topk-both` stage uses an isolated vLLM 0.31.0 teacher started with
+the same maximum of 20 scores, one teacher B200 and one student B200. Its tiny
+checkpoint has nontrivial tail probability. It verifies off-policy and on-policy
+entrypoints, finite gradients and fresh rollout/refit versions. Logs and receipts
+identify the exact source and images used.
+
+## Current target: Qwen3-4B student and Gemma 4 teacher
+
+The recorded CPU suite has 169 passing tests and six GPU-only skips. Separate
+CUDA tests check the top-k loss and its backward pass under autocast. Tiny Llama
+and Qwen3 students completed two off-policy and two on-policy updates through
+an isolated vLLM 0.31.0 top-20 teacher. OPD receipts require rollout versions
+0 then 1. These checks establish the tested mechanics, not convergence or
+full-model production readiness.
+
+`source-manifest` compares the mounted code against the checkout. The tested
+stock NGC overlay matches all 159 local Python files but retains 24 image-only
+modules, including an `algorithms/loss` package. The JSON report records these
+paths; this mixed source tree is another reason exact company-image validation
+remains a separate gate. No company runtime files were modified by these tests.
+
+Use `xtoken_qwen3_gemma4_off_policy_distillation.yaml` or
+`xtoken_qwen3_gemma4_on_policy_distillation.yaml` for the updated pair. These
+recipes use four student GPUs, a separate HTTP teacher, top-20 plus OTHER KL,
+and non-thinking chat prefixes for both models. They require a new
+Qwen3-to-Gemma4 projection; the Llama-to-Qwen projection is incompatible.
+
+The official [Gemma 4 26B A4B configuration](https://huggingface.co/google/gemma-4-26B-A4B-it/blob/main/config.json)
+sets its text lm-head vocabulary to 262,144. Its
+[tokenizer metadata](https://huggingface.co/google/gemma-4-26B-A4B-it/blob/main/tokenizer_config.json)
+uses `GemmaTokenizer` and a list in `extra_special_tokens`, whereas
+[Transformers 4.57.1](https://github.com/huggingface/transformers/blob/v4.57.1/src/transformers/tokenization_utils_base.py)
+expects named entries in that field. The recipe passes an explicit named-token
+mapping through `tokenizer.from_pretrained_kwargs` while keeping the video token
+in `additional_special_tokens`. This changes loading arguments in memory, not
+the staged files or installed Transformers. The standard loader still applies
+the configured chat template and `enable_thinking=false` kwargs.
+
+The schema bridge and recipe parsing are unit-tested. Loading the actual Gemma 4
+tokenizer files on the company runtime, checking offsets and comparing encoded
+IDs against the newly hosted teacher remain separate integration gates. The
+named metadata tokens must retain their original IDs; do not accept a tokenizer
+that adds new IDs beyond the teacher's lm-head vocabulary.
+
+The `http-topk-qwen3` Modal stage changes the tiny student fixture to the actual
+Qwen3 architecture while retaining a tiny Llama HTTP teacher. This tests the
+student backend/refit path and cross-tokenizer protocol without downloading
+Qwen3-4B or Gemma4-26B weights. It does not qualify those full checkpoints.
+The NGC HF-5 fallback initializes Qwen3 parameters from config on `meta` and
+delegates weight loading to the existing Checkpointer. Nonpersistent buffers,
+including RoPE frequencies, retain real data. Weight tying happens after the
+empty-parameter context. This avoids a second weight-loading attempt inside
+Accelerate's patch and prevents meta-buffer transfers to CUDA. HF-4 and custom
+Automodel model initialization keep their existing path.
+
+The official [Qwen3-4B configuration](https://huggingface.co/Qwen/Qwen3-4B/blob/main/config.json)
+ties input embeddings and the output head. The CPU native check covers both
+tied and untied construction. `http-full-qwen3-opd` exercises full-score OPD
+with a tied Qwen3 fixture, including vLLM refit. Receipts record the architecture,
+weight-tying setting and tested source hash; earlier untied fixtures remain
+separate evidence.
+
+After staging the exact tokenizer, projection and dataset files and replacing
+the teacher URL/served name in YAML:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 /opt/nemo_rl_venv/bin/python \
+  -m examples.run_xtoken_on_policy_distillation \
+  --config examples/configs/xtoken_qwen3_gemma4_on_policy_distillation.yaml \
+  distillation.max_num_steps=2
+```
+
+The example alias `gemma4-teacher` must match `/v1/models` from the new server.
+No change to the old Qwen teacher is needed. Use the new server's actual score
+capability; its limits cannot be inferred from the previous Qwen deployment.

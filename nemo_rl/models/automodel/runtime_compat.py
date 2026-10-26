@@ -1,6 +1,45 @@
 """Adapt legacy NeMo worker setup to both installed Automodel FSDP2 APIs."""
 
 import inspect
+from copy import deepcopy
+
+
+def use_hf_meta_init(model_config, registry):
+    """HF 5 from_pretrained cannot run inside Accelerate's empty-weight patch."""
+    import transformers
+
+    return int(transformers.__version__.split(".")[0]) >= 5 and model_config.architectures[0] not in registry.model_arch_name_to_cls
+
+
+def hf_model_from_config(model_class, model_config, automodel_kwargs, attn_impl):
+    """Build parameter-only meta weights; the caller ties weights after the context."""
+    unsupported = set(automodel_kwargs) - {"use_liger_kernel", "force_hf"}
+    if unsupported or automodel_kwargs.get("use_liger_kernel"):
+        raise NotImplementedError("HF meta initialization cannot honor these Automodel options: " + str(sorted(automodel_kwargs)))
+    import torch
+
+    factories = [base for base in model_class.__mro__
+                 if base.__module__.startswith("transformers.") and base.__name__.startswith("AutoModel")]
+    if not factories:
+        raise TypeError("No Hugging Face auto-model factory found for meta initialization")
+    construction_config = deepcopy(model_config)
+    tied = construction_config.tie_word_embeddings
+    construction_config.tie_word_embeddings = False
+    model = factories[0].from_config(construction_config, torch_dtype=torch.float32,
+                                     attn_implementation=attn_impl, trust_remote_code=True)
+    model.config.tie_word_embeddings = tied
+    return model
+
+
+def tensor_to_hf(adapter, fqn, tensor, *, quantization):
+    """Convert refit weights through the installed adapter's public API."""
+    if hasattr(adapter, "convert_single_tensor_to_hf"):
+        return adapter.convert_single_tensor_to_hf(
+            fqn, tensor, exclude_key_regex=r".*_extra_state.*", quantization=quantization,
+        )
+    if quantization:
+        raise NotImplementedError("Installed adapter cannot honor quantized single-tensor refit")
+    return list(adapter.to_hf({fqn: tensor}, exclude_key_regex=r".*_extra_state.*").items())
 
 
 def load_base_checkpoint(checkpointer, model, **kwargs):

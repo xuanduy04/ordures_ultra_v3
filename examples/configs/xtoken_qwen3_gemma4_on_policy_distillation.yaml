@@ -1,0 +1,26 @@
+defaults: xtoken_qwen3_gemma4_off_policy_distillation.yaml
+
+on_policy:
+  prompt_source: raw_text
+  max_prompt_tokens: 128
+  refit_buffer_size_gb: 1.0
+  include_eos_loss: false
+
+policy:
+  generation:
+    max_new_tokens: 128
+    temperature: 1.0
+    top_p: 1.0
+    top_k: null
+    stop_token_ids: null
+    vllm_cfg:
+      async_engine: false
+      skip_tokenizer_init: true
+      tensor_parallel_size: 1
+      pipeline_parallel_size: 1
+      expert_parallel_size: 1
+    colocated:
+      enabled: true
+
+logger:
+  log_dir: logs/xtoken-qwen3-gemma4-on-policy-distillation

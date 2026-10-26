@@ -296,15 +296,19 @@ def get_tokenizer(
     maybe_patch_fastokens()
 
     processor = None
+    load_kwargs = tokenizer_config.get("from_pretrained_kwargs")
+    load_kwargs = {} if load_kwargs is None else dict(load_kwargs)
+    if "trust_remote_code" in load_kwargs:
+        raise ValueError("from_pretrained_kwargs must not duplicate trust_remote_code")
 
     if get_processor:
         processor = AutoProcessor.from_pretrained(
-            tokenizer_config["name"], trust_remote_code=True, use_fast=True
+            tokenizer_config["name"], trust_remote_code=True, use_fast=True, **load_kwargs
         )
         tokenizer = processor.tokenizer
     else:
         tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_config["name"], trust_remote_code=True
+            tokenizer_config["name"], trust_remote_code=True, **load_kwargs
         )
 
     if tokenizer.pad_token is None:

@@ -201,6 +201,7 @@ class MegatronConfig(TypedDict):
 
 class TokenizerConfig(TypedDict):
     name: str
+    from_pretrained_kwargs: NotRequired[dict[str, Any]]
     chat_template: NotRequired[str]
     # Arguments to pass to tokenizer.apply_chat_template(...). This can be used to pass kwargs like enable_thinking=true
     chat_template_kwargs: NotRequired[dict[str, Any] | None]

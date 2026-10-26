@@ -98,6 +98,9 @@
     "v0.6 Policy and DTensor V2 persistent full-logit IPC export API",
     "response-only fresh student rollout hook using existing vLLM refit",
     "strict vocab/template/grid gates and checkpoint data identity guard",
+    "external vLLM 0.31 teacher client reusing production OPD HTTP lifecycle",
+    "explicit projected top-k plus OTHER KL approximation separate from Gold/H-KL",
+    "native Automodel constructor/checkpoint/refit and Transformers chat-template adapters",
     "no dependency, lockfile, Dockerfile or bundled third-party edits"
   ]
 }

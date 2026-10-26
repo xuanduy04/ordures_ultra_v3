@@ -27,8 +27,10 @@ class Tokenizer:
     def convert_ids_to_tokens(self, ids):
         return [self.vocab[int(index)] for index in ids]
 
-    def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
+    def apply_chat_template(self, messages, *, tokenize, add_generation_prompt, return_dict=None):
         assert add_generation_prompt
+        if tokenize:
+            assert return_dict is False
         return [5] if tokenize else self.prefix
 
     def __call__(self, text, *, add_special_tokens, return_offsets_mapping):

@@ -6,12 +6,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import math
 import threading
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 import torch
 
 from nemo_rl.algorithms.x_token.remote_teacher import (
     TeacherCapabilityError,
+    RemoteTeacherPolicy,
     XTokenFullLogprobClient,
 )
 
@@ -74,7 +77,7 @@ def test_reject_incomplete_or_invalid_distribution(client_config, mutation):
         parser(client_config)._parse_dense_choice(choice, 3, 3)
 
 
-@pytest.mark.parametrize("scenario", ["ok", "retry", "topk", "echo", "duplicate", "limit", "fatal"])
+@pytest.mark.parametrize("scenario", ["ok", "retry", "exhaust", "topk", "echo", "duplicate", "limit", "fatal"])
 def test_live_http_lifecycle_alignment_and_bounds(client_config, scenario):
     requests = []
 
@@ -85,7 +88,7 @@ def test_live_http_lifecycle_alignment_and_bounds(client_config, scenario):
         def do_POST(self):
             payload = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
             requests.append(payload)
-            status = 503 if scenario == "retry" and len(requests) == 1 else 200
+            status = 503 if scenario == "exhaust" or scenario == "retry" and len(requests) == 1 else 200
             if scenario == "fatal":
                 status = 400
             choices = [copy.deepcopy(dense_choice()) for _ in payload["prompt"]]
@@ -117,12 +120,16 @@ def test_live_http_lifecycle_alignment_and_bounds(client_config, scenario):
             result = asyncio.run(call)
             torch.testing.assert_close(result[0, :2].exp(), torch.tensor([[.2, .3, .5], [.5, .4, .1]]))
             assert result[0, 2].eq(0).all()
+        elif scenario == "exhaust":
+            with pytest.raises(RuntimeError, match="Transient"):
+                asyncio.run(call)
         else:
             with pytest.raises(TeacherCapabilityError):
                 asyncio.run(call)
-        assert len(requests) == (2 if scenario == "retry" else 1)
+        assert len(requests) == (2 if scenario in {"retry", "exhaust"} else 1)
         assert requests[0]["prompt"] == [[1, 2, 1], [1, 2, 1]]
-        assert requests[0]["prompt_logprobs"] == requests[0]["logprobs"] == -1
+        assert requests[0]["prompt_logprobs"] == -1
+        assert requests[0]["logprobs"] is None
     finally:
         asyncio.run(client.close())
         server.shutdown()
@@ -138,3 +145,33 @@ def test_preflight_size_guard_makes_no_request(client_config):
             asyncio.run(client.score_group({}, torch.tensor([[1, 2]]), torch.tensor([2])))
     finally:
         asyncio.run(client.close())
+
+
+@pytest.mark.parametrize("length", [-1, 1, 4])
+def test_preflight_rejects_invalid_lengths(client_config, length):
+    client = XTokenFullLogprobClient(client_config)
+    try:
+        with pytest.raises(ValueError, match="sequence"):
+            asyncio.run(client.score_group({}, torch.tensor([[1, 2, 1]]), torch.tensor([length])))
+    finally:
+        asyncio.run(client.close())
+
+
+@pytest.mark.parametrize("fits", [True, False])
+def test_remote_policy_preallocates_and_bounds_global_batch(client_config, fits):
+    from nemo_rl.distributed.batched_data_dict import BatchedDataDict
+
+    client_config["max_score_elements"] = 36 if fits else 35
+    policy = RemoteTeacherPolicy(client_config)
+    score = AsyncMock(side_effect=[torch.ones(2, 3, 3), torch.full((2, 3, 3), 2.)])
+    policy.client = SimpleNamespace(score_group=score)
+    data = BatchedDataDict(input_ids=torch.ones(4, 3, dtype=torch.long), input_lengths=torch.full((4,), 3))
+    if fits:
+        result = policy.get_full_logits(data, micro_batch_size=2)
+        torch.testing.assert_close(result[:2], torch.ones(2, 3, 3))
+        torch.testing.assert_close(result[2:], torch.full((2, 3, 3), 2.))
+        assert score.await_count == 2
+    else:
+        with pytest.raises(ValueError, match="Global"):
+            policy.get_full_logits(data, micro_batch_size=2)
+        score.assert_not_awaited()

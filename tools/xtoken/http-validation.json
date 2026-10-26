@@ -1,0 +1,597 @@
+{
+  "recorded_at": "2026-10-26T05:51:16.751923+00:00",
+  "status": "external teacher pipeline validated on tiny fixtures; company full-model run pending",
+  "production_qualified": false,
+  "production_base": "da929379634d7dc1e8546019e85b9b76839479af",
+  "latest_source_sha256": "2fcad17307df0fb41add3946480347a753490fda06bb3b0cee84b821481c017c",
+  "local_overlay_source_sha256": "6bcb44ed6bc5c0556399cfba99883803d4dd459f276e18394675dac771e7e797",
+  "overlay_manifest_check": {
+    "runtime_files": 183,
+    "local_files": 159,
+    "image_only": [
+      "nemo_rl/algorithms/logits_sampling_utils.py",
+      "nemo_rl/algorithms/loss/__init__.py",
+      "nemo_rl/algorithms/loss/interfaces.py",
+      "nemo_rl/algorithms/loss/loss_functions.py",
+      "nemo_rl/algorithms/loss/utils.py",
+      "nemo_rl/algorithms/loss/wrapper.py",
+      "nemo_rl/data/dataloader.py",
+      "nemo_rl/data/datasets/response_datasets/daily_omni.py",
+      "nemo_rl/data/datasets/response_datasets/general_conversations_dataset.py",
+      "nemo_rl/data/datasets/response_datasets/gsm8k.py",
+      "nemo_rl/data/datasets/response_datasets/nemotron_cascade2_sft.py",
+      "nemo_rl/environments/games/sliding_puzzle.py",
+      "nemo_rl/models/automodel/checkpoint.py",
+      "nemo_rl/models/generation/sglang/__init__.py",
+      "nemo_rl/models/generation/sglang/config.py",
+      "nemo_rl/models/generation/sglang/sglang_copied_utils.py",
+      "nemo_rl/models/generation/sglang/sglang_generation.py",
+      "nemo_rl/models/generation/sglang/sglang_worker.py",
+      "nemo_rl/models/generation/sglang/utils.py",
+      "nemo_rl/models/megatron/draft/__init__.py",
+      "nemo_rl/models/megatron/draft/eagle.py",
+      "nemo_rl/models/megatron/draft/hidden_capture.py",
+      "nemo_rl/models/megatron/draft/utils.py",
+      "nemo_rl/utils/memory_tracker.py"
+    ],
+    "local_only": [],
+    "changed": []
+  },
+  "source_hash_contract": "SHA256 of sorted nemo_rl/*.py relative POSIX path followed by raw bytes; runtime hash includes image-only files after overlay, local overlay hash does not; excludes configs/tests/runner",
+  "latest_qwen_topk_both_passed": true,
+  "latest_tied_qwen_full_opd_passed": true,
+  "current_pair": {
+    "student": "Qwen/Qwen3-4B",
+    "teacher": "google/gemma-4-26B-A4B-it",
+    "student_gpus_requested": 4,
+    "teacher_topology": "separate company node hosted by user",
+    "new_endpoint_capability_verified": false
+  },
+  "cpu": {
+    "image": "nvcr.io/nvidia/nemo-rl@sha256:060a3337d167e66230ce8b3dac9e9b733ad25bc997f8a0121eebccf81cbf1b23",
+    "source_sha256": "2fcad17307df0fb41add3946480347a753490fda06bb3b0cee84b821481c017c",
+    "exit_code": 0,
+    "scope": "auxiliary CPU alignment/loss tests, not custom production-image qualification",
+    "suites": [
+      {
+        "name": "pytest",
+        "errors": "0",
+        "failures": "0",
+        "skipped": "6",
+        "tests": "175",
+        "time": "71.391",
+        "timestamp": "2026-10-26T05:35:38.550560+00:00",
+        "hostname": "modal"
+      }
+    ],
+    "native_contracts": {
+      "qkv": true,
+      "gate_up": true,
+      "extra_state_excluded": true,
+      "architecture": "Qwen3ForCausalLM",
+      "all_parameters_meta": true,
+      "buffers_materialized": true,
+      "tied_and_untied": true
+    },
+    "modal_app_id": "ap-AuVeWo1w2gfgUT2lFtE9i2"
+  },
+  "native_two_student_gpus": {
+    "image": "nvcr.io/nvidia/nemo-rl@sha256:060a3337d167e66230ce8b3dac9e9b733ad25bc997f8a0121eebccf81cbf1b23",
+    "source_sha256": "10a8395afdb5f1af1e980f593900c69b68c3b2840d562a6c8acafefedce1be0b",
+    "exit_code": 0,
+    "gpu_names": [
+      "NVIDIA B200",
+      "NVIDIA B200"
+    ],
+    "torch": "2.10.0+cu129",
+    "cuda": "12.9",
+    "scope": "stock NGC source-overlay validation; custom production image pending",
+    "passed_tests": 1,
+    "deselected": 7,
+    "ranks": 2,
+    "checks": [
+      "optimizer changed freshly queried parameters on both ranks",
+      "full-score IPC export reuse and release"
+    ],
+    "modal_app_id": "ap-a4DBJpIWL5gZrgrOks59EU"
+  },
+  "http_pipelines": [
+    {
+      "image": "nvcr.io/nvidia/nemo-rl@sha256:060a3337d167e66230ce8b3dac9e9b733ad25bc997f8a0121eebccf81cbf1b23",
+      "teacher_image": "vllm/vllm-openai@sha256:a4a4c0437bf7240089da5f08aa370c4aee17ae5290f7a3b468825ee26c4c3a6b",
+      "source_sha256": "6ac8e3d05f004bc68008151848dce2d2f9870b03a1f40a6b01a379bc17612c6f",
+      "mode": "off",
+      "exit_code": 0,
+      "success": true,
+      "rollouts": [],
+      "training_steps": [
+        {
+          "step": 1,
+          "loss": 3.4655961990356445,
+          "grad_norm": 21.627153396606445,
+          "lr": 0.01
+        },
+        {
+          "step": 2,
+          "loss": 1.3916656970977783,
+          "grad_norm": 15.49323844909668,
+          "lr": 0.01
+        }
+      ],
+      "teacher_scores": [
+        {
+          "batch_size": 1,
+          "scored_positions": 2,
+          "model_vocab_size": 32,
+          "representation": "full_logprobs"
+        },
+        {
+          "batch_size": 1,
+          "scored_positions": 2,
+          "model_vocab_size": 32,
+          "representation": "full_logprobs"
+        },
+        {
+          "batch_size": 1,
+          "scored_positions": 2,
+          "model_vocab_size": 32,
+          "representation": "full_logprobs"
+        },
+        {
+          "batch_size": 1,
+          "scored_positions": 2,
+          "model_vocab_size": 32,
+          "representation": "full_logprobs"
+        }
+      ],
+      "topology": "1 B200 student + 1 B200 separate vLLM teacher",
+      "fixture": "tiny Llama, permuted tokenizer IDs and separate chat templates",
+      "scope": "mechanism smoke test; no full 235B or company-node qualification",
+      "modal_app_id": "ap-CxGoAtrY4xoUiB3Axe6UOK",
+      "log_basename": "http-both-r3.log",
+      "student_tied_embeddings": false,
+      "tying_evidence": "fixture construction at this run explicitly used tie_word_embeddings=False"
+    },
+    {
+      "image": "nvcr.io/nvidia/nemo-rl@sha256:060a3337d167e66230ce8b3dac9e9b733ad25bc997f8a0121eebccf81cbf1b23",
+      "teacher_image": "vllm/vllm-openai@sha256:a4a4c0437bf7240089da5f08aa370c4aee17ae5290f7a3b468825ee26c4c3a6b",
+      "source_sha256": "6ac8e3d05f004bc68008151848dce2d2f9870b03a1f40a6b01a379bc17612c6f",
+      "mode": "on",
+      "exit_code": 1,
+      "success": false,
+      "rollouts": [],
+      "training_steps": [],
+      "teacher_scores": [],
+      "topology": "1 B200 student + 1 B200 separate vLLM teacher",
+      "fixture": "tiny Llama, permuted tokenizer IDs and separate chat templates",
+      "scope": "mechanism smoke test; no full 235B or company-node qualification",
+      "modal_app_id": "ap-CxGoAtrY4xoUiB3Axe6UOK",
+      "log_basename": "http-both-r3.log",
+      "student_tied_embeddings": false,
+      "tying_evidence": "fixture construction at this run explicitly used tie_word_embeddings=False"
+    },
+    {
+      "image": "nvcr.io/nvidia/nemo-rl@sha256:060a3337d167e66230ce8b3dac9e9b733ad25bc997f8a0121eebccf81cbf1b23",
+      "teacher_image": "vllm/vllm-openai@sha256:a4a4c0437bf7240089da5f08aa370c4aee17ae5290f7a3b468825ee26c4c3a6b",
+      "source_sha256": "22796e52a70469d2a9176b1d3c5953a959542451fd38c47f97062a22b4b0e684",
+      "mode": "off",
+      "score_mode": "topk",
+      "exit_code": 0,
+      "success": true,
+      "rollouts": [],
+      "training_steps": [
+        {
+          "step": 1,
+          "loss": 0.00773082859814167,
+          "grad_norm": 0.4804692268371582,
+          "lr": 0.01,
+          "retained_mass": {
+            "teacher_retained_mass_t0": 0.7751210927963257,
+            "student_retained_mass_t0": 0.7751210927963257
+          }
+        },
+        {
+          "step": 2,
+          "loss": 0.1176535040140152,
+          "grad_norm": 2.061911106109619,
+          "lr": 0.01,
+          "retained_mass": {
+            "teacher_retained_mass_t0": 0.7751210927963257,
+            "student_retained_mass_t0": 0.8056498765945435
+          }
+        }
+      ],
+      "teacher_scores": [
+        {
+          "batch_size": 1,
+          "scored_positions": 2,
+          "model_vocab_size": 32,
+          "representation": "topk_logprobs",
+          "top_k": 20
+        },
+        {
+          "batch_size": 1,
+          "scored_positions": 2,
+          "model_vocab_size": 32,
+          "representation": "topk_logprobs",
+          "top_k": 20
+        },
+        {
+          "batch_size": 1,
+          "scored_positions": 2,
+          "model_vocab_size": 32,
+          "representation": "topk_logprobs",
+          "top_k": 20
+        },
+        {
+          "batch_size": 1,
+          "scored_positions": 2,
+          "model_vocab_size": 32,
+          "representation": "topk_logprobs",
+          "top_k": 20
+        }
+      ],
+      "topology": "1 B200 student + 1 B200 separate vLLM teacher",
+      "fixture": "tiny Llama, permuted tokenizer IDs and separate chat templates",
+      "scope": "mechanism smoke test; no full 235B or company-node qualification",
+      "modal_app_id": "ap-UtUx8tJqRO8qrIw3abirAQ",
+      "log_basename": "http-topk-both-r3.log",
+      "student_tied_embeddings": false,
+      "tying_evidence": "fixture construction at this run explicitly used tie_word_embeddings=False"
+    },
+    {
+      "image": "nvcr.io/nvidia/nemo-rl@sha256:060a3337d167e66230ce8b3dac9e9b733ad25bc997f8a0121eebccf81cbf1b23",
+      "teacher_image": "vllm/vllm-openai@sha256:a4a4c0437bf7240089da5f08aa370c4aee17ae5290f7a3b468825ee26c4c3a6b",
+      "source_sha256": "22796e52a70469d2a9176b1d3c5953a959542451fd38c47f97062a22b4b0e684",
+      "mode": "on",
+      "score_mode": "topk",
+      "exit_code": 0,
+      "success": true,
+      "rollouts": [
+        {
+          "policy_version": 0,
+          "rollout_id": 1,
+          "training": true,
+          "batch_size": 2,
+          "response_tokens": 8
+        },
+        {
+          "policy_version": 1,
+          "rollout_id": 2,
+          "training": true,
+          "batch_size": 2,
+          "response_tokens": 8
+        }
+      ],
+      "training_steps": [
+        {
+          "step": 1,
+          "loss": 0.00773082859814167,
+          "grad_norm": 0.4804692268371582,
+          "lr": 0.01,
+          "retained_mass": {
+            "teacher_retained_mass_t0": 0.7813677191734314,
+            "student_retained_mass_t0": 0.7813677191734314
+          }
+        },
+        {
+          "step": 2,
+          "loss": 0.11765359342098236,
+          "grad_norm": 2.061911106109619,
+          "lr": 0.01,
+          "retained_mass": {
+            "teacher_retained_mass_t0": 0.7844910323619843,
+            "student_retained_mass_t0": 0.8137478232383728
+          }
+        }
+      ],
+      "teacher_scores": [
+        {
+          "batch_size": 1,
+          "scored_positions": 9,
+          "model_vocab_size": 32,
+          "representation": "topk_logprobs",
+          "top_k": 20
+        },
+        {
+          "batch_size": 1,
+          "scored_positions": 9,
+          "model_vocab_size": 32,
+          "representation": "topk_logprobs",
+          "top_k": 20
+        },
+        {
+          "batch_size": 1,
+          "scored_positions": 9,
+          "model_vocab_size": 32,
+          "representation": "topk_logprobs",
+          "top_k": 20
+        },
+        {
+          "batch_size": 1,
+          "scored_positions": 9,
+          "model_vocab_size": 32,
+          "representation": "topk_logprobs",
+          "top_k": 20
+        }
+      ],
+      "topology": "1 B200 student + 1 B200 separate vLLM teacher",
+      "fixture": "tiny Llama, permuted tokenizer IDs and separate chat templates",
+      "scope": "mechanism smoke test; no full 235B or company-node qualification",
+      "modal_app_id": "ap-UtUx8tJqRO8qrIw3abirAQ",
+      "log_basename": "http-topk-both-r3.log",
+      "student_tied_embeddings": false,
+      "tying_evidence": "fixture construction at this run explicitly used tie_word_embeddings=False"
+    },
+    {
+      "image": "nvcr.io/nvidia/nemo-rl@sha256:060a3337d167e66230ce8b3dac9e9b733ad25bc997f8a0121eebccf81cbf1b23",
+      "teacher_image": "vllm/vllm-openai@sha256:a4a4c0437bf7240089da5f08aa370c4aee17ae5290f7a3b468825ee26c4c3a6b",
+      "source_sha256": "2fcad17307df0fb41add3946480347a753490fda06bb3b0cee84b821481c017c",
+      "mode": "off",
+      "score_mode": "topk",
+      "exit_code": 0,
+      "success": true,
+      "rollouts": [],
+      "student_architecture": "qwen3",
+      "training_steps": [
+        {
+          "step": 1,
+          "loss": 0.00773082859814167,
+          "grad_norm": 0.4804692268371582,
+          "lr": 0.01,
+          "retained_mass": {
+            "teacher_retained_mass_t0": 0.7751210927963257,
+            "student_retained_mass_t0": 0.7751210927963257
+          }
+        },
+        {
+          "step": 2,
+          "loss": 0.1176535040140152,
+          "grad_norm": 2.061911106109619,
+          "lr": 0.01,
+          "retained_mass": {
+            "teacher_retained_mass_t0": 0.7751210927963257,
+            "student_retained_mass_t0": 0.8056498765945435
+          }
+        }
+      ],
+      "teacher_scores": [
+        {
+          "batch_size": 1,
+          "scored_positions": 2,
+          "model_vocab_size": 32,
+          "representation": "topk_logprobs",
+          "top_k": 20
+        },
+        {
+          "batch_size": 1,
+          "scored_positions": 2,
+          "model_vocab_size": 32,
+          "representation": "topk_logprobs",
+          "top_k": 20
+        },
+        {
+          "batch_size": 1,
+          "scored_positions": 2,
+          "model_vocab_size": 32,
+          "representation": "topk_logprobs",
+          "top_k": 20
+        },
+        {
+          "batch_size": 1,
+          "scored_positions": 2,
+          "model_vocab_size": 32,
+          "representation": "topk_logprobs",
+          "top_k": 20
+        }
+      ],
+      "topology": "1 B200 student + 1 B200 separate vLLM teacher",
+      "fixture": "tiny qwen3 student, tiny Llama teacher, permuted tokenizer IDs and separate templates",
+      "scope": "mechanism smoke test; no full 235B or company-node qualification",
+      "modal_app_id": "ap-R3uriktdWZuL6klxHYzjMr",
+      "log_basename": "http-topk-qwen3-r3.log",
+      "student_tied_embeddings": false,
+      "tying_evidence": "fixture construction at this run explicitly used tie_word_embeddings=False"
+    },
+    {
+      "image": "nvcr.io/nvidia/nemo-rl@sha256:060a3337d167e66230ce8b3dac9e9b733ad25bc997f8a0121eebccf81cbf1b23",
+      "teacher_image": "vllm/vllm-openai@sha256:a4a4c0437bf7240089da5f08aa370c4aee17ae5290f7a3b468825ee26c4c3a6b",
+      "source_sha256": "2fcad17307df0fb41add3946480347a753490fda06bb3b0cee84b821481c017c",
+      "mode": "on",
+      "score_mode": "topk",
+      "exit_code": 0,
+      "success": true,
+      "rollouts": [
+        {
+          "policy_version": 0,
+          "rollout_id": 1,
+          "training": true,
+          "batch_size": 2,
+          "response_tokens": 8
+        },
+        {
+          "policy_version": 1,
+          "rollout_id": 2,
+          "training": true,
+          "batch_size": 2,
+          "response_tokens": 8
+        }
+      ],
+      "student_architecture": "qwen3",
+      "training_steps": [
+        {
+          "step": 1,
+          "loss": 0.00773082859814167,
+          "grad_norm": 0.4804692268371582,
+          "lr": 0.01,
+          "retained_mass": {
+            "teacher_retained_mass_t0": 0.7813677191734314,
+            "student_retained_mass_t0": 0.7813677191734314
+          }
+        },
+        {
+          "step": 2,
+          "loss": 0.11765359342098236,
+          "grad_norm": 2.061911106109619,
+          "lr": 0.01,
+          "retained_mass": {
+            "teacher_retained_mass_t0": 0.7844910323619843,
+            "student_retained_mass_t0": 0.8137478232383728
+          }
+        }
+      ],
+      "teacher_scores": [
+        {
+          "batch_size": 1,
+          "scored_positions": 9,
+          "model_vocab_size": 32,
+          "representation": "topk_logprobs",
+          "top_k": 20
+        },
+        {
+          "batch_size": 1,
+          "scored_positions": 9,
+          "model_vocab_size": 32,
+          "representation": "topk_logprobs",
+          "top_k": 20
+        },
+        {
+          "batch_size": 1,
+          "scored_positions": 9,
+          "model_vocab_size": 32,
+          "representation": "topk_logprobs",
+          "top_k": 20
+        },
+        {
+          "batch_size": 1,
+          "scored_positions": 9,
+          "model_vocab_size": 32,
+          "representation": "topk_logprobs",
+          "top_k": 20
+        }
+      ],
+      "topology": "1 B200 student + 1 B200 separate vLLM teacher",
+      "fixture": "tiny qwen3 student, tiny Llama teacher, permuted tokenizer IDs and separate templates",
+      "scope": "mechanism smoke test; no full 235B or company-node qualification",
+      "modal_app_id": "ap-R3uriktdWZuL6klxHYzjMr",
+      "log_basename": "http-topk-qwen3-r3.log",
+      "student_tied_embeddings": false,
+      "tying_evidence": "fixture construction at this run explicitly used tie_word_embeddings=False"
+    },
+    {
+      "image": "nvcr.io/nvidia/nemo-rl@sha256:060a3337d167e66230ce8b3dac9e9b733ad25bc997f8a0121eebccf81cbf1b23",
+      "teacher_image": "vllm/vllm-openai@sha256:a4a4c0437bf7240089da5f08aa370c4aee17ae5290f7a3b468825ee26c4c3a6b",
+      "source_sha256": "2fcad17307df0fb41add3946480347a753490fda06bb3b0cee84b821481c017c",
+      "mode": "on",
+      "score_mode": "full",
+      "exit_code": 0,
+      "success": true,
+      "rollouts": [
+        {
+          "policy_version": 0,
+          "rollout_id": 1,
+          "training": true,
+          "batch_size": 2,
+          "response_tokens": 8
+        },
+        {
+          "policy_version": 1,
+          "rollout_id": 2,
+          "training": true,
+          "batch_size": 2,
+          "response_tokens": 8
+        }
+      ],
+      "student_architecture": "qwen3",
+      "student_tied_embeddings": true,
+      "training_steps": [
+        {
+          "step": 1,
+          "loss": 3.4655961990356445,
+          "grad_norm": 21.627216339111328,
+          "lr": 0.01,
+          "retained_mass": {}
+        },
+        {
+          "step": 2,
+          "loss": 1.3916656970977783,
+          "grad_norm": 15.493250846862793,
+          "lr": 0.01,
+          "retained_mass": {}
+        }
+      ],
+      "teacher_scores": [
+        {
+          "batch_size": 1,
+          "scored_positions": 9,
+          "model_vocab_size": 32,
+          "representation": "full_logprobs"
+        },
+        {
+          "batch_size": 1,
+          "scored_positions": 9,
+          "model_vocab_size": 32,
+          "representation": "full_logprobs"
+        },
+        {
+          "batch_size": 1,
+          "scored_positions": 9,
+          "model_vocab_size": 32,
+          "representation": "full_logprobs"
+        },
+        {
+          "batch_size": 1,
+          "scored_positions": 9,
+          "model_vocab_size": 32,
+          "representation": "full_logprobs"
+        }
+      ],
+      "topology": "1 B200 student + 1 B200 separate vLLM teacher",
+      "fixture": "tiny qwen3 student, tiny Llama teacher, permuted tokenizer IDs and separate templates",
+      "scope": "mechanism smoke test; no full 235B or company-node qualification",
+      "modal_app_id": "ap-8RsVkYqDoPNG7fELWsgJKu",
+      "log_basename": "http-full-qwen3-opd-r1.log"
+    }
+  ],
+  "observed_company_runtime_user_supplied": {
+    "python": "3.12.12",
+    "torch": "2.10.0+cu129",
+    "transformers": "4.57.1",
+    "nemo_automodel": "0.2.0",
+    "legacy_fsdp_constructor": true,
+    "adapter_public_to_hf": true,
+    "executed_by_agent": false
+  },
+  "historical_qwen_teacher_probe": {
+    "vllm": "0.31.0",
+    "max_prompt_logprobs": 20,
+    "applies_to_new_gemma_server": false,
+    "server_modified": false
+  },
+  "resolved_failures": [
+    "legacy-vs-modern FSDP2 constructor and checkpoint API",
+    "public state-dict refit adapter conversion",
+    "top-k FP32 sparse forward and backward inside outer autocast",
+    "HF5 chat template return_dict",
+    "HF5 Qwen3 meta construction with real buffers and deferred tying"
+  ],
+  "remaining_gates": [
+    "actual Gemma4 tokenizer loading and token-ID parity under company Transformers4.57.1",
+    "new Qwen3-to-Gemma4 projection assets and coverage",
+    "new teacher served name, endpoint and score cap",
+    "full Qwen3-4B/Gemma4-26B checkpoints and real data",
+    "four student GPU company smoke and production throughput",
+    "exact company source/runtime qualification: stock NGC overlay retains image-only modules, including algorithms/loss package",
+    "checkpoint state/trajectory resume parity",
+    "quality/convergence evaluation"
+  ],
+  "limitations": [
+    "Two optimizer steps establish mechanics, not quality; loss need not decrease.",
+    "Modal student native Automodel0.3rc/HF5 differs from company Automodel0.2/HF4.",
+    "HTTP teacher fixture is tiny Llama even when student fixture is Qwen3.",
+    "Qwen3 top-k smoke used untied embeddings; tied embeddings are a separate full-score OPD gate.",
+    "topk_tail_kl is a separate coarse-distribution approximation, not original P-KL/Gold/H-KL.",
+    "Different receipts retain their tested source hashes; earlier suites were not all rerun on latest source."
+  ],
+  "evidence_volume": "ordures-xtoken-http-20261026"
+}

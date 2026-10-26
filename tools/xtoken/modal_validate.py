@@ -43,6 +43,8 @@ def cpu_math() -> dict:
         "tests/unit/algorithms/x_token/test_on_policy.py",
         "tests/unit/algorithms/x_token/test_remote_teacher.py",
         "tests/unit/algorithms/x_token/test_runtime_compat.py",
+        "tests/unit/algorithms/x_token/test_topk_tail.py",
+        "tests/unit/algorithms/x_token/test_tokenizer_config.py",
         "tests/unit/data/test_cross_tokenizer_collate.py",
     ]
     checksum = hashlib.sha256()
@@ -67,6 +69,51 @@ def cpu_math() -> dict:
     volume.commit()
     if code:
         raise RuntimeError("CPU math tests failed: " + str(code))
+    executable = "/opt/ray_venvs/nemo_rl.models.policy.workers.dtensor_policy_worker_v2.DTensorPolicyWorkerV2/bin/python"
+    native_check = """
+import json, torch
+from transformers import LlamaConfig
+from nemo_automodel.components.models.llama.state_dict_adapter import LlamaStateDictAdapter
+from nemo_rl.models.automodel.runtime_compat import tensor_to_hf
+config = LlamaConfig(hidden_size=8, intermediate_size=16, num_hidden_layers=1, num_attention_heads=4, num_key_value_heads=2)
+adapter = LlamaStateDictAdapter(config)
+original = {'model.layers.0.self_attn.q_proj.weight': torch.arange(64.).reshape(8, 8),
+            'model.layers.0.self_attn.k_proj.weight': torch.arange(32.).reshape(4, 8) + 100,
+            'model.layers.0.self_attn.v_proj.weight': torch.arange(32.).reshape(4, 8) + 200,
+            'model.layers.0.mlp.gate_proj.weight': torch.arange(128.).reshape(16, 8) + 300,
+            'model.layers.0.mlp.up_proj.weight': torch.arange(128.).reshape(16, 8) + 500}
+custom = adapter.from_hf(original)
+converted = {}
+for name, tensor in custom.items():
+    converted.update(tensor_to_hf(adapter, name, tensor, quantization=False))
+assert set(converted) == set(original)
+for name in original:
+    torch.testing.assert_close(converted[name], original[name], rtol=0, atol=0)
+assert not tensor_to_hf(adapter, 'model._extra_state', torch.ones(1), quantization=False)
+print('XTOKEN_NATIVE_ADAPTER_CHECK=' + json.dumps({'qkv': True, 'gate_up': True, 'extra_state_excluded': True}))
+from transformers import Qwen3Config
+from nemo_automodel import NeMoAutoModelForCausalLM
+from accelerate import init_empty_weights
+from nemo_rl.models.automodel.runtime_compat import hf_model_from_config
+for tied in (False, True):
+    config = Qwen3Config(vocab_size=32, hidden_size=16, intermediate_size=32, num_hidden_layers=1, num_attention_heads=2, num_key_value_heads=2, head_dim=8, tie_word_embeddings=tied)
+    with init_empty_weights(include_buffers=False):
+        model = hf_model_from_config(NeMoAutoModelForCausalLM, config, {'use_liger_kernel': False}, None)
+    model.tie_weights()
+    assert all(parameter.device.type == 'meta' for parameter in model.parameters())
+    assert all(buffer.device.type != 'meta' for buffer in model.buffers())
+    assert model.__class__.__name__ == 'Qwen3ForCausalLM'
+    assert (model.lm_head.weight is model.model.embed_tokens.weight) == tied
+    assert config.tie_word_embeddings == tied
+print('XTOKEN_HF_META_CHECK=' + json.dumps({'architecture': model.__class__.__name__, 'all_parameters_meta': True, 'buffers_materialized': True, 'tied_and_untied': True}))
+"""
+    process = subprocess.run([executable, "-c", native_check], cwd="/opt/nemo-rl", env=env,
+                             text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=150)
+    Path("/evidence/native-adapter-cpu.log").write_text(process.stdout)
+    volume.commit()
+    print(process.stdout, flush=True)
+    if process.returncode:
+        raise RuntimeError("Native CPU refit conversion contract failed")
     return result
 
 
@@ -148,6 +195,7 @@ import inspect, json
 from nemo_automodel.components.distributed import fsdp2, config
 from nemo_automodel.components.checkpoint.checkpointing import Checkpointer, CheckpointingConfig
 from nemo_automodel.components.distributed import mesh_utils
+from nemo_automodel.components.models.llama.state_dict_adapter import LlamaStateDictAdapter
 result = {'fsdp_init': inspect.getsource(fsdp2.FSDP2Manager.__init__),
           'fsdp_config': inspect.getsource(config.FSDP2Config),
           'fsdp_methods': [name for name in dir(fsdp2.FSDP2Manager) if not name.startswith('__')],
@@ -156,6 +204,8 @@ result = {'fsdp_init': inspect.getsource(fsdp2.FSDP2Manager.__init__),
           'checkpoint_init': str(inspect.signature(Checkpointer)),
           'checkpoint_load': inspect.getsource(Checkpointer.load_base_model),
           'checkpoint_config': str(inspect.signature(CheckpointingConfig))}
+result['state_adapter'] = {name: inspect.getsource(getattr(LlamaStateDictAdapter, name))
+    for name in dir(LlamaStateDictAdapter) if 'hf' in name or 'convert' in name}
 for name in ['parallelize', 'parallelize_model', '_setup_distributed']:
     method = getattr(fsdp2.FSDP2Manager, name, None)
     if method is not None:
@@ -193,6 +243,17 @@ def receipts() -> dict:
             result[stage] = item
     print("XTOKEN_SAVED_RECEIPTS=" + json.dumps(result), flush=True)
     return result
+
+
+@app.function(image=source_image, cpu=1, memory=2048, timeout=60, retries=0)
+def source_manifest() -> dict:
+    """Identify mounted source bytes separately from files retained in the image."""
+    import hashlib
+
+    files = {}
+    for path in sorted(Path("/opt/nemo-rl/nemo_rl").rglob("*.py")):
+        files[str(path.relative_to("/opt/nemo-rl"))] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return {"image": G_IMAGE_REF, "files": files}
 
 
 def run_gpu_tests(stage, paths):
@@ -281,8 +342,13 @@ def end_to_end(mode: str) -> dict:
     return result
 
 
+@app.function(image=source_image, volumes={"/evidence": volume}, gpu="B200:2", cpu=12, memory=65536, timeout=360, retries=0)
+def native_two() -> dict:
+    return run_gpu_tests("native-two", ["tests/unit/algorithms/x_token/test_gpu_contract.py", "-k", "native_dtensor"])
+
+
 @app.function(image=source_image, volumes={"/evidence": volume}, cpu=2, memory=8192, timeout=180, retries=0)
-def prepare_http_fixture() -> dict:
+def prepare_http_fixture(score_mode: str, student_architecture: str) -> dict:
     """Create tiny fixtures remotely, before reserving the teacher GPU."""
     from tests.unit.algorithms.x_token.runtime_e2e import create_model
     from nemo_rl.algorithms.xtoken_off_policy_distillation import MasterConfig
@@ -290,28 +356,52 @@ def prepare_http_fixture() -> dict:
     from omegaconf import OmegaConf
 
     register_omegaconf_resolvers()
+    prefix = "xtoken_topk" if score_mode == "topk" else "xtoken_remote"
     for mode in ("off", "on"):
         config = MasterConfig(**OmegaConf.to_container(load_config(
-            f"examples/configs/xtoken_remote_{mode}_policy_distillation.yaml"), resolve=True))
+            f"examples/configs/{prefix}_{mode}_policy_distillation.yaml"), resolve=True))
         assert config.teachers[0].remote["model_vocab_size"] == 151936
-    create_model(Path("/evidence/http-fixtures/teacher"), teacher=True)
+    model_path = "/evidence/http-fixtures-" + score_mode + "/teacher"
+    create_model(Path(model_path), teacher=True, weak_distribution=score_mode == "topk")
+    create_model(Path(model_path).parent / ("student-" + student_architecture), teacher=False,
+                 weak_distribution=score_mode == "topk", architecture=student_architecture)
+    from transformers import AutoTokenizer
+
+    tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
+    ids = tokenizer.apply_chat_template([{"role": "user", "content": "a b c"}],
+                                        tokenize=True, add_generation_prompt=True, return_dict=False)
+    assert isinstance(ids, list) and all(isinstance(token, int) for token in ids)
     volume.commit()
-    return {"teacher_model": "/evidence/http-fixtures/teacher"}
+    return {"teacher_model": model_path}
 
 
 @app.function(image=source_image, volumes={"/evidence": volume}, gpu="B200", cpu=12, memory=65536, timeout=900, retries=0)
-def http_student(teacher_url: str, modes: list[str]) -> dict:
+def http_student(teacher_url: str, modes: list[str], score_mode: str, student_architecture: str) -> dict:
     """Run actual training with a separate, unchanged vLLM teacher process."""
     import subprocess
     import sys
     import math
+    from transformers import AutoConfig
 
-    run_gpu_tests("dense-http-math", ["tests/unit/algorithms/x_token/test_gpu_contract.py", "-k", "dense"])
+    if modes == ["on"] and score_mode == "full":
+        import hashlib
+
+        checksum = hashlib.sha256()
+        for path in sorted(Path("/opt/nemo-rl/nemo_rl").rglob("*.py")):
+            checksum.update(str(path.relative_to("/opt/nemo-rl")).encode())
+            checksum.update(path.read_bytes())
+        math_result = {"source_sha256": checksum.hexdigest(), "scope": "dense CUDA checks recorded separately; this stage isolates full-score OPD"}
+    elif score_mode == "topk":
+        math_result = run_gpu_tests("topk-http-math", ["tests/unit/algorithms/x_token/test_topk_tail.py", "-k", "cuda"])
+    else:
+        math_result = run_gpu_tests("dense-http-math", ["tests/unit/algorithms/x_token/test_gpu_contract.py", "-k", "dense"])
     results = {}
     for mode in modes:
+        stem = f"http-{student_architecture}-{score_mode}-{mode}"
         command = [sys.executable, "-m", "tests.unit.algorithms.x_token.runtime_e2e",
-                   "--mode", mode, "--output", f"/evidence/http-{mode}", "--remote-url", teacher_url]
-        log_path = Path(f"/evidence/http-{mode}.log")
+                   "--mode", mode, "--output", f"/evidence/{stem}", "--remote-url", teacher_url,
+                   "--score-mode", score_mode, "--student-architecture", student_architecture]
+        log_path = Path(f"/evidence/{stem}.log")
         environment = {**os.environ, "UV_OFFLINE": "1", "HF_HUB_OFFLINE": "1",
                        "PYTHONDONTWRITEBYTECODE": "1", "OMP_NUM_THREADS": "1"}
         with log_path.open("w") as log:
@@ -332,16 +422,21 @@ def http_student(teacher_url: str, modes: list[str]) -> dict:
         success &= [step["step"] for step in steps] == [1, 2]
         success &= all(math.isfinite(step["loss"]) and math.isfinite(step["grad_norm"]) and step["grad_norm"] > 0 for step in steps)
         success &= len(scores) >= 2 and all(score["model_vocab_size"] == 32 for score in scores)
+        if score_mode == "topk":
+            success &= all(score["representation"] == "topk_logprobs" and score["top_k"] == 20 for score in scores)
         if mode == "on":
             success &= [item["policy_version"] for item in rollouts if item["training"]] == [0, 1]
         result = {"image": G_IMAGE_REF, "teacher_image": os.environ["XTOKEN_TEACHER_IMAGE"],
-                  "mode": mode, "exit_code": code, "success": success, "rollouts": rollouts,
+                  "source_sha256": math_result["source_sha256"],
+                  "mode": mode, "score_mode": score_mode, "exit_code": code, "success": success, "rollouts": rollouts,
+                  "student_architecture": student_architecture,
+                  "student_tied_embeddings": AutoConfig.from_pretrained(f"/evidence/{stem}/student", local_files_only=True).tie_word_embeddings,
                   "training_steps": steps, "teacher_scores": scores,
                   "topology": "1 B200 student + 1 B200 separate vLLM teacher",
-                  "fixture": "tiny Llama, permuted tokenizer IDs and separate chat templates",
+                  "fixture": "tiny " + student_architecture + " student, tiny Llama teacher, permuted tokenizer IDs and separate templates",
                   "scope": "mechanism smoke test; no full 235B or company-node qualification"}
         results[mode] = result
-        Path(f"/evidence/http-{mode}.json").write_text(json.dumps(result, indent=2))
+        Path(f"/evidence/{stem}.json").write_text(json.dumps(result, indent=2))
         volume.commit()
         print("XTOKEN_HTTP_E2E=" + json.dumps(result), flush=True)
         if not success:
@@ -349,23 +444,22 @@ def http_student(teacher_url: str, modes: list[str]) -> dict:
     return results
 
 
-def run_http_pipeline(modes):
+def run_http_pipeline(modes, score_mode, student_architecture):
     """Own and tear down the isolated teacher; never contact company servers."""
     import secrets
     import time
     import urllib.error
     import urllib.request
 
-    fixture = prepare_http_fixture.remote()
+    fixture = prepare_http_fixture.remote(score_mode, student_architecture)
     teacher_image = modal.Image.from_registry(os.environ["XTOKEN_TEACHER_IMAGE"])
     key = secrets.token_urlsafe(32)
     authentication = modal.Secret.from_dict({"VLLM_API_KEY": key})
     sandbox = modal.Sandbox.create(
-        "python3", "-m", "vllm.entrypoints.openai.api_server",
-        "--model", fixture["teacher_model"], "--served-model-name", "xtoken-fixture",
+        fixture["teacher_model"], "--served-model-name", "xtoken-fixture",
         "--host", "0.0.0.0", "--port", "8000", "--dtype", "bfloat16",
         "--max-model-len", "64", "--max-num-seqs", "4", "--max-num-batched-tokens", "128",
-        "--gpu-memory-utilization", "0.1", "--enforce-eager", "--max-logprobs", "-1",
+        "--gpu-memory-utilization", "0.1", "--enforce-eager", "--max-logprobs", "20" if score_mode == "topk" else "-1",
         image=teacher_image, app=app, gpu="B200", cpu=8, memory=32768,
         volumes={"/evidence": volume}, secrets=[authentication], encrypted_ports=[8000], timeout=900,
         env={"HF_HUB_OFFLINE": "1", "OMP_NUM_THREADS": "1"},
@@ -382,7 +476,7 @@ def run_http_pipeline(modes):
                 if "xtoken-fixture" not in {model["id"] for model in models["data"]}:
                     raise RuntimeError("Unexpected test teacher model")
                 break
-            except (urllib.error.URLError, TimeoutError):
+            except (urllib.error.URLError, TimeoutError, ConnectionResetError):
                 if sandbox.poll() is not None or time.monotonic() >= deadline:
                     raise RuntimeError("Isolated vLLM teacher did not become ready")
                 time.sleep(3)
@@ -393,7 +487,7 @@ def run_http_pipeline(modes):
             raise RuntimeError("Unexpected isolated teacher version: " + version)
         print("XTOKEN_TEACHER_READY=" + version, flush=True)
         function = http_student.with_options(secrets=[authentication], env={"XTOKEN_TEACHER_IMAGE": os.environ["XTOKEN_TEACHER_IMAGE"]})
-        print(function.remote(url, modes))
+        print(function.remote(url, modes, score_mode, student_architecture))
     finally:
         sandbox.terminate()
         root = Path(__file__).resolve().parents[2] / "internal_only/xtoken-http"
@@ -404,7 +498,7 @@ def run_http_pipeline(modes):
 
 @app.local_entrypoint()
 def main(stage: str) -> None:
-    if stage in {"gpu1", "gpu2", "off", "opd"}:
+    if stage in {"gpu1", "gpu2", "off", "opd", "native2"}:
         result = compatibility.remote()
         if not result["compatible"]:
             raise RuntimeError("Native backend API preflight failed; no GPU allocated. See compatibility.json in the evidence Volume.")
@@ -418,13 +512,23 @@ def main(stage: str) -> None:
         print(runtime_api.remote())
     elif stage == "receipts":
         print(receipts.remote())
+    elif stage == "source-manifest":
+        print("XTOKEN_SOURCE_MANIFEST=" + json.dumps(source_manifest.remote()))
     elif stage in {"gpu1", "math1"}:
         print(gpu_one.remote(stage == "math1"))
     elif stage in {"gpu2", "math2"}:
         print(gpu_two.remote(stage == "math2"))
+    elif stage == "native2":
+        print(native_two.remote())
     elif stage in {"off", "opd"}:
         print(end_to_end.remote("off" if stage == "off" else "on"))
     elif stage in {"http-off", "http-opd", "http-both"}:
-        run_http_pipeline(["off", "on"] if stage == "http-both" else ["off" if stage == "http-off" else "on"])
+        run_http_pipeline(["off", "on"] if stage == "http-both" else ["off" if stage == "http-off" else "on"], "full", "llama")
+    elif stage == "http-topk-both":
+        run_http_pipeline(["off", "on"], "topk", "llama")
+    elif stage == "http-topk-qwen3":
+        run_http_pipeline(["off", "on"], "topk", "qwen3")
+    elif stage == "http-full-qwen3-opd":
+        run_http_pipeline(["on"], "full", "qwen3")
     else:
         raise ValueError(stage)

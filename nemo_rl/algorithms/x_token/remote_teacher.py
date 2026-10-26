@@ -47,7 +47,7 @@ class XTokenFullLogprobClient(VLLMTeacherLogprobClient):
         if elements > self.config["max_score_elements"]:
             raise ValueError("Dense teacher response exceeds max_score_elements; reduce the microbatch/context")
         payload = {"model": teacher["model"], "prompt": prompts, "echo": True,
-                   "max_tokens": 0, "logprobs": -1, "prompt_logprobs": -1,
+                   "max_tokens": 0, "logprobs": None, "prompt_logprobs": -1,
                    "return_token_ids": True, "return_tokens_as_token_ids": True,
                    "temperature": 1.0, "add_special_tokens": False, "stream": False}
         key_name = self.config["api_key_env"]
@@ -143,16 +143,36 @@ class RemoteTeacherPolicy:
 
     def __init__(self, config):
         self.config = config
-        self.client = XTokenFullLogprobClient(config)
+        self.uses_topk_scores = config.get("score_mode") == "topk"
+        self.client = XTokenTopKLogprobClient(config) if self.uses_topk_scores else XTokenFullLogprobClient(config)
 
-    def get_full_logits(self, data, micro_batch_size):
-        pieces = []
+    def get_topk_scores(self, data, micro_batch_size):
+        width = self.config["top_k"] + 1
+        shape = (*data["input_ids"].shape, width)
+        if data["input_ids"].numel() * width > self.config["max_score_elements"]:
+            raise ValueError("Global top-k batch exceeds max_score_elements")
+        result = {"topk_ids": torch.full(shape, -1, dtype=torch.long),
+                  "topk_logprobs": torch.full(shape, -float("inf")),
+                  "topk_valid": torch.zeros(shape, dtype=torch.bool)}
         for offset in range(0, data.size, micro_batch_size):
             batch = data.get_batch(batch_idx=offset // micro_batch_size, batch_size=micro_batch_size)
             teacher = {"url": self.config["url"], "model": self.config["model"]}
             scores = asyncio.run(self.client.score_group(teacher, batch["input_ids"], batch["input_lengths"]))
-            pieces.append(scores)
-        return torch.cat(pieces)
+            for key, value in scores.items():
+                result[key][offset:offset + value.shape[0]].copy_(value)
+        return result
+
+    def get_full_logits(self, data, micro_batch_size):
+        shape = (*data["input_ids"].shape, self.config["model_vocab_size"])
+        if data["input_ids"].numel() * shape[-1] > self.config["max_score_elements"]:
+            raise ValueError("Global dense teacher batch exceeds max_score_elements; reduce global batch/context")
+        result = torch.empty(shape, dtype=torch.float32)
+        for offset in range(0, data.size, micro_batch_size):
+            batch = data.get_batch(batch_idx=offset // micro_batch_size, batch_size=micro_batch_size)
+            teacher = {"url": self.config["url"], "model": self.config["model"]}
+            scores = asyncio.run(self.client.score_group(teacher, batch["input_ids"], batch["input_lengths"]))
+            result[offset:offset + scores.shape[0]].copy_(scores)
+        return result
 
     def prepare_for_lp_inference(self):
         pass
@@ -165,3 +185,73 @@ class RemoteTeacherPolicy:
 
     def close(self):
         asyncio.run(self.client.close())
+
+
+class XTokenTopKLogprobClient(XTokenFullLogprobClient):
+    """Preserve global-normalized top-k probabilities and the optional actual token."""
+
+    def __init__(self, config):
+        super().__init__(config)
+        if not 1 <= config["top_k"] <= config["model_vocab_size"]:
+            raise ValueError("top_k must be between 1 and model_vocab_size")
+
+    async def _score_on_loop(self, teacher, input_ids, input_lengths):
+        if input_lengths is None or input_ids.ndim != 2 or input_lengths.ndim != 1 or len(input_lengths) != input_ids.shape[0]:
+            raise ValueError("Explicit unpadded teacher lengths are required")
+        lengths = [int(length) for length in input_lengths]
+        if not lengths or any(not 2 <= length <= input_ids.shape[1] for length in lengths):
+            raise ValueError("Invalid teacher sequence length")
+        k = self.config["top_k"]
+        if input_ids.numel() * (k + 1) > self.config["max_score_elements"]:
+            raise ValueError("Top-k response exceeds max_score_elements")
+        prompts = [input_ids[index, :length].tolist() for index, length in enumerate(lengths)]
+        payload = {"model": teacher["model"], "prompt": prompts, "echo": True,
+                   "max_tokens": 0, "logprobs": None, "prompt_logprobs": k,
+                   "return_token_ids": True, "return_tokens_as_token_ids": True,
+                   "temperature": 1., "add_special_tokens": False, "stream": False}
+        key_name = self.config["api_key_env"]
+        headers = {"Authorization": "Bearer " + (os.environ[key_name] if key_name else "EMPTY")}
+        response = await self._dense_request(teacher, payload, headers)
+        choices = response["choices"]
+        if len(choices) != len(prompts):
+            raise TeacherCapabilityError("Wrong teacher choice count")
+        shape = (*input_ids.shape, k + 1)
+        result = {"topk_ids": torch.full(shape, -1, dtype=torch.long),
+                  "topk_logprobs": torch.full(shape, -float("inf")),
+                  "topk_valid": torch.zeros(shape, dtype=torch.bool)}
+        seen = set()
+        for choice in choices:
+            index = choice["index"]
+            if not isinstance(index, int) or index in seen or not 0 <= index < len(prompts):
+                raise TeacherCapabilityError("Duplicate/invalid teacher choice index")
+            seen.add(index)
+            if choice.get("prompt_token_ids") != prompts[index]:
+                raise TeacherCapabilityError("Teacher did not echo exact teacher-tokenizer IDs")
+            rows = choice.get("prompt_logprobs")
+            if rows is None or len(rows) != lengths[index] or rows[0] is not None:
+                raise TeacherCapabilityError("Expected numeric prompt logprobs with null first position")
+            for position, row in enumerate(rows[1:]):
+                ids, scores = self._parse_topk_row(row)
+                count = len(ids)
+                result["topk_ids"][index, position, :count] = ids
+                result["topk_logprobs"][index, position, :count] = scores
+                result["topk_valid"][index, position, :count] = True
+        print("XTOKEN_TEACHER_SCORE=" + json.dumps({"batch_size": len(prompts),
+              "scored_positions": sum(length - 1 for length in lengths),
+              "model_vocab_size": self.config["model_vocab_size"],
+              "representation": "topk_logprobs", "top_k": k}), flush=True)
+        return result
+
+    def _parse_topk_row(self, row):
+        k, vocab = self.config["top_k"], self.config["model_vocab_size"]
+        if row is None or not k <= len(row) <= min(k + 1, vocab):
+            raise TeacherCapabilityError("Teacher returned fewer than requested top-k scores or too many scores")
+        ids = torch.tensor([int(key) for key in row], dtype=torch.long)
+        if len(set(ids.tolist())) != len(ids) or (ids < 0).any() or (ids >= vocab).any():
+            raise TeacherCapabilityError("Invalid/duplicate top-k token IDs")
+        scores = torch.tensor([float(value["logprob"] if isinstance(value, dict) else value) for value in row.values()])
+        if torch.isnan(scores).any() or torch.isposinf(scores).any():
+            raise TeacherCapabilityError("Invalid top-k log-probabilities")
+        if scores.exp().sum() > 1 + self.config["normalization_atol"]:
+            raise TeacherCapabilityError("Top-k probability mass exceeds one")
+        return ids, scores

@@ -345,6 +345,8 @@ uv run python examples/run_grpo_sliding_puzzle.py
 
 The experimental production-fork [X-Token source port](docs/guides/xtoken-distillation.md)
 adds cross-tokenizer off-policy training and fresh student rollouts with vLLM.
+It includes an external teacher client and an explicit top-20 plus OTHER-bucket
+approximation for servers that cannot return the full vocabulary.
 Its guide lists the required local artifacts, supported transport and validation gates.
 
 We provide an example on-policy distillation experiment using the [DeepScaler dataset](https://huggingface.co/agentica-org/DeepScaleR-1.5B-Preview).

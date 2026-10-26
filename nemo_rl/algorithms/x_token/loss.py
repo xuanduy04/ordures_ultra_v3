@@ -72,6 +72,8 @@ class CrossTokenizerDistillationLossConfig(TypedDict):
     """
 
     gold_loss: bool
+    teacher_distribution_mode: NotRequired[str]
+    tail_epsilon: NotRequired[float]
     xtoken_loss: bool
     temperature: float
     vocab_topk: int

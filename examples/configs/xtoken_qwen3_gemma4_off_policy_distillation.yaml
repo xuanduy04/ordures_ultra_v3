@@ -1,0 +1,64 @@
+defaults: xtoken_topk_off_policy_distillation.yaml
+
+cluster:
+  num_nodes: 1
+  gpus_per_node: 4
+
+policy:
+  model_name: /models/Qwen3-4B
+  tokenizer:
+    name: /models/Qwen3-4B
+    chat_template_kwargs:
+      enable_thinking: false
+
+teachers:
+  - model_name: /models/gemma-4-26B-A4B-it
+    tokenizer:
+      name: /models/gemma-4-26B-A4B-it
+      chat_template_kwargs:
+        enable_thinking: false
+      # HF 4.57 expects named extra tokens; Gemma 4 metadata uses a list.
+      # Override loading arguments in memory; do not edit staged tokenizer files.
+      from_pretrained_kwargs:
+        local_files_only: true
+        additional_special_tokens: ["<|video|>"]
+        extra_special_tokens:
+          eot_token: "<turn|>"
+          sot_token: "<|turn>"
+          soc_token: "<|channel>"
+          eoc_token: "<channel|>"
+          think_token: "<|think|>"
+          boi_token: "<|image>"
+          eoi_token: "<image|>"
+          boa_token: "<|audio>"
+          eoa_token: "<audio|>"
+          image_token: "<|image|>"
+          audio_token: "<|audio|>"
+          escape_token: '<|"|>'
+          stc_token: "<|tool_call>"
+          etc_token: "<tool_call|>"
+          std_token: "<|tool>"
+          etd_token: "<tool|>"
+          str_token: "<|tool_response>"
+          etr_token: "<tool_response|>"
+    projection_matrix_path: /data/projections/qwen3-4b-gemma4.pt
+    weight: 1.0
+    train_global_batch_size: ${policy.train_global_batch_size}
+    train_micro_batch_size: 1
+    max_total_sequence_length: 256
+    make_sequence_length_divisible_by: 1
+    dynamic_batching: ${policy.dynamic_batching}
+    sequence_packing: ${policy.sequence_packing}
+    remote:
+      url: http://teacher.internal:8000
+      model: gemma4-teacher
+      model_vocab_size: 262144
+      score_mode: topk
+      top_k: 20
+      api_key_env: null
+      max_score_elements: 4000000
+      max_response_bytes: 67108864
+      request_timeout_s: 180
+      max_attempts: 2
+      retry_backoff_s: 1
+      normalization_atol: 0.02

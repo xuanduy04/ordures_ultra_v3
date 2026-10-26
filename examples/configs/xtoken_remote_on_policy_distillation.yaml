@@ -2,7 +2,7 @@ defaults: xtoken_remote_off_policy_distillation.yaml
 
 on_policy:
   prompt_source: raw_text
-  max_prompt_tokens: 1024
+  max_prompt_tokens: 128
   refit_buffer_size_gb: 1.0
   include_eos_loss: false
 
@@ -12,7 +12,7 @@ loss_fn:
 
 policy:
   generation:
-    max_new_tokens: 1024
+    max_new_tokens: 128
     temperature: 1.0
     top_p: 1.0
     top_k: null

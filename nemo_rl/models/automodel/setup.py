@@ -25,7 +25,7 @@ from transformers import AutoConfig, AutoProcessor, AutoTokenizer, PreTrainedMod
 from transformers.models.gemma3.modeling_gemma3 import Gemma3ForCausalLM
 
 from nemo_rl.models.automodel.config import ModelAndOptimizerState, RuntimeConfig
-from nemo_rl.models.automodel.runtime_compat import create_fsdp2_manager
+from nemo_rl.models.automodel.runtime_compat import create_fsdp2_manager, use_hf_meta_init, hf_model_from_config
 from nemo_rl.models.policy import PolicyConfig
 from nemo_rl.models.policy.utils import configure_dynamo_cache, resolve_model_class
 
@@ -392,18 +392,25 @@ def setup_model_and_optimizer(
         sdpa_method = None
 
     # Initialize empty model
-    with init_empty_weights():
-        model = model_class.from_pretrained(
-            model_name,
-            attn_implementation=attn_impl,
-            torch_dtype=str(model_config.torch_dtype),
-            trust_remote_code=True,
-            config=model_config,
-            sdpa_method=sdpa_method,
-            **automodel_kwargs,
-        )
+    hf_meta = use_hf_meta_init(model_config, ModelRegistry)
+    with init_empty_weights(include_buffers=False) if hf_meta else init_empty_weights():
+        if hf_meta:
+            model = hf_model_from_config(model_class, model_config, automodel_kwargs, attn_impl)
+        else:
+            model = model_class.from_pretrained(
+                model_name,
+                attn_implementation=attn_impl,
+                torch_dtype=str(model_config.torch_dtype),
+                trust_remote_code=True,
+                config=model_config,
+                sdpa_method=sdpa_method,
+                **automodel_kwargs,
+            )
         if lora_enabled:
             apply_lora_to_linear_modules(model, peft_config)
+
+    if hf_meta:
+        model.tie_weights()
 
     # For activation checkpointing, we also must globally disable the cudnn SDPA backend
     # to ensure that cudnn does not get selected during recomputation.

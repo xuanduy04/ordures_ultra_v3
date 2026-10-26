@@ -9,12 +9,12 @@ from datasets import Dataset
 from omegaconf import OmegaConf
 import torch
 from tokenizers import Tokenizer, models, pre_tokenizers
-from transformers import LlamaConfig, LlamaForCausalLM, PreTrainedTokenizerFast
+from transformers import LlamaConfig, LlamaForCausalLM, PreTrainedTokenizerFast, Qwen3Config, Qwen3ForCausalLM
 
 from nemo_rl.utils.config import load_config, register_omegaconf_resolvers
 
 
-def create_model(path, *, teacher):
+def create_model(path, *, teacher, weak_distribution=None, architecture=None):
     """Offline fixture with different token IDs and distinct teacher probabilities."""
     path.mkdir(parents=True, exist_ok=True)
     words = ["<pad>", "<unk>", "<eos>", "a", "b", "c", *[f"w{index}" for index in range(6, 32)]]
@@ -29,9 +29,11 @@ def create_model(path, *, teacher):
                                 if teacher else "{% for message in messages %}a {{ message['content'] }} b {% endfor %}c ")
     tokenizer.save_pretrained(path)
     torch.manual_seed(23)
-    model = LlamaForCausalLM(LlamaConfig(vocab_size=32, hidden_size=128, intermediate_size=256,
+    model_class, config_class = (Qwen3ForCausalLM, Qwen3Config) if architecture == "qwen3" else (LlamaForCausalLM, LlamaConfig)
+    model = model_class(config_class(vocab_size=32, hidden_size=128, intermediate_size=256,
                        num_hidden_layers=1, num_attention_heads=2, num_key_value_heads=2,
-                       max_position_embeddings=64, pad_token_id=0, eos_token_id=2, tie_word_embeddings=False))
+                       max_position_embeddings=64, pad_token_id=0, eos_token_id=2,
+                       tie_word_embeddings=architecture == "qwen3"))
     with torch.no_grad():
         for parameter in model.parameters():
             parameter.zero_()
@@ -43,6 +45,11 @@ def create_model(path, *, teacher):
         strengths = [0.13, 0.11, 0.12] if teacher else [0.11, 0.13, 0.12]
         for word, strength in zip(["a", "b", "c"], strengths):
             model.lm_head.weight[vocab[word]].fill_(strength)
+        if weak_distribution:
+            model.lm_head.weight.zero_()
+            model.lm_head.weight[:3].fill_(-.1)
+            for word, strength in zip(["a", "b", "c"], strengths):
+                model.lm_head.weight[vocab[word]].fill_(strength / 10)
     model.save_pretrained(path)
     return vocab
 
@@ -52,17 +59,19 @@ def main():
     parser.add_argument("--mode", choices=["off", "on"], required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--remote-url", type=str, default=None)
+    parser.add_argument("--score-mode", choices=["full", "topk"], default=None)
+    parser.add_argument("--student-architecture", choices=["llama", "qwen3"], default=None)
     args = parser.parse_args()
     root = args.output
-    student = create_model(root / "student", teacher=False)
-    teacher = create_model(root / "teacher", teacher=True)
+    student = create_model(root / "student", teacher=False, weak_distribution=args.score_mode == "topk", architecture=args.student_architecture)
+    teacher = create_model(root / "teacher", teacher=True, weak_distribution=args.score_mode == "topk")
     projection = root / "projection.pt"
     torch.save({"indices": torch.tensor([[teacher[word]] for word in student]),
                 "likelihoods": torch.ones(32, 1)}, projection)
     data_path = root / "prompts.parquet"
     Dataset.from_dict({"text": ["a b c"] * 8}).to_parquet(data_path)
     register_omegaconf_resolvers()
-    recipe = "xtoken_remote_" if args.remote_url else "xtoken_"
+    recipe = "xtoken_topk_" if args.score_mode == "topk" else "xtoken_remote_" if args.remote_url else "xtoken_"
     cfg = OmegaConf.to_container(load_config(f"examples/configs/{recipe}{args.mode}_policy_distillation.yaml"), resolve=True)
     cfg["cluster"] = {"num_nodes": 1, "gpus_per_node": torch.cuda.device_count()}
     cfg["distillation"].update({"num_prompts_per_step": 2, "max_num_steps": 2, "max_num_epochs": 1})

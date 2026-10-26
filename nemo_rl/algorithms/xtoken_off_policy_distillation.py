@@ -91,6 +91,8 @@ def xtoken_non_student_seq_keys(
     for i in range(loss_fn.num_teachers):
         keys.add(f"teacher_{i}_full_logits_ipc")
         keys.add(f"teacher_{i}_full_logits")
+        if getattr(loss_fn, "uses_topk_scores", None):
+            keys.update(f"teacher_{i}_" + suffix for suffix in ("topk_ids", "topk_logprobs", "topk_valid"))
         if loss_fn.projection_matrix_paths[i] is not None:  # cross-tokenizer
             keys.add(f"teacher_{i}_input_ids")
             keys.add(f"teacher_{i}_token_mask")
@@ -229,6 +231,7 @@ def setup(
     teachers = master_config.teachers
     teacher_configs = [t.policy_config() for t in teachers]
     loss_config = master_config.loss_fn
+    approximate = loss_config.get("teacher_distribution_mode") == "topk_tail_kl"
     distillation_config = master_config.distillation
     data_config = master_config.data
     logger_config = master_config.logger
@@ -246,10 +249,19 @@ def setup(
     assert policy_config["dtensor_cfg"]["enabled"] and policy_config["dtensor_cfg"].get(
         "_v2"
     ), "xtoken distillation requires policy.dtensor_cfg.enabled=true and _v2=true."
+    if approximate:
+        if policy_config["dtensor_cfg"]["tensor_parallel_size"] != 1 or policy_config["dtensor_cfg"]["context_parallel_size"] != 1:
+            raise ValueError("Top-k tail approximation currently supports TP=CP=1 and data parallelism")
+        if any(teacher.remote is None or teacher.remote.get("score_mode") != "topk" for teacher in teachers):
+            raise ValueError("Top-k tail approximation requires remote top-k teachers")
     for i, tc in enumerate(teacher_configs):
         if teachers[i].remote is not None:
+            if len(teacher_tokenizers[i]) > teachers[i].remote["model_vocab_size"]:
+                raise ValueError("Teacher tokenizer contains IDs outside the server model vocabulary")
+            if not approximate and teachers[i].remote.get("score_mode") == "topk":
+                raise ValueError("Top-k teacher scores require the explicit topk_tail_kl approximation")
             gold = teachers[i].gold_loss if loss_config["kd_loss_mode"] == "sum" and teachers[i].gold_loss is not None else loss_config["gold_loss"]
-            if not gold and loss_config["vocab_topk"] < len(teacher_tokenizers[i]):
+            if not approximate and not gold and loss_config["vocab_topk"] < len(teacher_tokenizers[i]):
                 raise ValueError("Remote normalized scores require full-vocabulary P-KL; increase vocab_topk to teacher vocab size")
             if tc["make_sequence_length_divisible_by"] % policy_config["dtensor_cfg"]["context_parallel_size"]:
                 raise ValueError("Remote teacher padding divisor must be divisible by student CP size")
@@ -527,7 +539,12 @@ def setup(
         "teacher_gold_loss": [t.gold_loss for t in teachers],
         "teacher_xtoken_loss": [t.xtoken_loss for t in teachers],
     }
-    loss_fn = CrossTokenizerDistillationLossFn(loss_config)
+    if approximate:
+        from nemo_rl.algorithms.x_token.topk_tail import ProjectedTopKTailLoss
+
+        loss_fn = ProjectedTopKTailLoss(loss_config)
+    else:
+        loss_fn = CrossTokenizerDistillationLossFn(loss_config)
 
     print("\n" + "=" * 60)
     print(" " * 18 + "SETUP COMPLETE")
@@ -618,7 +635,12 @@ def export_teacher_logits_and_pack(
             from nemo_rl.algorithms.x_token.remote_teacher import RemoteTeacherPolicy
 
             if isinstance(teacher_policy, RemoteTeacherPolicy):
-                train_data[f"teacher_{i}_full_logits"] = teacher_policy.get_full_logits(teacher_data, teacher_mbs[i])
+                if teacher_policy.uses_topk_scores:
+                    scores = teacher_policy.get_topk_scores(teacher_data, teacher_mbs[i])
+                    for key, value in scores.items():
+                        train_data[f"teacher_{i}_" + key] = value
+                else:
+                    train_data[f"teacher_{i}_full_logits"] = teacher_policy.get_full_logits(teacher_data, teacher_mbs[i])
                 handles = None
             else:
                 handles = teacher_policy.get_full_logits_ipc(
@@ -779,7 +801,7 @@ def xtoken_off_policy_distillation_train(
                 # the gold-loss path emits kl_common/l1_uncommon. Either set
                 # may be present — reduce both via the same rules.
                 for k, v in metrics.items():
-                    if k in {
+                    if k.startswith(("teacher_retained_mass_", "student_retained_mass_")) or k in {
                         "lr",
                         "wd",
                         "global_valid_seqs",
@@ -923,7 +945,9 @@ def xtoken_off_policy_distillation_train(
             logger.log_metrics(metrics, total_steps + 1, prefix="train")
             print("XTOKEN_TRAIN_STEP=" + json.dumps({
                 "step": total_steps + 1, "loss": metrics["loss"],
-                "grad_norm": metrics["grad_norm"], "lr": metrics["lr"],
+                "grad_norm": metrics["grad_norm"], "lr": metrics.get("lr"),
+                "retained_mass": {key: value for key, value in metrics.items()
+                                  if key.startswith(("teacher_retained_mass_", "student_retained_mass_"))},
             }), flush=True)
             logger.log_metrics(timing_metrics, total_steps + 1, prefix="timing/train")
 
