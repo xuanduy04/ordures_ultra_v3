@@ -127,6 +127,12 @@ Không bootstrap dependency hay bật Docker local.
    source import/API FSDP/checkpoint của policy worker, API async của generation
    worker và config/venv Gym. Nó không khởi động server. Rerun vô hiệu receipt cũ
    trước khi import; lỗi giữa chừng không để lại trọn bộ gate thành công cũ.
+   r6 kiểm package theo role: policy cần `nemo-automodel` và API FSDP/checkpoint;
+   generation cần Torch/Transformers/Ray/vLLM, source đúng và API async. Không
+   yêu cầu Automodel trong generation venv. Log G52/G53 cho thấy probe r5 đã
+   dừng ở phép đọc metadata Automodel sau khi import generation worker thành công;
+   đây là yêu cầu thừa của probe. Không cài/chia sẻ site-packages policy sang
+   generation chỉ để vượt nó. Kiểm tra import/API chưa chứng minh refit/GPU pass.
 5. `probe_teacher.py --config <effective.yaml>`
    kiểm alias, ba ca tokenizer parity, một yêu cầu score nhỏ và cap top-20.
    r5 cho phép server báo đúng `0.31.0` dùng mặc định upstream `raw_logprobs`

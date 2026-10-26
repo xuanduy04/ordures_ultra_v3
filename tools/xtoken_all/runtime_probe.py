@@ -35,7 +35,7 @@ def probe(role, gym_root):
     if Path(module.__file__).resolve() != ROOT / (module_name.replace(".", "/") + ".py"):
         raise ValueError("Worker imported a different NeMo source tree")
     result["module"] = module_path(module)
-    for name in ("torch", "transformers", "ray", "nemo-automodel"):
+    for name in ("torch", "transformers", "ray"):
         result[name] = importlib.metadata.version(name)
     if role == "generation":
         result["vllm"] = importlib.metadata.version("vllm")
@@ -46,6 +46,7 @@ def probe(role, gym_root):
             if not callable(getattr(cls, name)):
                 raise TypeError("Missing async generation API: " + name)
         return result
+    result["nemo-automodel"] = importlib.metadata.version("nemo-automodel")
     from nemo_automodel.components.distributed.fsdp2 import FSDP2Manager
     from nemo_automodel.components.checkpoint.checkpointing import Checkpointer
 
