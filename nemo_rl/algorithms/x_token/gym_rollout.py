@@ -132,12 +132,15 @@ def create_gym_environment(config, generation):
             raise FileNotFoundError(resolved)
     global_config["uv_venv_dir"] = str(venvs)
     global_config["skip_venv_if_present"] = True
+    source = str(Path(__file__).resolve().parents[3])
+    inherited_path = os.environ["PYTHONPATH"] if "PYTHONPATH" in os.environ else ""
     worker_env = {"UV_OFFLINE": "1", "HF_HUB_OFFLINE": "1",
                   "PYTHONDONTWRITEBYTECODE": "1",
-                  "PYTHONPATH": str(Path(__file__).resolve().parents[3]),
+                  "PYTHONPATH": os.pathsep.join(part for part in (source, inherited_path) if part),
                   "VIRTUAL_ENV": str(executable.parent.parent),
                   "UV_PROJECT_ENVIRONMENT": str(executable.parent.parent)}
-    for key in ("NEMO_GYM_VENV_DIR", "NRL_CONTAINER", "CUSTOM_NLTK_DATA_DIR"):
+    for key in ("NEMO_GYM_VENV_DIR", "NRL_CONTAINER", "NRL_IGNORE_VERSION_MISMATCH",
+                "CUSTOM_NLTK_DATA_DIR", "NLTK_DATA"):
         if key in os.environ:
             worker_env[key] = os.environ[key]
     actor = NemoGym.options(

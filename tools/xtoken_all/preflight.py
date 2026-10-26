@@ -105,7 +105,8 @@ def check(run):
     store = Path(os.environ["NEMO_RL_VENV_DIR"])
     workers = ["nemo_rl.models.policy.workers.dtensor_policy_worker_v2.DTensorPolicyWorkerV2",
                "nemo_rl.models.generation.vllm.vllm_worker_async.VllmAsyncGenerationWorker"]
-    env = {**os.environ, "PYTHONPATH": str(SOURCE), "PYTHONDONTWRITEBYTECODE": "1",
+    inherited_path = os.environ["PYTHONPATH"] if "PYTHONPATH" in os.environ else ""
+    env = {**os.environ, "PYTHONPATH": os.pathsep.join(part for part in (str(SOURCE), inherited_path) if part), "PYTHONDONTWRITEBYTECODE": "1",
            "UV_OFFLINE": "1", "HF_HUB_OFFLINE": "1"}
     for worker in workers:
         executable = store / worker / "bin/python"

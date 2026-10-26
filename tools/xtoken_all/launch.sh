@@ -8,8 +8,9 @@ set -euo pipefail
 : "${XTOKEN_ALLOCATION_RECEIPT:?Set the fresh allocation/Ray ownership receipt}"
 export PYTHONDONTWRITEBYTECODE=1 UV_OFFLINE=1 HF_HUB_OFFLINE=1
 export CUDA_VISIBLE_DEVICES=0,1,2,3
-export PYTHONPATH="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cd "$PYTHONPATH"
+SOURCE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+export PYTHONPATH="${SOURCE_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+cd "$SOURCE_ROOT"
 "$NRL_PYTHON" - "$XTOKEN_ALL_ROOT" "$XTOKEN_RUN_DIR" "$XTOKEN_ALLOCATION_RECEIPT" <<'PY'
 import hashlib, json, os, subprocess, sys
 from datetime import datetime, timezone
