@@ -62,6 +62,26 @@ Pool `math_code_20k` chưa được đọc thực tế: không đưa toàn pool 
 CodeForces cần execution verifier; converter từ chối các source code đã nhận biết.
 Nguồn không có metadata task vẫn cần operator kiểm tra bản chất bài toán.
 
+Pool hỗn hợp nay có adapter KD riêng: `tools/xtoken_all/convert_math_code.py`,
+recipe `tools/xtoken_all/math_code_20k.yaml`. Chạy bằng module từ source root,
+`--config <recipe> --inspect` trước, bỏ `--inspect` khi schema đã khớp. Recipe
+khai chính xác 10.000 math + 10.000 code; mapping ability/data_source phải được
+review theo output inspect, không suy task từ nội dung prompt hoặc lấy mẫu lại.
+Converter QA cũ vẫn từ chối code để giữ contract của các run DAPO hiện tại.
+
+Adapter hỗn hợp giữ nguyên thứ tự, prompt, nhãn/test case gốc trong metadata và
+SHA256. Label code có cấu trúc được JSON-serialize vào expected_answer ngoài input
+sinh; general_qa vẫn có thể tính điểm text nhưng đó không phải execution reward.
+`xtoken_data` đánh dấu code không có QA metric hợp lệ; runtime loại điểm ấy khỏi
+`gym_reward_mean` và ghi sample count/excluded count. KD mask không phụ thuộc
+reward, không bỏ bài code và không dùng reward trong loss. Đây là data cho KD,
+không phải môi trường RL code đã có verifier hay phép đo pass@1.
+
+Handoff riêng tại `tools/xtoken_all/HANDOFF-math-code.md`; chuyển file thật trên
+node, không tải pool công ty về workstation. Việc đổi dataset cần run directory
+mới và render/preflight lại, không thay data của job đang chạy hoặc resume
+dataloader từ pool DAPO khác. Chưa kiểm chứng file thật 20k trên node.
+
 Smoke 128 prompt tokens + 32 response tokens không phù hợp mọi mẫu DAPO.
 `make_smoke.py` tạo một bộ 8 mẫu đầu tiên thỏa budget, giữ thứ tự, ghi chỉ số
 dòng nguồn/token count và hash; không sửa pool train. Không coi smoke này là

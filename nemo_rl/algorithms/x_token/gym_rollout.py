@@ -9,7 +9,7 @@ import ray
 import torch
 
 from nemo_rl.algorithms.x_token.gym_protocol import (
-    prepare_example, restore_order, unpack_result,
+    prepare_example, restore_order, unpack_result, reward_metric_valid,
 )
 from nemo_rl.algorithms.x_token.on_policy import OnPolicyRollout
 from nemo_rl.algorithms.x_token.gym_compat import gym_actor_runtime_env, reject_inherited_gym_config, verify_gym_source
@@ -94,7 +94,7 @@ class NemoGymOnPolicyRollout(OnPolicyRollout):
                 raise ValueError("Gym exceeded requested max_output_tokens")
             rows.append(row)
             mask[index] *= valid
-            if valid:
+            if valid and reward_metric_valid(examples[index]):
                 rewards.append(reward)
         maximum = max(map(len, rows))
         ids = torch.full((len(rows), maximum), self.tokenizer.pad_token_id, dtype=torch.long)
@@ -113,6 +113,8 @@ class NemoGymOnPolicyRollout(OnPolicyRollout):
             "batch_size": len(rows), "response_tokens": int(batch["token_mask"].sum()),
             "valid_samples": int((mask > 0).sum()),
             "gym_reward_mean": sum(rewards) / len(rewards) if rewards else None,
+            "gym_reward_sample_count": len(rewards),
+            "gym_code_qa_scores_excluded": sum(not reward_metric_valid(example) for example in examples),
             "reward_used_in_loss": False,
         }), flush=True)
         return batch

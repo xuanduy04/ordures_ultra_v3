@@ -7,6 +7,7 @@ import math
 def prepare_example(example, index, max_output_tokens):
     """Keep labels outside generation input and constrain the supported task."""
     row = deepcopy(example)
+    reward_metric_valid(row)
     if row["agent_ref"]["name"] not in (
         "general_qa_simple_agent", "general_qa_simple_agent_reasoning_off"
     ):
@@ -32,6 +33,17 @@ def prepare_example(example, index, max_output_tokens):
     params["max_output_tokens"] = max_output_tokens
     row["_rowidx"] = index
     return row, [{"role": "user", "content": messages[0]["content"]}]
+
+
+def reward_metric_valid(example):
+    """Exclude QA scores for code labels; this never changes the KD mask."""
+    if "xtoken_data" not in example:
+        return True
+    metadata = example["xtoken_data"]
+    task, valid = metadata["task_type"], metadata["reward_metric_valid"]
+    if task not in ("math", "code") or type(valid) is not bool or valid != (task == "math"):
+        raise ValueError("Invalid math/code QA reward semantics")
+    return valid
 
 
 def unpack_result(result, expected_prompt_ids):

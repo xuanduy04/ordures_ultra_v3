@@ -1,0 +1,16 @@
+input: /workspace/storage-shared/nlp/tungks/ctopd_all/data/Train/math_code_20k/train.parquet
+output_dir: /workspace/storage-shared/nlp/tungks/xtoken_all/data/math-code-20k-gym
+dataset: rethinking-math-code-20k
+expected_task_counts:
+  math: 10000
+  code: 10000
+prompt_field: prompt
+answer_field: reward_model.ground_truth
+task_field: ability
+task_values:
+  math: math
+  code: code
+source_field: data_source
+source_tasks:
+  dapo: math
+  codeforces: code
