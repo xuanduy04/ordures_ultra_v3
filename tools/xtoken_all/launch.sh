@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 sys.path.insert(0, str(Path.cwd() / 'tools/xtoken_all'))
 from integrity import sha256, source_snapshot
+from teacher_probe_contract import validate_teacher_probe
 root, run, allocation = map(Path, sys.argv[1:])
 run.resolve().relative_to(root.resolve())
 assert not (run / 'driver.log').exists(), 'Refuse to reuse a run'
@@ -37,7 +38,10 @@ for name in ('teacher-probe', 'assets-check', 'source-check', 'gym-preflight', '
     age = (datetime.now(timezone.utc) - datetime.fromisoformat(receipt['checked_at_utc'])).total_seconds()
     assert 0 <= age < cfg['on_policy']['nemo_gym']['receipt_max_age_s'], 'Expired receipt: ' + name
     if name == 'teacher-probe':
-        assert receipt['server_logprobs_mode_verified'] and receipt['top_k'] == 20
+        policy_path = Path.cwd() / 'tools/xtoken_all/teacher_probe_policy.yaml'
+        policy = OmegaConf.to_container(OmegaConf.load(policy_path), resolve=True)
+        assert receipt['teacher_probe_policy_sha256'] == sha256(policy_path)
+        validate_teacher_probe(receipt, policy)
 lease = json.loads(allocation.read_text())
 assert lease['success'] and lease['gpu_indices'] == [0, 1, 2, 3] and lease['ray_ownership_verified']
 assert lease['ray_address'] == cfg['on_policy']['nemo_gym']['ray_address'], 'Ray head differs from rendered config'

@@ -127,12 +127,23 @@ Không bootstrap dependency hay bật Docker local.
    source import/API FSDP/checkpoint của policy worker, API async của generation
    worker và config/venv Gym. Nó không khởi động server. Rerun vô hiệu receipt cũ
    trước khi import; lỗi giữa chừng không để lại trọn bộ gate thành công cũ.
-5. `probe_teacher.py --config <effective.yaml> --server-mode-evidence <json>`
+5. `probe_teacher.py --config <effective.yaml>`
    kiểm alias, ba ca tokenizer parity, một yêu cầu score nhỏ và cap top-20.
-   Evidence JSON cần `teacher_url`, `served_model`, `logprobs_mode=raw_logprobs`,
-   `verification_source` là `operator_checked_server_args` hoặc
-   `server_reported_config`, `observed_at_utc`, `evidence_description` đã bỏ secret.
-   Phải kiểm tra cấu hình server thật; probability mass/echo không chứng minh mode.
+   r5 cho phép server báo đúng `0.31.0` dùng mặc định upstream `raw_logprobs`
+   (cap mặc định 20), theo `teacher_probe_policy.yaml`. Không cần host lại chỉ vì
+   lệnh serve thiếu hai flag. Đây là giả định được chấp nhận về custom deployment,
+   không phải phép đo mode: receipt ghi `mode_basis=upstream_default_assumption`,
+   `server_logprobs_mode_verified=false`, `mode_assumption_accepted=true`.
+   Chỉ metadata hoặc giả định mặc định không đủ: scoring/parity thật vẫn bắt buộc.
+   [Mặc định vLLM 0.31.0](https://docs.vllm.ai/en/v0.31.0/cli/serve/#--logprobs-mode).
+   Nếu biết deployment override mode hoặc version khác, thêm tùy chọn
+   `--server-mode-evidence <json>`. Evidence cần `teacher_url`, `served_model`,
+   `logprobs_mode=raw_logprobs`, `verification_source` là
+   `operator_checked_server_args` hoặc `server_reported_config`, `observed_at_utc`,
+   `evidence_description` đã bỏ secret. Evidence trái mode bị từ chối, không
+   fallback mặc định. Version lạ không tự pass; probability mass/echo không
+   chứng minh mode. Operator có thể tắt default assumption trong policy YAML.
+   Probe thất bại vô hiệu receipt thành công cũ. Launcher kiểm cùng policy hash.
 6. Operator xác nhận node, bốn UUID và Ray ownership hiện tại. Sau đó dùng
    `check_allocation.py` với `--node-label`, bốn `--expected-gpu-uuids`,
    `--ray-address`, `--operator-owned-ray-verified`, `--output` mới.
