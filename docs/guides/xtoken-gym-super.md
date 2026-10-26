@@ -72,8 +72,32 @@ tập đánh giá chất lượng. Sau smoke phải chốt budget và dataset pi
 Điểm vào: `examples.run_xtoken_on_policy_distillation` với config được render
 từ `examples/configs/xtoken_gym_qwen3_gemma4.yaml`. Renderer bắt buộc source,
 data, projection và run directory nằm dưới `XTOKEN_ALL_ROOT`, chọn đúng kiến trúc
-Qwen3-1.7B. Smoke: 4 GPU 0–3, TP=CP=1, GBS=4/MBS=1, 2 updates, checkpoint tắt.
+Qwen3-1.7B. Smoke: 4 GPU 0–3, TP=CP=1, GBS=4/MBS=1, 2 updates, checkpoint bật.
 Những số này không phải cấu hình mặc định cho full training.
+
+r8 đặt refit buffer của recipe Qwen→Gemma/Gym thành 4 GiB tổng, hai vùng 2 GiB.
+`XTOKEN_REFIT_REQUEST` ghi knob resolve và tổng byte ở driver trước refit;
+`NRL_REFIT_BUFFER` ghi tổng byte, capacity và allocation sau alignment cho mỗi
+vùng ở từng policy worker, trước cấp phát CUDA. Đây là bộ đệm chuyển trọng số,
+không phải projection; context/batch không đổi kích thước tensor embedding.
+
+Smoke `A-on-10` lưu sau update1 và update2 dưới `${XTOKEN_RUN_DIR}/checkpoints/`,
+save_period=1, keep_top_k=2, save_optimizer=true, safetensors, không consolidated,
+is_async=false. Dùng nguyên save/finalize của training loop và Automodel, không
+thêm đường serialize riêng. Policy probe kiểm signature save_model/save_optimizer.
+`check_result.py` đòi finalized step_1 và step_2, training_info/config/dataloader,
+payload weights/optimizer/tokenizer có file không rỗng. Đây là file-closure check;
+không chứng minh load/resume parity, không deserialize pickle trong checker.
+
+YAML train riêng `examples/configs/xtoken_gym_qwen3_gemma4_train.yaml` kế thừa cùng
+pipeline: student context8192, prompt6144, response2048, teacher budget16384,
+GBS4/MBS1, tối đa1000 update/1epoch,
+lưu mỗi10 step và step cuối, giữ3 checkpoint theo manager Super. Đây là profile
+đề xuất có thể sửa trước launch, chưa phải cấu hình tái lập paper. Render bằng
+`render.py --config <đường dẫn YAML train> ...` cùng các path đã có, nhưng data
+phải là pool train đã convert/kiểm budget; không dùng smoke8 cho1000 update.
+Preflight từ chối khi rows/epochs không đủ requested steps hoặc prompt vượt budget.
+Smoke256 vẫn là profile mặc định; renderer không tự chuyển sang train8k.
 
 `render.py` nhận `--gym-actor-python`, `--gym-venvs`, `--gym-source` trỏ các thành phần
 đã provision. Gym import phải đúng source đã khai; config paths dùng đường dẫn
@@ -191,6 +215,7 @@ Không bootstrap dependency hay bật Docker local.
 8. `check_result.py --run-dir <run>` đòi exit driver và tee bằng 0, đúng hai
    update, loss/gradient hữu hạn và gradient khác 0, teacher scores đúng dạng,
    Gym rollout versions 0 rồi 1, response không rỗng, reward không vào loss.
+   r8 còn kiểm file closure của checkpoint step1/step2 khi bật checkpointing.
 
 ## Kiểm chứng và giới hạn
 

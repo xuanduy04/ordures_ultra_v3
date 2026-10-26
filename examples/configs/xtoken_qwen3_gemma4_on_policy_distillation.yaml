@@ -3,7 +3,7 @@ defaults: xtoken_qwen3_gemma4_off_policy_distillation.yaml
 on_policy:
   prompt_source: raw_text
   max_prompt_tokens: 128
-  refit_buffer_size_gb: 1.0
+  refit_buffer_size_gb: 4.0
   include_eos_loss: false
 
 policy:

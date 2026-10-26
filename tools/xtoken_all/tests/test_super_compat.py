@@ -157,7 +157,7 @@ def test_actual_rollout_failure_releases_generation_without_tensor_import(failur
     ray = MagicMock()
     ray.wait.return_value = ([], [])
     fn = method(source, "NemoGymOnPolicyRollout", "generate", {
-        "prepare_example": protocol.prepare_example, "time": time, "ray": ray})
+        "prepare_example": protocol.prepare_example, "time": time, "ray": ray, "json": json})
     generation = MagicMock()
     generation.finish_generation.return_value = True
     environment = MagicMock()

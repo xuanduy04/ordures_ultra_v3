@@ -242,4 +242,5 @@ def test_result_checker_rejects_incomplete_or_wrong_pipeline(tmp_path, failure):
     events.append("Max steps reached, stopping training.")
     (tmp_path / "driver.log").write_text("\n".join(events))
     (tmp_path / "process-exit.json").write_text('{"driver_exit_code":0,"tee_exit_code":0}')
+    (tmp_path / "effective.yaml").write_text("checkpointing:\n  enabled: false\n")
     assert checker.assess(tmp_path, "on")["success"] is (failure is None)

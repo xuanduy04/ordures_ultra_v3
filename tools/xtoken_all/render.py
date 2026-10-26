@@ -1,4 +1,4 @@
-"""Materialize an immutable Gym smoke YAML inside the user's xtoken_all root."""
+"""Materialize an immutable Gym run YAML inside the user's xtoken_all root."""
 
 import argparse
 import json
@@ -17,6 +17,7 @@ def within(path, root):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, help="Optional training profile; default remains the two-update smoke recipe")
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--student", type=Path, required=True)
     parser.add_argument("--teacher-tokenizer", type=Path, required=True)
@@ -64,7 +65,8 @@ def main():
                       XTOKEN_RUN_DIR=str(run), XTOKEN_STUDENT_MODEL=str(args.student.resolve()),
                       XTOKEN_TRAIN_DATA=str(args.data.resolve()))
     register_omegaconf_resolvers()
-    cfg = load_config(source / "examples/configs/xtoken_gym_qwen3_gemma4.yaml")
+    config_path = within(args.config, root) if args.config is not None else source / "examples/configs/xtoken_gym_qwen3_gemma4.yaml"
+    cfg = load_config(config_path)
     teacher = cfg["teachers"][0]
     teacher["model_name"] = str(args.teacher_tokenizer.resolve())
     teacher["tokenizer"]["name"] = str(args.teacher_tokenizer.resolve())
@@ -72,7 +74,8 @@ def main():
     teacher["remote"]["url"] = args.teacher_url.rstrip("/")
     teacher["remote"]["model"] = args.teacher_model
     teacher["remote"]["api_key_env"] = args.teacher_api_key_env
-    teacher["train_global_batch_size"] = 4
+    teacher["train_global_batch_size"] = cfg["policy"]["train_global_batch_size"]
+    teacher["max_total_sequence_length"] = cfg["on_policy"]["teacher_max_total_sequence_length"]
     resolved = OmegaConf.to_container(cfg, resolve=True)
     validate_on_policy_config(MasterConfig(**resolved))
     gym_actor_runtime_env(resolved["on_policy"]["nemo_gym"], source, os.environ)
@@ -89,7 +92,7 @@ def main():
                   "data_sha256": sha256(args.data), "projection_sha256": sha256(args.projection),
                   "source_sha256": source_snapshot(source)["sha256"]}
     (run / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
-    print(json.dumps({"run_dir": str(run), "steps": 2, "mode": "on",
+    print(json.dumps({"run_dir": str(run), "steps": resolved["distillation"]["max_num_steps"], "mode": "on",
                       "backend": "nemo_gym", "gym_actor_python": resolved["on_policy"]["nemo_gym"]["actor_python"]}))
 
 

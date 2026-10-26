@@ -159,7 +159,15 @@ def check(run):
             ids = student.apply_chat_template(prompt, tokenize=True, add_generation_prompt=True, return_dict=False)
             assert 0 < len(ids) <= cfg["on_policy"]["max_prompt_tokens"], "Prompt exceeds explicit smoke budget"
             counts.append(len(ids))
-    assert len(counts) >= 8, "Two global batches need at least eight rows"
+    global_batch = cfg["policy"]["train_global_batch_size"]
+    requested_steps = cfg["distillation"]["max_num_steps"]
+    assert len(counts) >= 2 * global_batch, "At least two complete global batches are required"
+    assert (len(counts) // global_batch) * cfg["distillation"]["max_num_epochs"] >= requested_steps, "Dataset/epochs cannot supply the requested updates"
+    if cfg["checkpointing"]["enabled"]:
+        checkpoint_dir = Path(cfg["checkpointing"]["checkpoint_dir"]).resolve()
+        checkpoint_dir.relative_to(run.resolve())
+        assert cfg["checkpointing"]["save_period"] > 0 and cfg["checkpointing"]["keep_top_k"] >= 2
+        assert cfg["checkpointing"]["save_optimizer"] is True and cfg["checkpointing"]["is_async"] is False
     receipt("assets-check", rows=len(counts), max_prompt_tokens=max(counts),
             student_tokenizer_len=len(student), student_head=head,
             teacher_tokenizer_len=len(teacher), projection_shape=list(projection.shape))

@@ -2,6 +2,8 @@ defaults: xtoken_qwen3_gemma4_on_policy_distillation.yaml
 
 # Render paths and runtime fields on the company node before launch.
 on_policy:
+  refit_buffer_size_gb: 4.0
+  teacher_max_total_sequence_length: 256
   rollout_backend: nemo_gym
   prompt_source: nemo_gym
   nemo_gym:
@@ -94,3 +96,13 @@ data:
 logger:
   log_dir: ${oc.env:XTOKEN_RUN_DIR}/train-logs
   monitor_gpus: false
+
+checkpointing:
+  enabled: true
+  checkpoint_dir: ${oc.env:XTOKEN_RUN_DIR}/checkpoints
+  save_period: 1
+  keep_top_k: 2
+  save_optimizer: true
+  model_save_format: safetensors
+  save_consolidated: false
+  is_async: false

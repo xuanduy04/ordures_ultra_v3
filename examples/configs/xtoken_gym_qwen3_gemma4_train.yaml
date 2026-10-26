@@ -1,0 +1,25 @@
+defaults: xtoken_gym_qwen3_gemma4.yaml
+
+# Separate training profile for operator review; not a paper reproduction claim.
+# Render with the complete converted train pool, not smoke-dapo-8.
+on_policy:
+  max_prompt_tokens: 6144
+  teacher_max_total_sequence_length: 16384
+
+distillation:
+  num_prompts_per_step: 4
+  max_num_steps: 1000
+  max_num_epochs: 1
+
+policy:
+  train_global_batch_size: 4
+  train_micro_batch_size: 1
+  max_total_sequence_length: 8192
+  generation:
+    max_new_tokens: 2048
+    vllm_cfg:
+      max_model_len: 8192
+
+checkpointing:
+  save_period: 10
+  keep_top_k: 3

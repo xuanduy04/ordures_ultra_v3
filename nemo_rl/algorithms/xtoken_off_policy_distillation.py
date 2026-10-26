@@ -190,6 +190,7 @@ class TeacherConfig(BaseModel, extra="allow"):
 
 class CheckpointingConfig(ProductionCheckpointingConfig):
     save_optimizer: bool
+    is_async: NotRequired[bool]
 
 
 class MasterConfig(BaseModel, extra="allow"):

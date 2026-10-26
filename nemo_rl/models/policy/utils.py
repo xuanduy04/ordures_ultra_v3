@@ -1,6 +1,7 @@
 
 
 import gc
+import json
 import os
 import traceback
 from enum import Enum
@@ -331,8 +332,15 @@ def stream_weights_via_ipc_zmq_impl(
         rank: Worker rank for logging
         worker_name: Name of the worker for logging
     """
+    total_buffer_size_bytes = buffer_size_bytes
     # Divide total buffer size by 2 because we use two individual buffers (ping-pong) for overlapping communication.
     buffer_size_bytes = buffer_size_bytes // 2
+    print("NRL_REFIT_BUFFER=" + json.dumps({
+        "worker": worker_name, "rank": rank, "buffer_count": 2,
+        "total_buffer_bytes": int(total_buffer_size_bytes),
+        "per_buffer_capacity_bytes": int(buffer_size_bytes),
+        "per_buffer_allocation_bytes": calculate_aligned_size(buffer_size_bytes),
+    }), flush=True)
 
     def send_buffer_group_overlap(buffer, param_names, used_bytes, await_recv) -> bool:
         """Send a group of parameters and return new pending_recv state."""

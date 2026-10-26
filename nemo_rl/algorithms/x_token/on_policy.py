@@ -83,6 +83,11 @@ class OnPolicyRollout:
         if any(not ids or len(ids) > self.knobs["max_prompt_tokens"] for ids in prompt_ids):
             raise ValueError("Empty or over-budget prompt; truncation is not implicit")
         if self.synced_version != self.policy_version:
+            print("XTOKEN_REFIT_REQUEST=" + json.dumps({
+                "policy_version": self.policy_version,
+                "refit_buffer_size_gb": self.knobs["refit_buffer_size_gb"],
+                "total_buffer_bytes": int(self.knobs["refit_buffer_size_gb"] * (1024**3)),
+            }), flush=True)
             self.refit(self.policy, self.generation, colocated_inference=True,
                        _refit_buffer_size_gb=self.knobs["refit_buffer_size_gb"])
             self.synced_version = self.policy_version

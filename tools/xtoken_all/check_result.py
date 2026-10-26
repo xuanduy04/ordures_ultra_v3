@@ -4,6 +4,34 @@ import json
 import math
 from pathlib import Path
 
+import yaml
+
+
+def inspect_checkpoint(root, step):
+    """Check finalized file closure without loading tensors or pickle data."""
+    path = root / ('step_' + str(step))
+    reasons = []
+    info = path / 'training_info.json'
+    try:
+        valid_info = info.is_file() and json.loads(info.read_text())['total_steps'] == step
+    except (OSError, ValueError, KeyError, TypeError):
+        valid_info = False
+    if not valid_info:
+        reasons.append('missing/wrong training_info for checkpoint step ' + str(step))
+    for name in ('config.yaml', 'train_dataloader.pt'):
+        item = path / name
+        if not item.is_file() or item.stat().st_size == 0:
+            reasons.append('missing checkpoint file: ' + str(item))
+    for name in ('weights', 'optimizer', 'tokenizer'):
+        directory = path / 'policy' / name
+        files = [item for item in directory.rglob('*') if item.is_file() and item.stat().st_size > 0]
+        if name != 'tokenizer':
+            files = [item for item in files if item.suffix in ('.safetensors', '.distcp', '.pt', '.pth', '.bin')]
+        if not files:
+            reasons.append('missing checkpoint payload: ' + str(directory))
+    return {'step': step, 'path': str(path), 'success': not reasons, 'reasons': reasons,
+            'scope': 'finalized metadata/file closure; no load or resume-parity claim'}
+
 
 def assess(run, mode):
     lines = (run / 'driver.log').read_text(errors='replace').splitlines()
@@ -31,8 +59,18 @@ def assess(run, mode):
         reasons.append('wrong rollout backend or reward mixed into KD')
     if not any('Max steps reached, stopping training.' in line for line in lines):
         reasons.append('missing normal completion marker')
+    checkpoint_reports = []
+    cfg = yaml.safe_load((run / 'effective.yaml').read_text())
+    if cfg['checkpointing']['enabled']:
+        root = Path(cfg['checkpointing']['checkpoint_dir']).resolve()
+        root.relative_to(run.resolve())
+        for step in (1, 2):
+            report = inspect_checkpoint(root, step)
+            checkpoint_reports.append(report)
+            reasons.extend(report['reasons'])
     return {'success': not reasons, 'reasons': reasons, 'mode': mode, 'steps': steps,
             'rollouts': rollouts, 'teacher_score_receipts': len(scores),
+            'checkpoints': checkpoint_reports,
             'scope': 'mechanical smoke; no quality, convergence, full tokenizer coverage or resume-parity claim'}
 
 

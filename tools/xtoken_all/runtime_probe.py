@@ -92,8 +92,14 @@ def probe(role, gym_root):
     if "peft_init_method" in checkpoint_signature.parameters:
         kwargs["peft_init_method"] = None
     checkpoint_signature.bind(None, None, **kwargs)
+    save_model_signature = inspect.signature(Checkpointer.save_model)
+    save_model_signature.bind(None, model=None, weights_path=None, peft_config=None, tokenizer=None)
+    save_optimizer_signature = inspect.signature(Checkpointer.save_optimizer)
+    save_optimizer_signature.bind(None, optimizer=None, model=None, weights_path=None, scheduler=None)
     result.update(fsdp_module=inspect.getfile(FSDP2Manager), fsdp_signature=str(signature),
-                  checkpoint_module=inspect.getfile(Checkpointer), checkpoint_signature=str(checkpoint_signature))
+                  checkpoint_module=inspect.getfile(Checkpointer), checkpoint_signature=str(checkpoint_signature),
+                  checkpoint_save_model_signature=str(save_model_signature),
+                  checkpoint_save_optimizer_signature=str(save_optimizer_signature))
     return result
 
 

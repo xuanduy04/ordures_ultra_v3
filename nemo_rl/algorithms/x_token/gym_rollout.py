@@ -54,6 +54,11 @@ class NemoGymOnPolicyRollout(OnPolicyRollout):
         stream = None
         try:
             if self.synced_version != self.policy_version:
+                print("XTOKEN_REFIT_REQUEST=" + json.dumps({
+                    "policy_version": self.policy_version,
+                    "refit_buffer_size_gb": self.knobs["refit_buffer_size_gb"],
+                    "total_buffer_bytes": int(self.knobs["refit_buffer_size_gb"] * (1024**3)),
+                }), flush=True)
                 self.refit(self.policy, self.generation, colocated_inference=True,
                            _refit_buffer_size_gb=self.knobs["refit_buffer_size_gb"])
                 self.synced_version = self.policy_version
