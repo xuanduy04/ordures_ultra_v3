@@ -80,6 +80,19 @@ Những số này không phải cấu hình mặc định cho full training.
 tuyệt đối. Adapter bật `skip_load_from_dotenv=true`: không cần copy/nạp
 `nemo_gym_env.yaml`, không đưa secret của pipeline khác vào effective config.
 
+Interpreter giữ đường dẫn tuyệt đối theo CLI, không dereference symlink
+`venv/bin/python` sang binary gốc. `.resolve()` tại vị trí này từng làm mất
+venv/site-packages và gây lỗi thiếu Hydra trong bản G1 trước khi có snapshot Super;
+r4 sửa lỗi cho cả code hiện tại. Không ghép nguyên site-packages của venv Gym
+vào driver: log thực tế đã ghi nhận Transformers4.57 gặp huggingface-hub1.25.1
+thay vì bản <1.0 yêu cầu. `runtime_probe.py` ghi executable/prefix/base_prefix.
+Regression stdlib Linux ở `tools/xtoken_all/tests/check_venv_interpreter.py` chạy
+Python qua symlink với pyvenv.cfg/marker tạm; không cài package.
+
+Tên run tùy ý không xác định thuật toán: renderer này luôn xuất mode `on` và
+backend `nemo_gym`, kể cả tên bắt đầu A-off. Đường off-policy thật dùng entrypoint
+và config off-policy riêng, không gọi Gym để sinh response student.
+
 Gym fork `8949f55` luôn validate endpoint judge lúc khởi động, kể cả khi
 `should_use_judge=false`. Config G1 khai endpoint/model của teacher đã có cho
 phép kiểm tra metadata; không gọi LLM judge để chấm đáp án. Nếu endpoint cần

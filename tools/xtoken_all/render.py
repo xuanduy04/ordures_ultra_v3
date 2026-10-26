@@ -54,7 +54,8 @@ def main():
     from nemo_rl.algorithms.xtoken_off_policy_distillation import MasterConfig
     from nemo_rl.algorithms.x_token.on_policy import validate_on_policy_config
 
-    os.environ.update(XTOKEN_GYM_PYTHON=str(args.gym_python.resolve()),
+    # Preserve the venv entrypoint; resolving its symlink selects base Python.
+    os.environ.update(XTOKEN_GYM_PYTHON=os.path.abspath(args.gym_python),
                       XTOKEN_GYM_VENV_DIR=str(args.gym_venvs.resolve()),
                       XTOKEN_GYM_SOURCE=str(args.gym_source.resolve()),
                       XTOKEN_SOURCE_ROOT=str(source), XTOKEN_RAY_ADDRESS=args.ray_address,
@@ -85,7 +86,8 @@ def main():
                   "data_sha256": sha256(args.data), "projection_sha256": sha256(args.projection),
                   "source_sha256": source_snapshot(source)["sha256"]}
     (run / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
-    print(json.dumps({"run_dir": str(run), "steps": 2, "backend": "nemo_gym"}))
+    print(json.dumps({"run_dir": str(run), "steps": 2, "mode": "on",
+                      "backend": "nemo_gym", "gym_python": resolved["on_policy"]["nemo_gym"]["worker_python"]}))
 
 
 if __name__ == "__main__":

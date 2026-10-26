@@ -6,6 +6,7 @@ import importlib.metadata
 import inspect
 import json
 from pathlib import Path
+import sys
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -16,7 +17,9 @@ def module_path(module):
 
 
 def probe(role, gym_root):
-    result = {"role": role, "cuda_operations_requested": False}
+    result = {"role": role, "cuda_operations_requested": False,
+              "python_executable": sys.executable, "python_prefix": sys.prefix,
+              "python_base_prefix": sys.base_prefix}
     if role == "gym":
         module = importlib.import_module("nemo_gym")
         if Path(module.PARENT_DIR).resolve() != gym_root.resolve():
