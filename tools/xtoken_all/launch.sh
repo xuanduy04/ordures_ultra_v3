@@ -18,6 +18,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path.cwd() / 'tools/xtoken_all'))
 from integrity import sha256, source_snapshot
 from teacher_probe_contract import validate_teacher_probe
+from tokenizer_contract import projection_digest
 root, run, allocation = map(Path, sys.argv[1:])
 run.resolve().relative_to(root.resolve())
 assert not (run / 'driver.log').exists(), 'Refuse to reuse a run'
@@ -34,7 +35,7 @@ reject_inherited_gym_config(os.environ)
 actor_runtime = gym_actor_runtime_env(cfg['on_policy']['nemo_gym'], Path.cwd(), os.environ)
 verify_gym_source(cfg['on_policy']['nemo_gym']['source_root'], cfg['on_policy']['nemo_gym']['source_contract'])
 assert sha256(cfg['data']['train']['data_path']) == meta['data_sha256']
-assert sha256(cfg['teachers'][0]['projection_matrix_path']) == meta['projection_sha256']
+assert projection_digest(cfg['teachers'][0]['projection_matrix_path'], sha256) == meta['projection_sha256']
 for name in ('teacher-probe', 'assets-check', 'source-check', 'gym-preflight', 'ray-stream-check'):
     receipt = json.loads((run / (name + '.json')).read_text())
     assert receipt['success'] and receipt['effective_config_sha256'] == meta['effective_config_sha256'], name

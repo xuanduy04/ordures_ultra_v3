@@ -1,12 +1,14 @@
 """Materialize an immutable Gym run YAML inside the user's xtoken_all root."""
 
 import argparse
+from copy import deepcopy
 import json
 import os
 from pathlib import Path
 import sys
 
 from integrity import sha256, source_snapshot
+from tokenizer_contract import projection_digest
 
 
 def within(path, root):
@@ -21,7 +23,10 @@ def main():
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--student", type=Path, required=True)
     parser.add_argument("--teacher-tokenizer", type=Path, required=True)
-    parser.add_argument("--projection", type=Path, required=True)
+    tokenizer_mode = parser.add_mutually_exclusive_group(required=True)
+    tokenizer_mode.add_argument("--projection", type=Path)
+    tokenizer_mode.add_argument("--same-tokenizer", action="store_true")
+    parser.add_argument("--teacher-vocab-size", type=int)
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--teacher-url", required=True)
     parser.add_argument("--teacher-model", required=True)
@@ -39,11 +44,14 @@ def main():
     for path in (args.student, args.teacher_tokenizer, args.gym_venvs, args.gym_source):
         if not path.is_dir():
             raise FileNotFoundError(path)
-    for path in (args.projection, args.data, args.gym_actor_python):
+    for path in (args.data, args.gym_actor_python):
         if not path.is_file():
             raise FileNotFoundError(path)
     within(args.data, root)
-    within(args.projection, root)
+    if args.projection is not None:
+        if not args.projection.is_file():
+            raise FileNotFoundError(args.projection)
+        within(args.projection, root)
     if args.teacher_url.rstrip("/").endswith("/v1") or "@" in args.teacher_url or "?" in args.teacher_url:
         raise ValueError("Use teacher base URL without /v1 or embedded credentials")
     if args.teacher_api_key_env and args.teacher_api_key_env not in os.environ:
@@ -70,7 +78,13 @@ def main():
     teacher = cfg["teachers"][0]
     teacher["model_name"] = str(args.teacher_tokenizer.resolve())
     teacher["tokenizer"]["name"] = str(args.teacher_tokenizer.resolve())
-    teacher["projection_matrix_path"] = str(args.projection.resolve())
+    teacher["projection_matrix_path"] = None if args.same_tokenizer else str(args.projection.resolve())
+    if args.same_tokenizer:
+        teacher["tokenizer"] = deepcopy(cfg["policy"]["tokenizer"])
+        teacher["tokenizer"]["name"] = str(args.teacher_tokenizer.resolve())
+        if args.teacher_vocab_size is None or args.teacher_vocab_size <= 0:
+            raise ValueError("Same-tokenizer mode requires --teacher-vocab-size from model metadata")
+        teacher["remote"]["model_vocab_size"] = args.teacher_vocab_size
     teacher["remote"]["url"] = args.teacher_url.rstrip("/")
     teacher["remote"]["model"] = args.teacher_model
     teacher["remote"]["api_key_env"] = args.teacher_api_key_env
@@ -89,7 +103,8 @@ def main():
     provenance = {"mode": "on", "rollout_backend": "nemo_gym",
                   "reward_used_in_loss": False, "source_root": str(source),
                   "effective_config_sha256": sha256(run / "effective.yaml"),
-                  "data_sha256": sha256(args.data), "projection_sha256": sha256(args.projection),
+                  "data_sha256": sha256(args.data), "projection_sha256": projection_digest(args.projection, sha256),
+                  "tokenizer_mode": "same" if args.same_tokenizer else "cross",
                   "source_sha256": source_snapshot(source)["sha256"]}
     (run / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
     print(json.dumps({"run_dir": str(run), "steps": resolved["distillation"]["max_num_steps"], "mode": "on",

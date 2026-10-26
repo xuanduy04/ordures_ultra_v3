@@ -8,12 +8,23 @@ on_policy:
 
 distillation:
   num_prompts_per_step: 4
-  max_num_steps: 1000
+  max_num_steps: 200
   max_num_epochs: 1
 
 policy:
   train_global_batch_size: 4
   train_micro_batch_size: 1
+  scheduler:
+    - name: torch.optim.lr_scheduler.LinearLR
+      kwargs:
+        start_factor: 0.02
+        end_factor: 1.0
+        total_iters: 20
+    - name: torch.optim.lr_scheduler.CosineAnnealingLR
+      kwargs:
+        T_max: 180
+        eta_min: 0.0
+    - milestones: [20]
   max_total_sequence_length: 8192
   generation:
     max_new_tokens: 2048

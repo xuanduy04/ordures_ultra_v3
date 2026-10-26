@@ -111,13 +111,34 @@ không chứng minh load/resume parity, không deserialize pickle trong checker.
 
 YAML train riêng `examples/configs/xtoken_gym_qwen3_gemma4_train.yaml` kế thừa cùng
 pipeline: student context8192, prompt6144, response2048, teacher budget16384,
-GBS4/MBS1, tối đa1000 update/1epoch,
+GBS4/MBS1, tối đa200 update/1epoch, warmup20 rồi cosine180,
 lưu mỗi10 step và step cuối, giữ3 checkpoint theo manager Super. Đây là profile
 đề xuất có thể sửa trước launch, chưa phải cấu hình tái lập paper. Render bằng
 `render.py --config <đường dẫn YAML train> ...` cùng các path đã có, nhưng data
-phải là pool train đã convert/kiểm budget; không dùng smoke8 cho1000 update.
+phải là pool train đã convert/kiểm budget; không dùng smoke8 cho200 update.
 Preflight từ chối khi rows/epochs không đủ requested steps hoặc prompt vượt budget.
 Smoke256 vẫn là profile mặc định; renderer không tự chuyển sang train8k.
+
+Pilot khẩn cấp lấy budget thực từ A-on-11 qua `prepare_pilot.py`, recipe
+`pilot_200.yaml`, thay vì tự ép profile8k. Dùng nguyên pool toán16.367 dòng,
+kiểm path/row count/hash với provenance A-on-11, không đổi sang math/code20k.
+B-on-01 chạy same-tokenizer Qwen3-32B ở node anhhbt-eval-7-0-1; A-on-12 là
+preset cross mới warmup20 để chạy khi node A rảnh. A-on-11 đang chạy được giữ
+nguyên; lịch warmup250 đã thực thi không thể trở thành warmup20 hồi tố.
+
+Renderer nay nhận một trong `--projection <path>` hoặc `--same-tokenizer`;
+same-tokenizer cần `--teacher-vocab-size` từ metadata model. Preflight kiểm
+identity token→ID/template/kwargs/context/padding; provenance/launcher nhận
+projection path và hash null, không tạo matrix identity. Profile same-tokenizer
+riêng ở `xtoken_gym_qwen3_same_tokenizer_train.yaml`. Teacher tokenizer Qwen có
+thể dùng bản student đã stage; probe teacher vẫn phải kiểm /tokenize và top20
+thực. Không được coi identity local là bằng chứng tokenizer server đã khớp.
+
+`tools/xtoken_all/HANDOFF-pilot-200.md` chứa lệnh render/check/launch B, giữ nguyên
+runtime Super và teacher. `pilot_200.sh` gọi các helper đã có; `check_pilot.py`
+kiểm đủ200 update và checkpoint cuối, không dùng checker smoke hai-step.
+Save mỗi10, giữ3 checkpoint; eval step100 phải chạy trước khi checkpoint bị
+prune hoặc giữ snapshot riêng. Chưa bật held-out evaluation tự động trong Gym.
 
 `render.py` nhận `--gym-actor-python`, `--gym-venvs`, `--gym-source` trỏ các thành phần
 đã provision. Gym import phải đúng source đã khai; config paths dùng đường dẫn

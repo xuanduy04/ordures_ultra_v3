@@ -9,6 +9,7 @@ import subprocess
 import sys
 
 from integrity import sha256, source_snapshot
+from tokenizer_contract import projection_digest, validate_identity
 
 
 SOURCE = Path(__file__).resolve().parents[2]
@@ -141,15 +142,20 @@ def check(run):
     teacher = get_tokenizer(cfg["teachers"][0]["tokenizer"])
     head = json.loads((student_dir / "config.json").read_text())["vocab_size"]
     assert max(student.get_vocab().values()) < head
-    projection_path = Path(cfg["teachers"][0]["projection_matrix_path"])
-    assert sha256(projection_path) == meta["projection_sha256"]
-    projection = get_sparse_projection_matrix(
-        projection_path, torch.device("cpu"), student_vocab_size=len(student),
-        teacher_vocab_size=len(teacher))
-    assert projection.layout == torch.sparse_coo
-    assert projection.shape == (len(student), len(teacher)), "Tokenizer/projection dimensions differ"
-    assert torch.isfinite(projection.coalesce().values()).all()
-    assert (projection.coalesce().values() >= 0).all()
+    projection_path = cfg["teachers"][0]["projection_matrix_path"]
+    assert projection_digest(projection_path, sha256) == meta["projection_sha256"]
+    projection_shape = None
+    if projection_path is None:
+        validate_identity(student, teacher, cfg["policy"], cfg["teachers"][0])
+    else:
+        projection = get_sparse_projection_matrix(
+            Path(projection_path), torch.device("cpu"), student_vocab_size=len(student),
+            teacher_vocab_size=len(teacher))
+        assert projection.layout == torch.sparse_coo
+        assert projection.shape == (len(student), len(teacher)), "Tokenizer/projection dimensions differ"
+        assert torch.isfinite(projection.coalesce().values()).all()
+        assert (projection.coalesce().values() >= 0).all()
+        projection_shape = list(projection.shape)
     data_path = Path(cfg["data"]["train"]["data_path"])
     assert sha256(data_path) == meta["data_sha256"]
     counts = []
@@ -170,7 +176,8 @@ def check(run):
         assert cfg["checkpointing"]["save_optimizer"] is True and cfg["checkpointing"]["is_async"] is False
     receipt("assets-check", rows=len(counts), max_prompt_tokens=max(counts),
             student_tokenizer_len=len(student), student_head=head,
-            teacher_tokenizer_len=len(teacher), projection_shape=list(projection.shape))
+            teacher_tokenizer_len=len(teacher), projection_shape=projection_shape,
+            tokenizer_mode="same" if projection_path is None else "cross")
     paths = [os.environ["NRL_PYTHON"]]
     store = Path(os.environ["NEMO_RL_VENV_DIR"])
     workers = ["nemo_rl.models.policy.workers.dtensor_policy_worker_v2.DTensorPolicyWorkerV2",
