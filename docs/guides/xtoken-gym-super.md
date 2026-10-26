@@ -75,10 +75,26 @@ data, projection và run directory nằm dưới `XTOKEN_ALL_ROOT`, chọn đún
 Qwen3-1.7B. Smoke: 4 GPU 0–3, TP=CP=1, GBS=4/MBS=1, 2 updates, checkpoint tắt.
 Những số này không phải cấu hình mặc định cho full training.
 
-`render.py` nhận `--gym-python`, `--gym-venvs`, `--gym-source` trỏ các thành phần
+`render.py` nhận `--gym-actor-python`, `--gym-venvs`, `--gym-source` trỏ các thành phần
 đã provision. Gym import phải đúng source đã khai; config paths dùng đường dẫn
 tuyệt đối. Adapter bật `skip_load_from_dotenv=true`: không cần copy/nạp
 `nemo_gym_env.yaml`, không đưa secret của pipeline khác vào effective config.
+
+r7 thay `worker_python` bằng `actor_python`, bỏ CLI `--gym-python` cũ. Actor
+`nemo_rl.environments.nemo_gym.NemoGym` cần Torch/Transformers/Ray và Gym SDK;
+đây là môi trường `PY_EXECUTABLES.NEMO_GYM` trong registry Super. Đường provision
+gốc đặt venv ở `$NEMO_RL_VENV_DIR/nemo_rl.environments.nemo_gym.NemoGym/bin/python`.
+Phải kiểm file/import trên node; không giả định nó tồn tại. Chỉ định interpreter
+đã provision bằng CLI mới, không gọi nhánh tạo venv của helper gốc. Nếu deployment
+dùng path khác, operator xác nhận đúng interpreter actor đã chạy; không tự fallback.
+
+Ba service `vllm_model`, `simple_agent`, `general_qa` giữ venv riêng dưới
+`--gym-venvs`. Proxy `vllm_model` không phải engine vLLM. Renderer/factory từ chối
+actor Python trỏ vào service store. `gym_actor_runtime_env()` giữ cách merge
+environment của `environments.utils.create_env`: kế thừa env, đặt VIRTUAL_ENV và
+UV_PROJECT_ENVIRONMENT cho actor, ưu tiên source đã review trong PYTHONPATH;
+không trộn site-packages. Cùng helper được dùng bởi preflight, Ray probe và runtime.
+`super-runtime-lineage.json` chốt SHA của bốn file tham chiếu Super còn nguyên.
 
 Interpreter giữ đường dẫn tuyệt đối theo CLI, không dereference symlink
 `venv/bin/python` sang binary gốc. `.resolve()` tại vị trí này từng làm mất
@@ -133,6 +149,13 @@ Không bootstrap dependency hay bật Docker local.
    dừng ở phép đọc metadata Automodel sau khi import generation worker thành công;
    đây là yêu cầu thừa của probe. Không cài/chia sẻ site-packages policy sang
    generation chỉ để vượt nó. Kiểm tra import/API chưa chứng minh refit/GPU pass.
+   r7 chạy `--gym-only` bằng actor_python với cùng runtime env dùng khi tạo actor.
+   Nó import package bình thường của actor `NemoGym`, `x_token.gym_compat`, SDK
+   RunHelper/RolloutCollectionHelper và kiểm async-generator API. Ba sub-venv chạy
+   `gym_service_probe.py`, import app/class thật của từng service; không import
+   NeMo RL hay yêu cầu Torch trong proxy. Không chỉ nạp file helper bằng importlib.
+   Receipt ghi executable/prefix/module của actor và ba app. Khi lỗi, subprocess
+   hiện traceback; source-check chỉ ghi thành công sau khi toàn bộ import qua.
 5. `probe_teacher.py --config <effective.yaml>`
    kiểm alias, ba ca tokenizer parity, một yêu cầu score nhỏ và cap top-20.
    r5 cho phép server báo đúng `0.31.0` dùng mặc định upstream `raw_logprobs`
@@ -159,6 +182,9 @@ Không bootstrap dependency hay bật Docker local.
    Trước launch chạy `ray_stream_probe.py --run-dir <run> --allocation-receipt <lease>`:
    chỉ tạo một actor CPU không model trên Ray đã xác nhận, kiểm async generator,
    ray.wait/get, thứ tự kết quả và dọn actor của probe. Nó không chạy task GPU.
+   r7 đặt actor probe trong chính runtime env của NemoGym, import actor/SDK thật
+   rồi mới kiểm stream. Receipt ghi actor_runtime và launcher đối chiếu cùng
+   executable/prefix/source/API như preflight. Không khởi tạo model hay service.
    Launcher kiểm UUID/occupancy lại ngay trước chạy, allocation chưa quá 5 phút,
    các receipt preflight/teacher/Ray stream chưa quá `receipt_max_age_s`,
    hash source/data/projection/config; không `ray stop --force`.

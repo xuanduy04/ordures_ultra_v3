@@ -22,9 +22,9 @@ def rendered_python(path):
     tree = ast.parse((ROOT / "tools/xtoken_all/render.py").read_text(encoding="utf-8"))
     calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
     expression = next(keyword.value for node in calls for keyword in node.keywords
-                      if keyword.arg == "XTOKEN_GYM_PYTHON")
+                      if keyword.arg == "XTOKEN_GYM_ACTOR_PYTHON")
     return eval(compile(ast.Expression(body=expression), "renderer_python_path", "eval"),
-                {"os": os, "str": str, "args": SimpleNamespace(gym_python=path)})
+                {"os": os, "str": str, "args": SimpleNamespace(gym_actor_python=path)})
 
 
 class InterpreterPathTests(unittest.TestCase):

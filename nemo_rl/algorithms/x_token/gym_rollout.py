@@ -12,7 +12,7 @@ from nemo_rl.algorithms.x_token.gym_protocol import (
     prepare_example, restore_order, unpack_result,
 )
 from nemo_rl.algorithms.x_token.on_policy import OnPolicyRollout
-from nemo_rl.algorithms.x_token.gym_compat import reject_inherited_gym_config, verify_gym_source
+from nemo_rl.algorithms.x_token.gym_compat import gym_actor_runtime_env, reject_inherited_gym_config, verify_gym_source
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 
 
@@ -126,10 +126,9 @@ def create_gym_environment(config, generation):
     cfg = config.on_policy["nemo_gym"]
     reject_inherited_gym_config(os.environ)
     verify_gym_source(cfg["source_root"], cfg["source_contract"])
-    executable = Path(cfg["worker_python"])
-    venvs = Path(cfg["venv_dir"])
-    if not executable.is_file() or not venvs.is_dir():
-        raise FileNotFoundError("Pre-provisioned Gym interpreter/venv store is required")
+    source = str(Path(__file__).resolve().parents[3])
+    runtime = gym_actor_runtime_env(cfg, source, os.environ)
+    venvs = Path(runtime["env_vars"]["NEMO_GYM_VENV_DIR"])
     global_config = dict(cfg["global_config"])
     gym_source = Path(cfg["source_root"]).resolve()
     for path in global_config["config_paths"]:
@@ -139,20 +138,9 @@ def create_gym_environment(config, generation):
             raise FileNotFoundError(resolved)
     global_config["uv_venv_dir"] = str(venvs)
     global_config["skip_venv_if_present"] = True
-    source = str(Path(__file__).resolve().parents[3])
-    inherited_path = os.environ["PYTHONPATH"] if "PYTHONPATH" in os.environ else ""
-    worker_env = {"UV_OFFLINE": "1", "HF_HUB_OFFLINE": "1",
-                  "PYTHONDONTWRITEBYTECODE": "1",
-                  "PYTHONPATH": os.pathsep.join(part for part in (source, str(gym_source), inherited_path) if part),
-                  "VIRTUAL_ENV": str(executable.parent.parent),
-                  "UV_PROJECT_ENVIRONMENT": str(executable.parent.parent)}
-    for key in ("NEMO_GYM_VENV_DIR", "NRL_CONTAINER", "NRL_IGNORE_VERSION_MISMATCH",
-                "CUSTOM_NLTK_DATA_DIR", "NLTK_DATA"):
-        if key in os.environ:
-            worker_env[key] = os.environ[key]
     actor = NemoGym.options(
         num_cpus=1, max_restarts=0, max_task_retries=0,
-        runtime_env={"py_executable": str(executable), "env_vars": worker_env},
+        runtime_env=runtime,
     ).remote(NemoGymConfig(
         model_name=generation.cfg["model_name"],
         base_urls=generation.dp_openai_server_base_urls,

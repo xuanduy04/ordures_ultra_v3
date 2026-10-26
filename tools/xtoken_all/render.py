@@ -24,7 +24,8 @@ def main():
     parser.add_argument("--data", type=Path, required=True)
     parser.add_argument("--teacher-url", required=True)
     parser.add_argument("--teacher-model", required=True)
-    parser.add_argument("--gym-python", type=Path, required=True)
+    parser.add_argument("--gym-actor-python", type=Path, required=True,
+                        help="Existing NemoGym actor venv, not a thin service .venv")
     parser.add_argument("--gym-venvs", type=Path, required=True)
     parser.add_argument("--gym-source", type=Path, required=True)
     parser.add_argument("--ray-address", required=True)
@@ -37,7 +38,7 @@ def main():
     for path in (args.student, args.teacher_tokenizer, args.gym_venvs, args.gym_source):
         if not path.is_dir():
             raise FileNotFoundError(path)
-    for path in (args.projection, args.data, args.gym_python):
+    for path in (args.projection, args.data, args.gym_actor_python):
         if not path.is_file():
             raise FileNotFoundError(path)
     within(args.data, root)
@@ -53,9 +54,10 @@ def main():
     from nemo_rl.utils.config import load_config, register_omegaconf_resolvers
     from nemo_rl.algorithms.xtoken_off_policy_distillation import MasterConfig
     from nemo_rl.algorithms.x_token.on_policy import validate_on_policy_config
+    from nemo_rl.algorithms.x_token.gym_compat import gym_actor_runtime_env
 
     # Preserve the venv entrypoint; resolving its symlink selects base Python.
-    os.environ.update(XTOKEN_GYM_PYTHON=os.path.abspath(args.gym_python),
+    os.environ.update(XTOKEN_GYM_ACTOR_PYTHON=os.path.abspath(args.gym_actor_python),
                       XTOKEN_GYM_VENV_DIR=str(args.gym_venvs.resolve()),
                       XTOKEN_GYM_SOURCE=str(args.gym_source.resolve()),
                       XTOKEN_SOURCE_ROOT=str(source), XTOKEN_RAY_ADDRESS=args.ray_address,
@@ -73,6 +75,7 @@ def main():
     teacher["train_global_batch_size"] = 4
     resolved = OmegaConf.to_container(cfg, resolve=True)
     validate_on_policy_config(MasterConfig(**resolved))
+    gym_actor_runtime_env(resolved["on_policy"]["nemo_gym"], source, os.environ)
     model = json.loads((args.student / "config.json").read_text())
     for key, expected in {"model_type": "qwen3", "hidden_size": 2048,
                           "num_hidden_layers": 28, "tie_word_embeddings": True}.items():
@@ -87,7 +90,7 @@ def main():
                   "source_sha256": source_snapshot(source)["sha256"]}
     (run / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
     print(json.dumps({"run_dir": str(run), "steps": 2, "mode": "on",
-                      "backend": "nemo_gym", "gym_python": resolved["on_policy"]["nemo_gym"]["worker_python"]}))
+                      "backend": "nemo_gym", "gym_actor_python": resolved["on_policy"]["nemo_gym"]["actor_python"]}))
 
 
 if __name__ == "__main__":

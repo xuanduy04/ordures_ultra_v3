@@ -25,13 +25,16 @@ def main():
 
     root = Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(root))
-    from nemo_rl.algorithms.x_token.gym_compat import reject_inherited_gym_config, validate_ray_address
+    from nemo_rl.algorithms.x_token.gym_compat import (
+        reject_inherited_gym_config, validate_ray_address, gym_actor_runtime_env, validate_gym_actor_report,
+    )
     from nemo_rl.algorithms.x_token.gym_protocol import restore_order
     import os
 
     reject_inherited_gym_config(os.environ)
     cfg = OmegaConf.to_container(OmegaConf.load(config_path), resolve=True)
     knobs = cfg["on_policy"]["nemo_gym"]
+    runtime = gym_actor_runtime_env(knobs, root, os.environ)
     lease = json.loads(args.allocation_receipt.read_text())
     assert lease["success"] and lease["ray_ownership_verified"]
     assert 0 <= (datetime.now(timezone.utc) - datetime.fromisoformat(lease["checked_at_utc"])).total_seconds() < 300
@@ -45,12 +48,20 @@ def main():
 
         @ray.remote(num_cpus=0, max_restarts=0, max_task_retries=0)  # pragma: no cover
         class Stream:
+            def runtime_identity(self, gym_root):
+                from tools.xtoken_all.runtime_probe import probe
+
+                return probe("gym_actor", Path(gym_root))
+
             async def values(self):
                 yield 1, "second"
                 await asyncio.sleep(0.01)
                 yield 0, "first"
 
-        actor = Stream.remote()
+        actor = Stream.options(runtime_env=runtime).remote()
+        actor_report = ray.get(actor.runtime_identity.remote(knobs["source_root"]),
+                               timeout=knobs["result_timeout_s"])
+        validate_gym_actor_report(actor_report, runtime)
         stream = actor.values.remote()
         returned = []
         deadline = time.monotonic() + knobs["ray_probe_timeout_s"]
@@ -68,7 +79,8 @@ def main():
         path.write_text(json.dumps({"success": True, "effective_config_sha256": config_hash,
             "checked_at_utc": datetime.now(timezone.utc).isoformat(), "ray_node_ids": node_ids,
             "received_indices": [index for index, _ in returned], "gpu_tasks_submitted": 0,
-            "scope": "Async actor generator -> ray.wait -> ray.get -> restore_order; no model training"}, indent=2) + "\n")
+            "actor_runtime": actor_report,
+            "scope": "NemoGym real imports in matching Ray runtime; async generator -> ray.wait/get -> restore_order; no model training"}, indent=2) + "\n")
     finally:
         if stream is not None and not completed:
             ray.cancel(stream)

@@ -30,6 +30,8 @@ def validate_on_policy_config(config):
     if "rollout_backend" in knobs and knobs["rollout_backend"] == "nemo_gym":
         from nemo_rl.algorithms.x_token.gym_compat import validate_ray_address
 
+        if "worker_python" in knobs["nemo_gym"] or not knobs["nemo_gym"]["actor_python"]:
+            raise ValueError("Re-render Gym config with explicit actor_python for r7")
         validate_ray_address(knobs["nemo_gym"]["ray_address"])
         if not generation["vllm_cfg"]["async_engine"] or not generation["vllm_cfg"]["expose_http_server"]:
             raise ValueError("Gym requires an async vLLM engine with its HTTP server exposed")

@@ -5,7 +5,7 @@ on_policy:
   rollout_backend: nemo_gym
   prompt_source: nemo_gym
   nemo_gym:
-    worker_python: ${oc.env:XTOKEN_GYM_PYTHON}
+    actor_python: ${oc.env:XTOKEN_GYM_ACTOR_PYTHON}
     venv_dir: ${oc.env:XTOKEN_GYM_VENV_DIR}
     source_root: ${oc.env:XTOKEN_GYM_SOURCE}
     source_contract: ${oc.env:XTOKEN_SOURCE_ROOT}/tools/xtoken_all/super-source-contract.json

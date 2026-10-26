@@ -2,7 +2,54 @@
 
 import hashlib
 import json
+import os
 from pathlib import Path
+
+
+def gym_actor_runtime_env(knobs, source_root, environ):
+    """Mirror Super create_env's actor env merge, using only an existing venv.
+
+    Super resolves NemoGym through the actor registry and the per-actor venv
+    store. X-Token pins that provisioned interpreter explicitly to avoid the
+    provisioning branch of create_local_venv_on_each_node in production.
+    Gym service interpreters are selected separately by the SDK's venv_dir.
+    """
+    reject_inherited_gym_config(environ)
+    if "worker_python" in knobs:
+        raise ValueError("Re-render r7 with actor_python; worker_python conflated actor and service runtimes")
+    executable = Path(os.path.abspath(knobs["actor_python"]))
+    services = Path(knobs["venv_dir"]).resolve()
+    if not executable.is_file() or not services.is_dir():
+        raise FileNotFoundError("Existing NemoGym actor interpreter and service venv store are required")
+    if executable.parent.resolve().is_relative_to(services):
+        raise ValueError("NemoGym actor_python must not point into the thin Gym service venv store")
+    inherited_path = environ["PYTHONPATH"] if "PYTHONPATH" in environ else ""
+    env = dict(environ)
+    env.update(UV_OFFLINE="1", HF_HUB_OFFLINE="1", PYTHONDONTWRITEBYTECODE="1",
+               PYTHONPATH=os.pathsep.join(part for part in
+                   (str(Path(source_root).resolve()), str(Path(knobs["source_root"]).resolve()), inherited_path) if part),
+               VIRTUAL_ENV=str(executable.parent.parent),
+               UV_PROJECT_ENVIRONMENT=str(executable.parent.parent),
+               NEMO_GYM_VENV_DIR=str(services))
+    return {"py_executable": str(executable), "env_vars": env}
+
+
+def validate_gym_actor_report(report, runtime):
+    """Bind successful real imports to the interpreter used to launch NemoGym."""
+    executable = Path(runtime["py_executable"])
+    if report["role"] != "gym_actor" or os.path.abspath(report["python_executable"]) != str(executable):
+        raise ValueError("Gym actor probe used another interpreter")
+    if Path(report["python_prefix"]).resolve() != executable.parent.parent.resolve():
+        raise ValueError("Gym actor probe lost its virtualenv prefix")
+    paths = runtime["env_vars"]["PYTHONPATH"].split(os.pathsep)
+    if Path(report["module"]).resolve() != Path(paths[0]) / "nemo_rl/environments/nemo_gym.py":
+        raise ValueError("Gym actor probe imported another NeMo source tree")
+    if Path(report["gym_source_root"]).resolve() != Path(paths[1]):
+        raise ValueError("Gym actor probe imported another Gym source tree")
+    if report["actor_import_completed"] is not True or report["cuda_operations_requested"] is not False:
+        raise ValueError("Missing CPU-only import check of the real NemoGym actor")
+    if set(report["checked_actor_apis"]) != {"_spinup", "run_rollouts", "shutdown"}:
+        raise ValueError("Incomplete NemoGym actor API check")
 
 
 def reject_inherited_gym_config(environ):

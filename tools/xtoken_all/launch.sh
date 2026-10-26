@@ -27,8 +27,11 @@ assert hashlib.sha256((run / 'effective.yaml').read_bytes()).hexdigest() == meta
 assert source_snapshot(Path.cwd())['sha256'] == meta['source_sha256'], 'Source changed since render'
 from omegaconf import OmegaConf
 cfg = OmegaConf.to_container(OmegaConf.load(run / 'effective.yaml'), resolve=True)
-from nemo_rl.algorithms.x_token.gym_compat import reject_inherited_gym_config, verify_gym_source
+from nemo_rl.algorithms.x_token.gym_compat import (
+    reject_inherited_gym_config, verify_gym_source, gym_actor_runtime_env, validate_gym_actor_report,
+)
 reject_inherited_gym_config(os.environ)
+actor_runtime = gym_actor_runtime_env(cfg['on_policy']['nemo_gym'], Path.cwd(), os.environ)
 verify_gym_source(cfg['on_policy']['nemo_gym']['source_root'], cfg['on_policy']['nemo_gym']['source_contract'])
 assert sha256(cfg['data']['train']['data_path']) == meta['data_sha256']
 assert sha256(cfg['teachers'][0]['projection_matrix_path']) == meta['projection_sha256']
@@ -42,6 +45,12 @@ for name in ('teacher-probe', 'assets-check', 'source-check', 'gym-preflight', '
         policy = OmegaConf.to_container(OmegaConf.load(policy_path), resolve=True)
         assert receipt['teacher_probe_policy_sha256'] == sha256(policy_path)
         validate_teacher_probe(receipt, policy)
+    if name in ('gym-preflight', 'ray-stream-check'):
+        validate_gym_actor_report(receipt['actor_runtime'], actor_runtime)
+    if name == 'gym-preflight':
+        services = receipt['service_imports']
+        assert len(services) == 3 and {item['service'] for item in services} == {'model', 'qa', 'agent'}
+        assert all(item['app_import_completed'] and not item['servers_started'] for item in services)
 lease = json.loads(allocation.read_text())
 assert lease['success'] and lease['gpu_indices'] == [0, 1, 2, 3] and lease['ray_ownership_verified']
 assert lease['ray_address'] == cfg['on_policy']['nemo_gym']['ray_address'], 'Ray head differs from rendered config'

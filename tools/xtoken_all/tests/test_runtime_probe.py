@@ -98,3 +98,49 @@ def test_policy_still_requires_automodel_metadata(monkeypatch):
     with pytest.raises(runtime.importlib.metadata.PackageNotFoundError):
         runtime.probe("policy", None)
     assert requested == ["torch", "transformers", "ray", "nemo-automodel"]
+
+
+def test_actor_probe_imports_full_actor_and_sdk_without_generation_packages(monkeypatch, tmp_path):
+    class Actor:
+        def _spinup(self):
+            pass
+
+        async def run_rollouts(self):
+            yield None
+
+        def shutdown(self):
+            pass
+
+    sdk = SimpleNamespace(PARENT_DIR=tmp_path, __file__=tmp_path / "nemo_gym/__init__.py")
+    actor_module = SimpleNamespace(__file__=ROOT / "nemo_rl/environments/nemo_gym.py",
+        NemoGym=SimpleNamespace(__ray_metadata__=SimpleNamespace(modified_class=Actor)))
+    modules = {"nemo_rl.environments.nemo_gym": actor_module, "nemo_gym": sdk,
+        "nemo_rl.algorithms.x_token.gym_compat": SimpleNamespace(),
+        "nemo_gym.cli": SimpleNamespace(RunHelper=object),
+        "nemo_gym.rollout_collection": SimpleNamespace(RolloutCollectionHelper=object)}
+    imported, versions = [], []
+
+    def import_module(name):
+        imported.append(name)
+        return modules[name]
+
+    def version(name):
+        versions.append(name)
+        if name in ("nemo-automodel", "vllm"):
+            raise AssertionError("Actor must not require policy/generation-only packages")
+        return "installed-version"
+
+    monkeypatch.setattr(runtime.importlib, "import_module", import_module)
+    monkeypatch.setattr(runtime.importlib.metadata, "version", version)
+    report = runtime.probe("gym_actor", tmp_path)
+    assert report["actor_import_completed"] is True
+    assert report["checked_actor_apis"] == ["_spinup", "run_rollouts", "shutdown"]
+    assert "nemo_rl.algorithms.x_token.gym_compat" in imported
+    assert versions == ["torch", "transformers", "ray"]
+
+    def synchronous_rollouts(self):
+        return iter(())
+
+    monkeypatch.setattr(Actor, "run_rollouts", synchronous_rollouts)
+    with pytest.raises(TypeError, match="async generator"):
+        runtime.probe("gym_actor", tmp_path)

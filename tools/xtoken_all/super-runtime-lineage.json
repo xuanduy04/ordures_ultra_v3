@@ -1,0 +1,26 @@
+{
+  "reference_archive": "nemo_rl-2026-10-26-1711.tar.gz",
+  "archive_sha256": "4dfdc4f3f8c701bf33bd34c5aef795ba464950953171d89558e4da46945002cd",
+  "reference_files": {
+    "nemo_rl/environments/utils.py": "60f37fe0f525458303ba8f1e3630ad72a1cb99f0b94d94aaf7a474a3072fe73e",
+    "nemo_rl/distributed/ray_actor_environment_registry.py": "e7803872bccd2b45354c9d7fe687c520293f932228ca2c27a55cd52ff723ca44",
+    "nemo_rl/distributed/virtual_cluster.py": "ebd878ee994b7f7037e1675784cf2b1e8203efc9db1b21727eb4f7b688a0a477",
+    "nemo_rl/utils/venvs.py": "1d0761f430ac1efad7080a90ab0acb4d37d28c7df2f742f3974203aa71dc1f76"
+  },
+  "runtime_roles": {
+    "NemoGym_actor": "Super actor registry -> per-actor venv store / actor FQN / bin/python; explicitly pinned and checked, no provisioning",
+    "vllm_engine": "existing VllmAsyncGenerationWorker venv",
+    "gym_http_services": "SDK selects responses_api_models/vllm_model, responses_api_agents/simple_agent, resources_servers/general_qa under separate venv_dir"
+  },
+  "adaptations": [
+    "actor_python is explicit; do not call provisioning helper in fixed production runtime",
+    "preflight, Ray CPU handshake, and training actor share gym_actor_runtime_env",
+    "inherit process environment and set actor venv variables as Super create_env does",
+    "Gym services import only their own app; no training-stack requirement added"
+  ],
+  "launcher_references": {
+    "multinode_main.sh": "83917fff32725aba866deaab8c72688ad1670ea27deec129982ec246aa112eb9",
+    "vt_super.yaml": "46f7d06294762398ba5a564d8f7e60bde749ffdbc2dcd6efccf38252021c818e"
+  },
+  "launcher_reuse_boundary": "Follow existing source overlay, actor registry and separate venv roles; X-Token update schedule/loss remain the explicit adaptation, not a replay of GRPO training."
+}

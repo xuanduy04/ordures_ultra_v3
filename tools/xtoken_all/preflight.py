@@ -14,6 +14,19 @@ from integrity import sha256, source_snapshot
 SOURCE = Path(__file__).resolve().parents[2]
 
 
+def run_report(command, env, prefix, timeout):
+    completed = subprocess.run(command, env=env, capture_output=True, text=True, timeout=timeout)
+    if completed.returncode:
+        print(completed.stdout, end="", flush=True)
+        print(completed.stderr, end="", file=sys.stderr, flush=True)
+        completed.check_returncode()
+    reports = [json.loads(line.split("=", 1)[1]) for line in completed.stdout.splitlines()
+               if line.startswith(prefix + "=")]
+    if len(reports) != 1:
+        raise ValueError("Probe did not return exactly one report: " + prefix)
+    return reports[0]
+
+
 def gym_only(config_path):
     sys.path.insert(0, str(SOURCE))
     from nemo_gym import PARENT_DIR
@@ -22,11 +35,16 @@ def gym_only(config_path):
     from omegaconf import DictConfig, OmegaConf
     from nemo_rl.algorithms.x_token.gym_compat import (
         reject_inherited_gym_config, verify_gym_source, validate_resolved_gym_models,
+        gym_actor_runtime_env, validate_gym_actor_report,
     )
+    from runtime_probe import probe
 
     reject_inherited_gym_config(os.environ)
     cfg = OmegaConf.to_container(OmegaConf.load(config_path), resolve=True)
     knobs = cfg["on_policy"]["nemo_gym"]
+    runtime = gym_actor_runtime_env(knobs, SOURCE, os.environ)
+    actor_report = probe("gym_actor", Path(knobs["source_root"]))
+    validate_gym_actor_report(actor_report, runtime)
     verify_gym_source(knobs["source_root"], knobs["source_contract"])
     assert Path(PARENT_DIR).resolve() == Path(knobs["source_root"]).resolve(), "Gym import points to a different checkout"
     initial = dict(knobs["global_config"])
@@ -47,15 +65,26 @@ def gym_only(config_path):
         assert "entrypoint" in resolved[top][kind][name], top
         command = setup_env_command(Path(PARENT_DIR) / kind / name, resolved, top)
         assert "uv venv" not in command and "pip install" not in command and "uv sync" not in command, "Gym would provision dependencies: " + top
-    for kind, name in (("responses_api_models", "vllm_model"),
-                        ("resources_servers", "general_qa"), ("responses_api_agents", "simple_agent")):
+    services = []
+    for kind, name, role in (("responses_api_models", "vllm_model", "model"),
+                            ("resources_servers", "general_qa", "qa"),
+                            ("responses_api_agents", "simple_agent", "agent")):
         root = Path(knobs["venv_dir"])
         venv = root / kind / name / ".venv"
         if root.resolve() == Path(PARENT_DIR).resolve():
             venv = Path(PARENT_DIR) / kind / name / ".venv"
-        subprocess.run([str(venv / "bin/python"), "-B", str(SOURCE / "tools/xtoken_all/runtime_probe.py"),
-                        "--role", "gym", "--gym-root", knobs["source_root"]], timeout=60, check=True)
+        service_env = dict(os.environ)
+        service_env.update(VIRTUAL_ENV=str(venv), UV_PROJECT_ENVIRONMENT=str(venv))
+        report = run_report([str(venv / "bin/python"), "-B", str(SOURCE / "tools/xtoken_all/gym_service_probe.py"),
+                             "--service", role, "--gym-root", knobs["source_root"]],
+                            service_env, "XTOKEN_GYM_SERVICE_PROBE", 60)
+        if report["app_import_completed"] is not True or report["servers_started"] is not False:
+            raise ValueError("Missing real service import check")
+        if Path(report["python_prefix"]).resolve() != venv.resolve():
+            raise ValueError("Gym service probe lost its own virtualenv prefix")
+        services.append(report)
     print("XTOKEN_GYM_PREFLIGHT_OK", flush=True)
+    return {"actor_runtime": actor_report, "service_imports": services}
 
 
 def check(run):
@@ -73,7 +102,7 @@ def check(run):
     from nemo_rl.algorithms.x_token.gym_protocol import prepare_example
     from nemo_rl.algorithms.x_token.loss_utils import get_sparse_projection_matrix
     from nemo_rl.algorithms.x_token.on_policy import validate_on_policy_config
-    from nemo_rl.algorithms.x_token.gym_compat import reject_inherited_gym_config, verify_gym_source
+    from nemo_rl.algorithms.x_token.gym_compat import reject_inherited_gym_config, verify_gym_source, gym_actor_runtime_env
     from nemo_rl.algorithms.xtoken_off_policy_distillation import MasterConfig
 
     reject_inherited_gym_config(os.environ)
@@ -83,6 +112,7 @@ def check(run):
     assert config_hash == meta["effective_config_sha256"]
     assert source_snapshot(SOURCE)["sha256"] == meta["source_sha256"], "Source changed after render"
     validate_on_policy_config(MasterConfig(**cfg))
+    actor_runtime = gym_actor_runtime_env(cfg["on_policy"]["nemo_gym"], SOURCE, os.environ)
     gym_contract = verify_gym_source(cfg["on_policy"]["nemo_gym"]["source_root"],
                                       cfg["on_policy"]["nemo_gym"]["source_contract"])
     project_metadata = {}
@@ -144,20 +174,21 @@ def check(run):
     for worker, role in zip(workers, ("policy", "generation")):
         executable = store / worker / "bin/python"
         assert executable.is_file(), worker
-        completed = subprocess.run([str(executable), "-B", str(SOURCE / "tools/xtoken_all/runtime_probe.py"), "--role", role], env=env,
-                                   capture_output=True, text=True, timeout=180, check=True)
-        reports = [json.loads(line.split("=", 1)[1]) for line in completed.stdout.splitlines()
-                   if line.startswith("XTOKEN_RUNTIME_PROBE=")]
-        assert len(reports) == 1, "Worker did not return a structured API report"
-        runtime_apis.append(reports[0])
+        report = run_report([str(executable), "-B", str(SOURCE / "tools/xtoken_all/runtime_probe.py"), "--role", role],
+                             env, "XTOKEN_RUNTIME_PROBE", 180)
+        runtime_apis.append(report)
         paths.append(str(executable))
+    gym_report = run_report([actor_runtime["py_executable"], "-B", __file__,
+                             "--gym-only", str(config_path)], actor_runtime["env_vars"],
+                            "XTOKEN_GYM_PREFLIGHT", 180)
+    runtime_apis.append(gym_report["actor_runtime"])
+    paths.append(actor_runtime["py_executable"])
     receipt("source-check", source_sha256=meta["source_sha256"], checked_interpreters=len(paths),
             runtime_apis=runtime_apis, project_metadata=project_metadata)
-    subprocess.run([cfg["on_policy"]["nemo_gym"]["worker_python"], "-B", __file__,
-                    "--gym-only", str(config_path)], env=env, timeout=180, check=True)
     receipt("gym-preflight", skip_load_from_dotenv=True, servers_started=False,
             judge_inference_enabled=False, reviewed_source=gym_contract,
-            scope="Config resolution and source imports in all preprovisioned Gym sub-venvs")
+            **gym_report,
+            scope="Real NemoGym actor imports/API in actor venv; config resolution; actual app imports in three service venvs")
 
 
 def main():
@@ -167,7 +198,7 @@ def main():
     group.add_argument("--gym-only", type=Path)
     args = parser.parse_args()
     if args.gym_only:
-        gym_only(args.gym_only)
+        print("XTOKEN_GYM_PREFLIGHT=" + json.dumps(gym_only(args.gym_only)), flush=True)
     else:
         check(args.run_dir.resolve())
 

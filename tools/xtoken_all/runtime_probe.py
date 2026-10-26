@@ -30,6 +30,7 @@ def probe(role, gym_root):
     module_name = {
         "policy": "nemo_rl.models.policy.workers.dtensor_policy_worker_v2",
         "generation": "nemo_rl.models.generation.vllm.vllm_worker_async",
+        "gym_actor": "nemo_rl.environments.nemo_gym",
     }[role]
     module = importlib.import_module(module_name)
     if Path(module.__file__).resolve() != ROOT / (module_name.replace(".", "/") + ".py"):
@@ -37,6 +38,27 @@ def probe(role, gym_root):
     result["module"] = module_path(module)
     for name in ("torch", "transformers", "ray"):
         result[name] = importlib.metadata.version(name)
+    if role == "gym_actor":
+        sdk = importlib.import_module("nemo_gym")
+        if Path(sdk.PARENT_DIR).resolve() != gym_root.resolve():
+            raise ValueError("NemoGym actor imported another Gym source tree")
+        importlib.import_module("nemo_rl.algorithms.x_token.gym_compat")
+        cli = importlib.import_module("nemo_gym.cli")
+        collection = importlib.import_module("nemo_gym.rollout_collection")
+        if not callable(cli.RunHelper) or not callable(collection.RolloutCollectionHelper):
+            raise TypeError("Missing Gym orchestration API")
+        cls = module.NemoGym
+        if hasattr(cls, "__ray_metadata__"):
+            cls = cls.__ray_metadata__.modified_class
+        apis = ("_spinup", "run_rollouts", "shutdown")
+        for name in apis:
+            if not callable(getattr(cls, name)):
+                raise TypeError("Missing NemoGym actor API: " + name)
+        if not inspect.isasyncgenfunction(cls.run_rollouts):
+            raise TypeError("NemoGym.run_rollouts must be an async generator")
+        result.update(actor_import_completed=True, checked_actor_apis=list(apis),
+                      gym_module=module_path(sdk), gym_source_root=str(gym_root.resolve()))
+        return result
     if role == "generation":
         result["vllm"] = importlib.metadata.version("vllm")
         cls = module.VllmAsyncGenerationWorker
@@ -77,10 +99,10 @@ def probe(role, gym_root):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--role", choices=("policy", "generation", "gym"), required=True)
+    parser.add_argument("--role", choices=("policy", "generation", "gym", "gym_actor"), required=True)
     parser.add_argument("--gym-root", type=Path)
     args = parser.parse_args()
-    if args.role == "gym" and args.gym_root is None:
+    if args.role in ("gym", "gym_actor") and args.gym_root is None:
         parser.error("Gym probe requires --gym-root")
     print("XTOKEN_RUNTIME_PROBE=" + json.dumps(probe(args.role, args.gym_root)), flush=True)
 
