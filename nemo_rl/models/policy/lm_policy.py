@@ -12,6 +12,7 @@ from ray.util.queue import Queue as RayQueue
 from transformers import AutoProcessor, PreTrainedTokenizerBase
 
 from nemo_rl.algorithms.interfaces import LossFunction
+from nemo_rl.algorithms.x_token.ipc import aggregate_per_sample_handles
 from nemo_rl.distributed.batched_data_dict import (
     BatchedDataDict,
     DynamicBatchingArgs,
@@ -524,6 +525,7 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
         gbs: Optional[int] = None,
         mbs: Optional[int] = None,
         timer: Optional[Timer] = None,
+        check_dim_skip_keys=None,
     ) -> dict[str, Any]:
         """Train the policy on a batch of data with a given loss function."""
         batch_size = gbs or self.cfg["train_global_batch_size"]
@@ -586,6 +588,7 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
                     "eval_mode": eval_mode,
                     "gbs": batch_size,
                     "mbs": micro_batch_size,
+                    **({"check_dim_skip_keys": check_dim_skip_keys} if check_dim_skip_keys is not None else {}),
                 },
             )
         del sharded_data
@@ -965,3 +968,66 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
             table.add_row(row)
 
         print(table)
+
+    def get_full_logits_ipc(
+        self,
+        data: BatchedDataDict[GenerationDatumSpec],
+        micro_batch_size: Optional[int] = None,
+        timer: Optional[Timer] = None,
+    ) -> list[dict[str, Any]]:
+        """Ship the teacher's full-vocab logits to the student via CUDA IPC.
+
+        Used by cross-tokenizer distillation; supports heterogeneous teacher
+        TP/CP. Gathers each worker's ``{"dp_rank", "per_sample_handles"}`` and
+        returns the global-batch-ordered list produced by
+        :func:`aggregate_per_sample_handles`: a length-``gbs`` list where
+        element ``i`` is ``{"teacher_shards": [shard, ...]}`` holding every
+        TP×CP shard of global sample ``i``. Each shard carries the IPC payload
+        plus the ``buf_idx`` / ``sample_index_in_buf`` slot index and the TP/CP
+        shard metadata; the loss consumer reassembles the full ``[T_t, V_t]``
+        teacher logits (or its CP-local window) from these shards.
+
+        The producer-side IPC storage is persistent and reused across calls
+        (via ``copy_``); the caller releases it once via
+        :meth:`release_ipc_buffer` at the end of training / validation (and on
+        error), not per call.
+
+        v0 limitation: no dynamic batching, no sequence packing.
+        """
+        if self.use_dynamic_batches or self.use_sequence_packing:
+            raise NotImplementedError(
+                "get_full_logits_ipc does not support dynamic batching "
+                "or sequence packing in v0."
+            )
+        dp_size = self.data_parallel_size
+        with timer.time("get_full_logits_ipc/shard_data") if timer else nullcontext():
+            sharded_data = data.shard_by_batch_size(  # type: ignore
+                dp_size,
+                batch_size=None,
+            )
+        with timer.time("get_full_logits_ipc/submit") if timer else nullcontext():
+            futures = self.worker_group.run_all_workers_sharded_data(
+                "get_full_logits_ipc",
+                data=sharded_data,
+                in_sharded_axes=["data_parallel"],
+                replicate_on_axes=[
+                    "context_parallel",
+                    "tensor_parallel",
+                    "pipeline_parallel",
+                ],
+                # Keep every TP × CP output; consumer routes via overlap.
+                output_is_replicated=["pipeline_parallel"],
+                common_kwargs={"micro_batch_size": micro_batch_size},
+            )
+        worker_results = self.worker_group.get_all_worker_results(futures)
+        return aggregate_per_sample_handles(worker_results)
+
+    def release_ipc_buffer(self) -> None:
+        """Tell all workers to drop their stashed IPC tensors."""
+        futures = self.worker_group.run_all_workers_single_data("release_ipc_buffer")
+        ray.get(futures)
+
+    @property
+    def data_parallel_size(self):
+        """Expose the production sharding annotation to the X-Token loop."""
+        return self.sharding_annotations.get_axis_size("data_parallel")

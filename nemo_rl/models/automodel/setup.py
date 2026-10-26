@@ -25,6 +25,7 @@ from transformers import AutoConfig, AutoProcessor, AutoTokenizer, PreTrainedMod
 from transformers.models.gemma3.modeling_gemma3 import Gemma3ForCausalLM
 
 from nemo_rl.models.automodel.config import ModelAndOptimizerState, RuntimeConfig
+from nemo_rl.models.automodel.runtime_compat import create_fsdp2_manager
 from nemo_rl.models.policy import PolicyConfig
 from nemo_rl.models.policy.utils import configure_dynamo_cache, resolve_model_class
 
@@ -247,7 +248,8 @@ def setup_distributed(
     sequence_parallel_enabled = config["dtensor_cfg"]["sequence_parallel"]
 
     # Create FSDP2 manager
-    manager = FSDP2Manager(
+    manager = create_fsdp2_manager(
+        FSDP2Manager,
         dp_size=dp_size,
         dp_replicate_size=1,
         tp_size=tp_size,
@@ -276,7 +278,8 @@ def setup_distributed(
                 "CPUOffload doesn't work on single GPU for AutoModel. "
                 "If you need this feature, please file an issue on https://github.com/NVIDIA-NeMo/Automodel."
             )
-        manager._setup_distributed()
+        if hasattr(manager, "_setup_distributed"):
+            manager._setup_distributed()
 
     return manager
 

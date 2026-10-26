@@ -1,0 +1,170 @@
+{
+  "recorded_at": "2026-10-23T09:07:07.667600+00:00",
+  "status": "partial: source port and math/transport validated; native runtime blocked",
+  "production_qualified": false,
+  "production_base": "da929379634d7dc1e8546019e85b9b76839479af",
+  "upstream_commit": "81aa43dda4765b0429cf31dab44441e4e4383911",
+  "custom_company_image": null,
+  "receipts": {
+    "cpu-math": {
+      "image": "nvcr.io/nvidia/nemo-rl@sha256:060a3337d167e66230ce8b3dac9e9b733ad25bc997f8a0121eebccf81cbf1b23",
+      "source_sha256": "a5ed8503a1ca74580b5a20e0223fba6ec2ab1d337b306b7d717b68c8e637ccf4",
+      "exit_code": 0,
+      "scope": "auxiliary CPU alignment/loss tests, not custom production-image qualification",
+      "suites": [
+        {
+          "name": "pytest",
+          "errors": "0",
+          "failures": "0",
+          "skipped": "2",
+          "tests": "123",
+          "time": "90.888",
+          "timestamp": "2026-10-23T09:02:36.160771+00:00",
+          "hostname": "modal"
+        }
+      ]
+    },
+    "math-one": {
+      "image": "nvcr.io/nvidia/nemo-rl@sha256:060a3337d167e66230ce8b3dac9e9b733ad25bc997f8a0121eebccf81cbf1b23",
+      "source_sha256": "a5ed8503a1ca74580b5a20e0223fba6ec2ab1d337b306b7d717b68c8e637ccf4",
+      "exit_code": 0,
+      "gpu_names": [
+        "NVIDIA B200"
+      ],
+      "torch": "2.10.0+cu129",
+      "cuda": "12.9",
+      "scope": "stock NGC source-overlay validation; custom production image pending",
+      "suites": [
+        {
+          "name": "pytest",
+          "errors": "0",
+          "failures": "0",
+          "skipped": "1",
+          "tests": "4",
+          "time": "59.559",
+          "timestamp": "2026-10-23T09:02:09.757427+00:00",
+          "hostname": "modal"
+        }
+      ]
+    },
+    "math-two": {
+      "image": "nvcr.io/nvidia/nemo-rl@sha256:060a3337d167e66230ce8b3dac9e9b733ad25bc997f8a0121eebccf81cbf1b23",
+      "source_sha256": "c30513bf21aafad9d837f0725bb564c3dbcb547218b461ebe384fbfdab95e901",
+      "exit_code": 0,
+      "gpu_names": [
+        "NVIDIA B200",
+        "NVIDIA B200"
+      ],
+      "torch": "2.10.0+cu129",
+      "cuda": "12.9",
+      "scope": "stock NGC source-overlay validation; custom production image pending",
+      "suites": [
+        {
+          "name": "pytest",
+          "errors": "0",
+          "failures": "0",
+          "skipped": "0",
+          "tests": "39",
+          "time": "157.574",
+          "timestamp": "2026-10-23T09:00:02.998263+00:00",
+          "hostname": "modal"
+        }
+      ]
+    },
+    "gpu-two": {
+      "image": "nvcr.io/nvidia/nemo-rl@sha256:060a3337d167e66230ce8b3dac9e9b733ad25bc997f8a0121eebccf81cbf1b23",
+      "source_sha256": "8c63d8ce883153432a300b7175c18db667a536cbf54969781f1d919fe713c6fe",
+      "exit_code": 1,
+      "gpu_names": [
+        "NVIDIA B200",
+        "NVIDIA B200"
+      ],
+      "torch": "2.10.0+cu129",
+      "cuda": "12.9",
+      "scope": "stock NGC source-overlay validation; custom production image pending",
+      "suites": [
+        {
+          "name": "pytest",
+          "errors": "0",
+          "failures": "1",
+          "skipped": "0",
+          "tests": "40",
+          "time": "122.458",
+          "timestamp": "2026-10-23T08:55:08.165678+00:00",
+          "hostname": "modal"
+        }
+      ]
+    },
+    "compatibility": {
+      "image": "nvcr.io/nvidia/nemo-rl@sha256:060a3337d167e66230ce8b3dac9e9b733ad25bc997f8a0121eebccf81cbf1b23",
+      "exit_code": 0,
+      "compatible": false,
+      "signature": "(config: nemo_automodel.components.distributed.config.FSDP2Config, device_mesh: torch.distributed.device_mesh.DeviceMesh, moe_mesh: Optional[torch.distributed.device_mesh.DeviceMesh] = None)",
+      "missing_kwargs": [
+        "dp_size",
+        "dp_replicate_size",
+        "tp_size",
+        "cp_size",
+        "ep_size",
+        "pp_size",
+        "sequence_parallel",
+        "use_hf_tp_plan",
+        "mp_policy",
+        "offload_policy",
+        "backend",
+        "world_size",
+        "activation_checkpointing",
+        "custom_tp_plan",
+        "defer_fsdp_grad_sync"
+      ]
+    }
+  },
+  "not_run": [
+    "full off-policy entrypoint two-update training",
+    "full on-policy entrypoint with actual vLLM refit and two student updates",
+    "company custom image qualification",
+    "Llama-3.1-8B / Qwen3-235B full-model training",
+    "dedicated teacher-node network transport"
+  ],
+  "native_failure": "FSDP2Manager.__init__() got an unexpected keyword argument dp_size",
+  "native_failure_app": "ap-1fCJVgihh2DKwT1DeeEV6d",
+  "auxiliary_math_native_exclusion": "native_dtensor test deselected explicitly; not counted as passed",
+  "remote_return_caveat": "math-one/two JUnit and remote exit_code=0 passed; local CLI return initially failed to deserialize torch.TorchVersion. Runner now converts it to str, and receipts were recovered via a CPU-only JSON round trip.",
+  "receipt_recovery_app": "ap-HLi24d6e6pWXVp7pc2hGma",
+  "gpu_two_snapshot_delta": "Subsequent source edits made alignment length/padding defaults explicit in YAML and tightened rollout/same-vocab guards; final CPU and single-GPU tests cover the later source. Loss, IPC, TP/CP math unchanged.",
+  "post_test_source_delta": "lm_policy.py trailing EOF blank line removed only",
+  "source_audit": {
+    "python_files_parsed": 34,
+    "comments_preserved": true,
+    "new_two_arg_dict_get": false
+  },
+  "billing": {
+    "cost_usd": "3.32621178",
+    "apps": [
+      "ap-1fCJVgihh2DKwT1DeeEV6d",
+      "ap-5EQZXt17ZN7V0kIjrUVZjd",
+      "ap-6B7cvJbvwJoeVJYX9R3deL",
+      "ap-9KjaKNpQWQgbNoXgQhnetT",
+      "ap-BHjr7vYM8XDtrEjyXrGgBT",
+      "ap-HLi24d6e6pWXVp7pc2hGma",
+      "ap-K8lPZVJuLsBpy6qPb1Xuuk",
+      "ap-QI3DS4afLYHzCrQuHF2hG6",
+      "ap-RsiLDXFfES1KomkDOuxlA6",
+      "ap-TUah3xNYB7XbHorIskfD1b",
+      "ap-Wez1RH1fReZ0YZrHrLYpiC",
+      "ap-ZAN0ClBwDPNnx9L3g6G6CF",
+      "ap-gq2bjpY9wE2V29KRF8Tq93",
+      "ap-izLTgWekJ4ngX5tdIfocpq",
+      "ap-oulbDRmBpkebFiFaCOFxR2",
+      "ap-x5pbZd4k547RE8ko5vENh3",
+      "ap-xQfOuYnHReVXI5HqGRxcOu"
+    ],
+    "resource_costs": {
+      "B200": "2.99149756",
+      "Memory": "0.15028388",
+      "CPU": "0.18442974",
+      "Network Egress": "6.0E-7"
+    }
+  },
+  "active_apps": []
+}

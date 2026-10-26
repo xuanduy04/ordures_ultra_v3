@@ -343,6 +343,10 @@ uv run python examples/run_grpo_sliding_puzzle.py
 
 ## On-policy Distillation
 
+The experimental production-fork [X-Token source port](docs/guides/xtoken-distillation.md)
+adds cross-tokenizer off-policy training and fresh student rollouts with vLLM.
+Its guide lists the required local artifacts, supported transport and validation gates.
+
 We provide an example on-policy distillation experiment using the [DeepScaler dataset](https://huggingface.co/agentica-org/DeepScaleR-1.5B-Preview).
 
 ### On-policy Distillation Single Node

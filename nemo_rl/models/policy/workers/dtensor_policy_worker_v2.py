@@ -28,6 +28,8 @@ from transformers import (
 )
 
 from nemo_rl.algorithms.interfaces import LossFunction
+from nemo_rl.algorithms.x_token.ipc import ensure_teacher_ipc_buffer
+from nemo_rl.models.automodel.train import FullLogitsPostProcessor
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.models.automodel.data import (
     check_sequence_dim,
@@ -238,6 +240,8 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
         # Set instance attributes from distributed manager (tuple unpacking for mesh attributes)
         self.rank = torch.distributed.get_rank()
         self.timer = Timer(context={"worker": "dtensor_policy_v2", "rank": self.rank})
+        self._teacher_ipc_storage = None
+        self._teacher_ipc_handle = None
         self.device_mesh = distributed_manager.device_mesh
         self.dp_cp_mesh = self.device_mesh["dp_cp"]
         self.dp_mesh = self.device_mesh["dp"]
@@ -316,6 +320,7 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
         eval_mode: bool = False,
         gbs: Optional[int] = None,
         mbs: Optional[int] = None,
+        check_dim_skip_keys=None,
     ) -> dict[str, Any]:
         """Train the policy on a batch of data with a given loss function."""
         self.timer.start("train")
@@ -333,7 +338,7 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
         num_global_batches = int(total_dataset_size.item()) // gbs
 
         # Validate sequence dimension
-        sequence_dim, _ = check_sequence_dim(data)
+        sequence_dim, _ = check_sequence_dim(data, skip_keys=check_dim_skip_keys)
 
         if eval_mode:
             ctx: AbstractContextManager[Any] = torch.no_grad()
@@ -1079,3 +1084,147 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
                 config_updates=config_updates,
                 checkpoint_root=checkpoint_root,
             )
+
+    def get_full_logits_ipc(
+        self,
+        data: BatchedDataDict[Any],
+        micro_batch_size: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Teacher forward; full-vocab logits exposed via persistent CUDA IPC storage.
+
+        Used by cross-tokenizer distillation; supports heterogeneous teacher
+        TP/CP. Each microbatch writes into slot
+        ``self._teacher_ipc_storage[buf_idx]`` and shares one cached IPC
+        handle. Returns ``{"per_sample_handles": list, "dp_rank": int}`` where
+        each handle carries ``buf_idx`` and ``sample_index_in_buf`` for the
+        consumer to index the slot view, plus the TP/CP shard metadata
+        (``vocab_start_index``, ``global_seq_start``, ...) the consumer uses to
+        route shards across heterogeneous teacher/student TP/CP.
+        """
+        forward_batch_size = (
+            micro_batch_size
+            if micro_batch_size is not None
+            else self.cfg["logprob_batch_size"]
+        )
+        sequence_dim, seq_dim_size = check_sequence_dim(data)
+        target_local_seq = (
+            seq_dim_size // self.cp_size if self.cp_size > 1 else seq_dim_size
+        )
+
+        self.model.eval()
+
+        post_processor = FullLogitsPostProcessor(
+            cfg=self.cfg,
+            device_mesh=self.device_mesh,
+            cp_mesh=self.cp_mesh,
+            tp_mesh=self.tp_mesh,
+            cp_size=self.cp_size,
+            enable_seq_packing=self.enable_seq_packing,
+        )
+
+        tp_rank = self.tp_mesh.get_local_rank() if self.tp_mesh is not None else 0
+        cp_rank = self.cp_mesh.get_local_rank() if self.cp_mesh is not None else 0
+        dp_rank = self.dp_mesh.get_local_rank() if self.dp_mesh is not None else 0
+        world_rank = torch.distributed.get_rank()
+        full_seq_len = target_local_seq * self.cp_size
+        global_seq_start = cp_rank * full_seq_len // self.cp_size
+
+        per_sample_handles: list[dict[str, Any]] = []
+        storage: Optional[torch.Tensor] = None
+        payload_ipc: Optional[tuple[Any, ...]] = None
+        with torch.no_grad():
+            data.to("cuda")
+            processed_iterator, iterator_len = get_microbatch_iterator(
+                data,
+                self.cfg,
+                forward_batch_size,
+                self.dp_mesh,
+                tokenizer=self.tokenizer,
+                cp_size=self.cp_size,
+            )
+            for buf_idx, processed_mb in enumerate(processed_iterator):
+                processed_inputs = processed_mb.processed_inputs
+                with get_train_context(
+                    cp_size=self.cp_size,
+                    cp_mesh=self.cp_mesh,
+                    cp_buffers=processed_inputs.cp_buffers,
+                    sequence_dim=sequence_dim,
+                    dtype=self.dtype,
+                    autocast_enabled=self.autocast_enabled,
+                ):
+                    vals, _metrics, _ = forward_with_post_processing_fn(
+                        model=self.model,
+                        cfg=self.cfg,
+                        post_processing_fn=post_processor,
+                        processed_mb=processed_mb,
+                        is_reward_model=False,
+                        allow_flash_attn_args=self.allow_flash_attn_args,
+                        sequence_dim=sequence_dim,
+                    )
+                if buf_idx >= iterator_len:
+                    continue
+                # Pad to canonical seq so the cached IPC handle stays shape-stable.
+                pad_needed = target_local_seq - vals.shape[1]
+                if pad_needed > 0:
+                    vals = torch.nn.functional.pad(
+                        vals, (0, 0, 0, pad_needed, 0, 0), mode="constant", value=0.0
+                    )
+                batch_size_mb, seq_len_mb, local_vocab_size = vals.shape
+
+                self._teacher_ipc_storage, self._teacher_ipc_handle = (
+                    ensure_teacher_ipc_buffer(
+                        self._teacher_ipc_storage,
+                        self._teacher_ipc_handle,
+                        iterator_len,
+                        batch_size_mb,
+                        target_local_seq,
+                        local_vocab_size,
+                        vals.dtype,
+                        vals.device,
+                    )
+                )
+                storage = self._teacher_ipc_storage
+                payload_ipc = self._teacher_ipc_handle
+                storage[buf_idx, :batch_size_mb, :seq_len_mb, :local_vocab_size].copy_(
+                    vals
+                )
+                del vals
+                full_vocab_size = local_vocab_size * self.tp_size
+                vocab_start_index = tp_rank * local_vocab_size
+                vocab_end_index = (tp_rank + 1) * local_vocab_size
+                for sample_index_in_buf in range(batch_size_mb):
+                    per_sample_handles.append(
+                        {
+                            "payload_ipc": payload_ipc,
+                            "buf_idx": buf_idx,
+                            "sample_index_in_buf": sample_index_in_buf,
+                            "storage_shape": tuple(storage.shape),
+                            "actual_shape": (target_local_seq, local_vocab_size),
+                            "dtype": storage.dtype,
+                            "tp_rank": tp_rank,
+                            "cp_rank": cp_rank,
+                            "tp_size": self.tp_size,
+                            "cp_size": self.cp_size,
+                            "world_rank": world_rank,
+                            "vocab_start_index": vocab_start_index,
+                            "vocab_end_index": vocab_end_index,
+                            "global_seq_start": global_seq_start,
+                            "full_vocab_size": full_vocab_size,
+                            "full_seq_len": full_seq_len,
+                            "vocab_sharded": self.tp_size > 1,
+                            "sequence_sharded": self.cp_size > 1,
+                        }
+                    )
+        # The storage copies above are async on the current stream; force them
+        # to complete before the IPC handles are consumed by the student
+        # process, so the consumer can't observe a partially written buffer
+        # (ports the sync added upstream for the single-buffer export path).
+        torch.cuda.synchronize()
+        return {"per_sample_handles": per_sample_handles, "dp_rank": dp_rank}
+
+    def release_ipc_buffer(self) -> None:
+        """Free the persistent teacher-logit IPC storage. Called once at end of training/validation."""
+        self._teacher_ipc_storage = None
+        self._teacher_ipc_handle = None
+        gc.collect()
+        torch.cuda.empty_cache()

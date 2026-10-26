@@ -1,0 +1,37 @@
+# Single-node CUDA IPC recipe. A teacher on a separate node needs a network transport.
+defaults: xtoken_off_policy_distillation.yaml
+
+on_policy:
+  prompt_source: raw_text
+  max_prompt_tokens: 1024
+  refit_buffer_size_gb: 1.0
+  include_eos_loss: false
+
+loss_fn:
+  ce_loss_scale: 0.0
+  dynamic_loss_scaling: false
+  exact_token_match_only: true
+  reverse_kl: false
+
+policy:
+  generation:
+    max_new_tokens: 1024
+    temperature: 1.0
+    top_p: 1.0
+    top_k: null
+    stop_token_ids: null
+    vllm_cfg:
+      async_engine: false
+      skip_tokenizer_init: true
+      tensor_parallel_size: 1
+      pipeline_parallel_size: 1
+      expert_parallel_size: 1
+    colocated:
+      enabled: true
+
+data:
+  train:
+    characters_per_sample: null
+
+logger:
+  log_dir: logs/xtoken-on-policy-distillation

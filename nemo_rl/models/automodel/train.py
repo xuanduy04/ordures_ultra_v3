@@ -287,6 +287,9 @@ def forward_with_post_processing_fn(
     if isinstance(
         post_processing_fn,
         (LossPostProcessor, LogprobsPostProcessor, TopkLogitsPostProcessor),
+    ) and not (
+        isinstance(post_processing_fn, LossPostProcessor)
+        and getattr(post_processing_fn.loss_fn, "requires_raw_logits", False)
     ):
         logits = apply_temperature_scaling(logits, cfg)
 
@@ -316,6 +319,16 @@ def forward_with_post_processing_fn(
         else:
             vals, idx = result
             metrics = {"topk_logits": vals, "topk_indices": idx}
+    elif isinstance(post_processing_fn, FullLogitsPostProcessor):
+        result = post_processing_fn(
+            logits=logits,
+            data_dict=data_dict,
+            processed_inputs=processed_inputs,
+            original_batch_size=processed_mb.original_batch_size,
+            original_seq_len=processed_mb.original_seq_len,
+            sequence_dim=sequence_dim,
+        )
+        metrics = {}
     elif isinstance(post_processing_fn, ScorePostProcessor):
         result = post_processing_fn(logits=logits)
         metrics = {"scores": result}
@@ -924,3 +937,64 @@ def aggregate_training_statistics(
     }
 
     return metrics
+
+
+class FullLogitsPostProcessor:
+    """Export this rank's raw teacher logits (full vocab, no reduction at the worker).
+
+    Used by cross-tokenizer distillation; the loss fn does all vocab
+    reduction (none at the worker) so the distributed result matches the
+    single-GPU PyTorch reference. Teacher TP/CP
+    are supported and may differ from the student's: under TP each rank emits
+    its vocab shard, under CP it allgathers and re-emits its contiguous seq
+    slice; the IPC consumer reassembles the global ``[B, T_t, V_t]``.
+    Sequence packing raises ``NotImplementedError``.
+    """
+
+    def __init__(
+        self,
+        cfg: PolicyConfig,
+        device_mesh: Any,
+        cp_mesh: Any,
+        tp_mesh: Any,
+        cp_size: int,
+        enable_seq_packing: bool,
+    ):
+        self.cfg = cfg
+        self.device_mesh = device_mesh
+        self.cp_mesh = cp_mesh
+        self.tp_mesh = tp_mesh
+        self.cp_size = cp_size
+        self.enable_seq_packing = enable_seq_packing
+
+    def __call__(
+        self,
+        logits: torch.Tensor,
+        data_dict: BatchedDataDict[Any],
+        processed_inputs: Any,
+        original_batch_size: int,
+        original_seq_len: int,
+        sequence_dim: int = 1,
+    ) -> torch.Tensor:
+        from nemo_rl.algorithms.x_token.parallel import cp_load_balanced_to_contiguous
+
+        if self.enable_seq_packing:
+            raise NotImplementedError(
+                "FullLogitsPostProcessor: sequence packing is not supported in v0."
+            )
+        if isinstance(logits, DTensor):
+            logits = logits.to_local()
+        # fp32 for the consumer's precision-sensitive log_softmax / top-k /
+        # projection (KL math), and a dtype-consistent IPC buffer producer<->consumer.
+        logits = logits.to(torch.float32)
+
+        # context_parallel shards the seq dim load-balanced (interleaved), but the
+        # IPC consumer routes by contiguous ``global_seq_start`` over the teacher CP
+        # group. Restore global order and emit this rank's contiguous slice, else
+        # heterogeneous teacher_cp != student_cp lands teacher data at the wrong
+        # seq positions in the consumer's dest tensor.
+        if self.cp_size > 1 and self.cp_mesh is not None:
+            logits = cp_load_balanced_to_contiguous(
+                logits, cp_group=self.cp_mesh.get_group(), seq_dim=sequence_dim
+            )
+        return logits  # [B, S_local_contiguous, V_t]

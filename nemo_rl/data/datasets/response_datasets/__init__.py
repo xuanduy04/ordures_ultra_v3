@@ -1,3 +1,4 @@
+from nemo_rl.data.datasets.response_datasets.arrow_text_dataset import ArrowTextDataset
 
 
 from nemo_rl.data import ResponseDatasetConfig
@@ -24,6 +25,7 @@ from nemo_rl.data.datasets.response_datasets.squad import SquadDataset
 from nemo_rl.data.datasets.response_datasets.tulu3 import Tulu3SftMixtureDataset
 
 DATASET_REGISTRY = {
+    "arrow_text": ArrowTextDataset,
     # built-in datasets
     "AIME2024": AIME2024Dataset,
     "clevr-cogent": CLEVRCoGenTDataset,

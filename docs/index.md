@@ -240,6 +240,7 @@ debugging.md
 nsys-profiling.md
 fp8.md
 guides/use-custom-vllm.md
+guides/xtoken-distillation.md
 ```
 
 ```{toctree}

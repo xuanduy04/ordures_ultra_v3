@@ -1,0 +1,103 @@
+{
+  "upstream_commit": "81aa43dda4765b0429cf31dab44441e4e4383911",
+  "production_base": "da929379634d7dc1e8546019e85b9b76839479af",
+  "files": [
+    {
+      "path": "nemo_rl/algorithms/x_token/__init__.py",
+      "upstream_path": "nemo_rl/algorithms/x_token/__init__.py",
+      "upstream_sha256": "6b5246b82fd34c8243afb6a25f5dbf68d139e2f497d16b51c8cc737c375470fe"
+    },
+    {
+      "path": "nemo_rl/algorithms/x_token/token_aligner.py",
+      "upstream_path": "nemo_rl/algorithms/x_token/token_aligner.py",
+      "upstream_sha256": "b3460f323a87614cf5c5fa88042d3eb7edd0a389f830384f7c5ff9abd669deee"
+    },
+    {
+      "path": "nemo_rl/algorithms/x_token/utils.py",
+      "upstream_path": "nemo_rl/algorithms/x_token/utils.py",
+      "upstream_sha256": "00f1b373daae71e64d598c3c697b25265ca3932c93c23b32549a5992517e0862"
+    },
+    {
+      "path": "nemo_rl/algorithms/x_token/loss_utils.py",
+      "upstream_path": "nemo_rl/algorithms/x_token/loss_utils.py",
+      "upstream_sha256": "fb6d015bc1e1dfb6917cd449a988cabf874f39d1e700a68190c8e5065f38989f"
+    },
+    {
+      "path": "nemo_rl/algorithms/x_token/parallel.py",
+      "upstream_path": "nemo_rl/distributed/model_utils.py",
+      "upstream_sha256": "3aee8136851a791f26a816e26dfbe7ad5c06ed13801953505eef6a3dc465c576"
+    },
+    {
+      "path": "nemo_rl/algorithms/x_token/loss.py",
+      "upstream_path": "nemo_rl/algorithms/loss/loss_functions.py",
+      "upstream_sha256": "b1113c7ff32705c5e4d37a1258eb77a122c50e3ae0d13d15a46ebf88cec56ff4"
+    },
+    {
+      "path": "nemo_rl/algorithms/x_token/ipc.py",
+      "upstream_path": "nemo_rl/models/policy/utils.py",
+      "upstream_sha256": "829ac007087b48d772de02cb31bb3d416d65f6ac2ea435ede250adcccbb5a23e"
+    },
+    {
+      "path": "nemo_rl/data/cross_tokenizer_collate.py",
+      "upstream_path": "nemo_rl/data/cross_tokenizer_collate.py",
+      "upstream_sha256": "15f3af333df7ebdaacbf02be1d68d1ae6f232199bcc7d7ca8df7945b072b1974"
+    },
+    {
+      "path": "nemo_rl/algorithms/xtoken_off_policy_distillation.py",
+      "upstream_path": "nemo_rl/algorithms/xtoken_off_policy_distillation.py",
+      "upstream_sha256": "8a5fe43d0b51aca9ebcb2120f9c772ba8d40494d7e075d1125f8456b2ad2d886"
+    },
+    {
+      "path": "examples/run_xtoken_off_policy_distillation.py",
+      "upstream_path": "examples/run_xtoken_off_policy_distillation.py",
+      "upstream_sha256": "67b726bfb9a79216e763e575e708ec83bfe9b29dfe2724a55c52ead192d1586d"
+    },
+    {
+      "path": "tests/unit/algorithms/x_token/conftest.py",
+      "upstream_path": "tests/unit/algorithms/x_token/conftest.py",
+      "upstream_sha256": "6a7a01a90e9ee1669216250bf47809df6f96720b4e780e4ae38a3aa5a1b346ec"
+    },
+    {
+      "path": "tests/unit/algorithms/x_token/test_token_aligner.py",
+      "upstream_path": "tests/unit/algorithms/x_token/test_token_aligner.py",
+      "upstream_sha256": "cfa8fe48296afe9d6d6e86b88a9bebabe211d86374913cf6f5707970b2860a86"
+    },
+    {
+      "path": "tests/unit/algorithms/x_token/test_loss_utils.py",
+      "upstream_path": "tests/unit/algorithms/x_token/test_loss_utils.py",
+      "upstream_sha256": "5294aa80f4766537f0c45998cad33066f54e035e3a918235e177a405690d1e87"
+    },
+    {
+      "path": "tests/unit/algorithms/x_token/test_utils.py",
+      "upstream_path": "tests/unit/algorithms/x_token/test_utils.py",
+      "upstream_sha256": "067db04a2087dcb283441fcdbe46e18648494a22edce5a9ffea105147d2587a9"
+    },
+    {
+      "path": "tests/unit/algorithms/x_token/test_xtoken_off_policy_distillation.py",
+      "upstream_path": "tests/unit/algorithms/x_token/test_xtoken_off_policy_distillation.py",
+      "upstream_sha256": "b6b9282759c0c61fab8ff46adc70e489a24ced8aaaa496b6dfb0cde969cca0e7"
+    },
+    {
+      "path": "tests/unit/data/test_cross_tokenizer_collate.py",
+      "upstream_path": "tests/unit/data/test_cross_tokenizer_collate.py",
+      "upstream_sha256": "2a4d2eba5fbd6d131cb2b4918c9a6faaf30f4a335f7494693a6ec81a26a6d2b5"
+    },
+    {
+      "path": "nemo_rl/data/datasets/response_datasets/arrow_text_dataset.py",
+      "upstream_path": "nemo_rl/data/datasets/response_datasets/arrow_text_dataset.py",
+      "upstream_sha256": "7b1848092723e8eb54b049a419a1768880916862cf8098aea885a6434909fab5"
+    },
+    {
+      "path": "examples/configs/xtoken_off_policy_distillation.yaml",
+      "upstream_path": "examples/configs/xtoken_off_policy_distillation.yaml",
+      "upstream_sha256": "1b13b208b86c58ef7d5d612ff9c0854cbdd9dd5c3168f28d002fdb9bc2605dcd"
+    }
+  ],
+  "adaptations": [
+    "v0.6 raw-logit loss adapter and isolated differentiable parallel helpers",
+    "v0.6 Policy and DTensor V2 persistent full-logit IPC export API",
+    "response-only fresh student rollout hook using existing vLLM refit",
+    "strict vocab/template/grid gates and checkpoint data identity guard",
+    "no dependency, lockfile, Dockerfile or bundled third-party edits"
+  ]
+}

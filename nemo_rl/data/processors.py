@@ -679,10 +679,38 @@ def nemo_gym_data_processor(
 # Without the cast, the registry's inferred type becomes a union of those specific
 # callables, which is not assignable to the uniform TaskDataProcessFnCallable.
 # The cast asserts our intent that all entries conform to the common callable protocol.
+def kd_data_processor(
+    datum_dict: dict[str, Any],
+    task_data_spec: TaskDataSpec,
+    tokenizer: TokenizerType,
+    max_seq_length: int | None,
+    idx: int,
+) -> DatumSpec:
+    """Process a raw-text datum for cross-tokenizer distillation.
+
+    Tokenization is deferred to the collator, so the text is carried forward
+    as a single assistant message in ``message_log``.
+    """
+    output: DatumSpec = {
+        # Defensive shallow-per-message copy so downstream mutation (e.g.
+        # adding token_ids) doesn't leak back into the dataset row.
+        "message_log": [dict(m) for m in datum_dict["messages"]],
+        "loss_multiplier": 1.0,
+        "idx": idx,
+        # fake keys (not used for cross-tokenizer distillation)
+        "length": 0,
+        "extra_env_info": None,
+    }
+    if "task_name" in datum_dict:
+        output["task_name"] = datum_dict["task_name"]
+    return output
+
+
 PROCESSOR_REGISTRY: Dict[str, TaskDataProcessFnCallable] = cast(
     Dict[str, TaskDataProcessFnCallable],
     {
         "default": math_hf_data_processor,
+        "kd_data_processor": kd_data_processor,
         "helpsteer3_data_processor": helpsteer3_data_processor,
         "math_data_processor": math_data_processor,
         "math_hf_data_processor": math_hf_data_processor,

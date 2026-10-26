@@ -1,2 +1,5 @@
 This distribution includes open source which is archived at the following URL: https://opensource.nvidia.com/oss/teams/nvidia/nemo-rl/00.00:linux-amd64/index.html
 For further inquiries or assistance, contact us at oss-requests@nvidia.com
+
+X-Token modules ported from NVIDIA-NeMo/RL v0.7.0, commit 81aa43dda4765b0429cf31dab44441e4e4383911.
+Copyright (c) 2025-2026, NVIDIA CORPORATION. All rights reserved. Licensed under Apache-2.0; see LICENSE.

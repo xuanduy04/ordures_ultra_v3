@@ -262,8 +262,41 @@ def process_microbatch(
         assert len(vlm_kwargs) == 0, (
             f"multimodal kwargs={vlm_kwargs} are not supported for context parallel"
         )
+        # CP doesn't support attention_mask — torch's CP SDPA handler requires
+        # is_causal=True (no explicit mask). Passing an unsplit mask causes a
+        # DTensor redistribution assertion because the mask isn't in cp_buffers
+        # and therefore keeps the full sequence length while Q/K/V are split.
+        # Matches Automodel's cp_utils.py which does batch.pop("attention_mask").
+        attention_mask = None
         seq_index = torch.arange(seq_len, device=input_ids.device).repeat(1, 1)
         cp_buffers = [input_ids, position_ids, seq_index]
+
+        # Cross-tokenizer distillation rides student-seq-aligned alignment /
+        # mask fields on the same mb. CP-shard the student-seq fields with
+        # the student cp_mesh so the loss sees matching seq dims against
+        # the redistributed student logits. Teacher-seq fields (T_t may
+        # differ from T_s) stay full; the loss slices them contiguously by
+        # student CP rank because the IPC consumer ships contiguous teacher
+        # slices (see FullLogitsPostProcessor un-interleave in train.py).
+        # There is one set of student-seq alignment fields per teacher:
+        # single-teacher uses the unprefixed ``alignment_student_*`` keys,
+        # multi-teacher uses ``alignment_{i}_student_*`` (the suffix match
+        # captures both and excludes teacher-seq ``*_teacher_*`` fields).
+        student_seq_alignment_fields = [
+            k
+            for k in mb
+            if k.startswith("alignment_")
+            and (
+                k.endswith("_student_chunk_id")
+                or k.endswith("_student_exact_partition_mask")
+            )
+        ]
+        if student_seq_alignment_fields or any(key.endswith(("_full_logits_ipc", "_full_logits")) for key in mb):
+            if "token_mask" in mb:
+                cp_buffers.append(mb["token_mask"])
+            for student_seq_field in student_seq_alignment_fields:
+                cp_buffers.append(mb[student_seq_field])
+
 
     return ProcessedInputs(
         input_ids=input_ids,
@@ -330,7 +363,7 @@ def process_global_batch(
     }
 
 
-def check_sequence_dim(data: BatchedDataDict[Any]) -> Tuple[int, int]:
+def check_sequence_dim(data: BatchedDataDict[Any], *, skip_keys=None) -> Tuple[int, int]:
     """Check and validate sequence dimension across all tensors.
 
     Verifies that dimension 1 is the sequence dimension for all tensors
@@ -347,7 +380,9 @@ def check_sequence_dim(data: BatchedDataDict[Any]) -> Tuple[int, int]:
     """
     sequence_dim = 1
     seq_dim_size = data.get("input_ids").shape[sequence_dim]
-    for _, v in data.items():
+    for key, v in data.items():
+        if skip_keys is not None and key in skip_keys:
+            continue
         if torch.is_tensor(v) and len(v.shape) > 1:
             assert v.shape[sequence_dim] == seq_dim_size, (
                 f"Dim 1 must be the sequence dim, expected dim 1={seq_dim_size} but got shape {v.shape}"

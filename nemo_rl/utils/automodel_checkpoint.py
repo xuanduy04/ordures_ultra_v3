@@ -22,9 +22,13 @@ from nemo_automodel.components.checkpoint.checkpointing import (
 from torch import nn
 from torch.distributed.device_mesh import DeviceMesh
 from transformers import AutoTokenizer
-from transformers.utils import TRANSFORMERS_CACHE
+try:
+    from transformers.utils import TRANSFORMERS_CACHE
+except ImportError:
+    from huggingface_hub.constants import HF_HUB_CACHE as TRANSFORMERS_CACHE
 
 from nemo_rl.utils.checkpoint import CheckpointingConfig
+from nemo_rl.models.automodel.runtime_compat import load_base_checkpoint
 
 
 class AutomodelCheckpointManager:
@@ -222,7 +226,8 @@ class AutomodelCheckpointManager:
         )
         self.checkpointer.config.model_state_dict_keys = self.model_state_dict_keys
 
-        self.checkpointer.load_base_model(
+        load_base_checkpoint(
+            self.checkpointer,
             model,
             device=torch.cuda.current_device(),
             root_dir=hf_cache_dir or TRANSFORMERS_CACHE,
