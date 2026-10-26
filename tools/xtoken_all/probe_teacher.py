@@ -1,6 +1,7 @@
 """Read-only metadata/tokenizer probes plus exactly one tiny teacher-score request."""
 import argparse
 import asyncio
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -81,6 +82,7 @@ def main():
                   'server_mode_verification_source': evidence['verification_source'],
                   'server_mode_evidence_sha256': sha256(args.server_mode_evidence),
                   'effective_config_sha256': sha256(args.config),
+                  'checked_at_utc': datetime.now(timezone.utc).isoformat(),
                   'note': 'Operator must independently confirm raw_logprobs mode; echo/mass alone cannot prove it.'}
         path = Path(args.config).resolve().parent / 'teacher-probe.json'
         path.write_text(json.dumps(result, indent=2) + '\n')

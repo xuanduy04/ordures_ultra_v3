@@ -70,7 +70,13 @@ def main(*, require_on_policy=None) -> None:
             flush=True,
         )
 
-    init_ray()
+    if config.on_policy is not None and "rollout_backend" in config.on_policy and config.on_policy["rollout_backend"] == "nemo_gym":
+        import ray
+        from nemo_rl.algorithms.x_token.gym_compat import init_existing_gym_ray
+
+        init_existing_gym_ray(config, ray, os.environ)
+    else:
+        init_ray()
 
     # Student tokenizer + one tokenizer per teacher (same-tokenizer teachers
     # included — needed for vocab sizing in setup()).

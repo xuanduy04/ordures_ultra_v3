@@ -26,15 +26,21 @@ assert hashlib.sha256((run / 'effective.yaml').read_bytes()).hexdigest() == meta
 assert source_snapshot(Path.cwd())['sha256'] == meta['source_sha256'], 'Source changed since render'
 from omegaconf import OmegaConf
 cfg = OmegaConf.to_container(OmegaConf.load(run / 'effective.yaml'), resolve=True)
+from nemo_rl.algorithms.x_token.gym_compat import reject_inherited_gym_config, verify_gym_source
+reject_inherited_gym_config(os.environ)
+verify_gym_source(cfg['on_policy']['nemo_gym']['source_root'], cfg['on_policy']['nemo_gym']['source_contract'])
 assert sha256(cfg['data']['train']['data_path']) == meta['data_sha256']
 assert sha256(cfg['teachers'][0]['projection_matrix_path']) == meta['projection_sha256']
-for name in ('teacher-probe', 'assets-check', 'source-check', 'gym-preflight'):
+for name in ('teacher-probe', 'assets-check', 'source-check', 'gym-preflight', 'ray-stream-check'):
     receipt = json.loads((run / (name + '.json')).read_text())
     assert receipt['success'] and receipt['effective_config_sha256'] == meta['effective_config_sha256'], name
+    age = (datetime.now(timezone.utc) - datetime.fromisoformat(receipt['checked_at_utc'])).total_seconds()
+    assert 0 <= age < cfg['on_policy']['nemo_gym']['receipt_max_age_s'], 'Expired receipt: ' + name
     if name == 'teacher-probe':
         assert receipt['server_logprobs_mode_verified'] and receipt['top_k'] == 20
 lease = json.loads(allocation.read_text())
 assert lease['success'] and lease['gpu_indices'] == [0, 1, 2, 3] and lease['ray_ownership_verified']
+assert lease['ray_address'] == cfg['on_policy']['nemo_gym']['ray_address'], 'Ray head differs from rendered config'
 assert 0 <= (datetime.now(timezone.utc) - datetime.fromisoformat(lease['checked_at_utc'])).total_seconds() < 300
 raw = subprocess.check_output(['nvidia-smi', '--query-gpu=index,uuid', '--format=csv,noheader,nounits'], text=True)
 devices = {int(line.split(',')[0]): line.split(',')[1].strip() for line in raw.splitlines()}

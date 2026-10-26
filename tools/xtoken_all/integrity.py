@@ -18,7 +18,11 @@ def source_snapshot(root):
     files = {}
     for directory in ("nemo_rl", "examples", "custom_utils", "tools/xtoken_all"):
         for path in sorted((root / directory).rglob("*")):
-            if path.is_file() and path.suffix in {".py", ".sh", ".yaml", ".yml"} and "__pycache__" not in path.parts:
+            if path.is_file() and path.suffix in {".py", ".sh", ".yaml", ".yml", ".json"} and "__pycache__" not in path.parts:
                 files[path.relative_to(root).as_posix()] = sha256(path)
+    for name in ("pyproject.toml", "uv.lock", "default_runtime_env.yaml", ".python-version"):
+        path = root / name
+        if path.is_file():
+            files[name] = sha256(path)
     payload = json.dumps(files, sort_keys=True, separators=(",", ":")).encode()
     return {"sha256": hashlib.sha256(payload).hexdigest(), "files": files}

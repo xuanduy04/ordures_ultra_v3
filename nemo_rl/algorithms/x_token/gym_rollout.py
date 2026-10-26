@@ -12,6 +12,7 @@ from nemo_rl.algorithms.x_token.gym_protocol import (
     prepare_example, restore_order, unpack_result,
 )
 from nemo_rl.algorithms.x_token.on_policy import OnPolicyRollout
+from nemo_rl.algorithms.x_token.gym_compat import reject_inherited_gym_config, verify_gym_source
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 
 
@@ -49,19 +50,22 @@ class NemoGymOnPolicyRollout(OnPolicyRollout):
         )) for prompt in prompts]
         if any(not ids or len(ids) > self.knobs["max_prompt_tokens"] for ids in prompt_ids):
             raise ValueError("Gym prompt exceeds token budget; no implicit truncation")
-        if self.synced_version != self.policy_version:
-            self.refit(self.policy, self.generation, colocated_inference=True,
-                       _refit_buffer_size_gb=self.knobs["refit_buffer_size_gb"])
-            self.synced_version = self.policy_version
-        elif not self.generation.prepare_for_generation():
-            raise RuntimeError("Could not wake student generation")
         returned = []
-        stream = self.environment.run_rollouts.remote(examples, self.tokenizer, "xtoken_gym")
-        deadline = time.monotonic() + self.gym_config["result_timeout_s"]
+        stream = None
         try:
+            if self.synced_version != self.policy_version:
+                self.refit(self.policy, self.generation, colocated_inference=True,
+                           _refit_buffer_size_gb=self.knobs["refit_buffer_size_gb"])
+                self.synced_version = self.policy_version
+            elif not self.generation.prepare_for_generation():
+                raise RuntimeError("Could not wake student generation")
+            deadline = time.monotonic() + self.gym_config["result_timeout_s"]
+            stream = self.environment.run_rollouts.remote(examples, self.tokenizer, "xtoken_gym")
             while True:
                 remaining = deadline - time.monotonic()
-                ready, _ = ray.wait([stream], timeout=max(remaining, 0.0))
+                if remaining <= 0:
+                    raise TimeoutError("Gym rollout batch exceeded its deadline")
+                ready, _ = ray.wait([stream], timeout=remaining)
                 if not ready:
                     raise TimeoutError("Gym rollout batch exceeded its deadline")
                 try:
@@ -71,7 +75,8 @@ class NemoGymOnPolicyRollout(OnPolicyRollout):
                 index, result, _ = ray.get(reference, timeout=max(deadline - time.monotonic(), 0.0))
                 returned.append((index, result))
         except BaseException:
-            ray.cancel(stream)
+            if stream is not None:
+                ray.cancel(stream)
             raise
         finally:
             if not self.generation.finish_generation():
@@ -119,6 +124,8 @@ def create_gym_environment(config, generation):
     from nemo_rl.environments.nemo_gym import NemoGym, NemoGymConfig
 
     cfg = config.on_policy["nemo_gym"]
+    reject_inherited_gym_config(os.environ)
+    verify_gym_source(cfg["source_root"], cfg["source_contract"])
     executable = Path(cfg["worker_python"])
     venvs = Path(cfg["venv_dir"])
     if not executable.is_file() or not venvs.is_dir():
@@ -136,7 +143,7 @@ def create_gym_environment(config, generation):
     inherited_path = os.environ["PYTHONPATH"] if "PYTHONPATH" in os.environ else ""
     worker_env = {"UV_OFFLINE": "1", "HF_HUB_OFFLINE": "1",
                   "PYTHONDONTWRITEBYTECODE": "1",
-                  "PYTHONPATH": os.pathsep.join(part for part in (source, inherited_path) if part),
+                  "PYTHONPATH": os.pathsep.join(part for part in (source, str(gym_source), inherited_path) if part),
                   "VIRTUAL_ENV": str(executable.parent.parent),
                   "UV_PROJECT_ENVIRONMENT": str(executable.parent.parent)}
     for key in ("NEMO_GYM_VENV_DIR", "NRL_CONTAINER", "NRL_IGNORE_VERSION_MISMATCH",

@@ -27,6 +27,7 @@ def main():
     parser.add_argument("--gym-python", type=Path, required=True)
     parser.add_argument("--gym-venvs", type=Path, required=True)
     parser.add_argument("--gym-source", type=Path, required=True)
+    parser.add_argument("--ray-address", required=True)
     parser.add_argument("--teacher-api-key-env")
     args = parser.parse_args()
     root = Path(os.environ["XTOKEN_ALL_ROOT"]).resolve()
@@ -56,6 +57,7 @@ def main():
     os.environ.update(XTOKEN_GYM_PYTHON=str(args.gym_python.resolve()),
                       XTOKEN_GYM_VENV_DIR=str(args.gym_venvs.resolve()),
                       XTOKEN_GYM_SOURCE=str(args.gym_source.resolve()),
+                      XTOKEN_SOURCE_ROOT=str(source), XTOKEN_RAY_ADDRESS=args.ray_address,
                       XTOKEN_RUN_DIR=str(run), XTOKEN_STUDENT_MODEL=str(args.student.resolve()),
                       XTOKEN_TRAIN_DATA=str(args.data.resolve()))
     register_omegaconf_resolvers()

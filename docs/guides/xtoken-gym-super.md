@@ -1,6 +1,6 @@
 # X-Token qua NeMo Gym trên fork Super
 
-Contract G1: Qwen3-1.7B sinh một response qua NeMo Gym `general_qa`, teacher
+Contract G1.1: Qwen3-1.7B sinh một response qua NeMo Gym `general_qa`, teacher
 Gemma-4-26B-A4B-it chấm response bằng tokenizer riêng. Objective vẫn là
 `topk_tail_kl`, K=20 tại mỗi vị trí + OTHER, CE=0, T=1. Đây là adaptation;
 không gọi nó là P-KL nguyên bản, PPO hay sampled-token MOPD của GRPO.
@@ -8,7 +8,8 @@ không gọi nó là P-KL nguyên bản, PPO hay sampled-token MOPD của GRPO.
 ## Nguồn và thư mục
 
 Mọi source mới, data dẫn xuất, assets và run output thuộc
-`/workspace/storage-shared/nlp/tungks/xtoken_all/`.
+`/workspace/storage-shared/nlp/tungks/xtoken_all/`. Checkout mới dùng
+`xtoken_all/ordures_ultra_v3/`; giữ path cũ nếu đã có run, không tự di chuyển.
 Không ghi vào checkout `/workspace/storage-shared/nlp/vai-1.4-30b/nemo-rl/`
 hoặc `/opt/nemo-rl`; tái dùng interpreter, venv và dependency đã provision.
 Không sửa/restart server teacher.
@@ -18,6 +19,13 @@ bốn tarball công ty ngày 2026-10-26. Xem
 `tools/xtoken_all/company-artifacts.json` để đối chiếu nguồn gốc từng gói.
 Các delta Gym/GRPO/penalty và test của công ty được giữ cùng adapter mới.
 Delta `custom_utils` được giữ nguyên theo gói, không refactor converter gốc.
+
+G1.1 đã đọc thêm `custom_opt_ultra_selfbuilt.zip` và Code A/B Super. Root metadata
+khớp; 142 file Python NeMo chung của ZIP và Code B giống nhau. Các snapshot này
+không thay delta đã merge từ tarball 1711. `super-source-contract.json` chốt hash
+60 file Gym cần cho luồng hiện tại, cùng API FSDP/checkpoint đọc từ archive.
+`audit_archives.py` tái tạo contract và gói `reviewed-gym-source.zip` khoảng 174 KB;
+đây là source, không kèm venv/native library và không phải lệnh cài dependency.
 
 ## Luồng thực thi
 
@@ -78,12 +86,24 @@ phép kiểm tra metadata; không gọi LLM judge để chấm đáp án. Nếu 
 auth mà validator Gym không hỗ trợ, dừng và báo đúng lỗi, không mở server mới.
 Live Gym fork khác commit hoặc dirty thì cần so diff trước khi dùng kết luận này.
 
+Nếu source Gym trên node khác contract, dùng source đã review trong packet ở
+checkout mới `xtoken_all/ordures_ultra_v3_gym/` sau khi kiểm manifest, cùng các
+sub-venv đã provision. PYTHONPATH đặt source này trước source Gym kế thừa, giữ các
+runtime import path còn lại. Preflight kiểm import cả Gym parent và ba sub-venv.
+Không yêu cầu đồng bộ toàn bộ 3rdparty hoặc tải lại ZIP lớn.
+
+Renderer bắt buộc `--ray-address host:port`. Driver chỉ nối head đã chỉ định,
+không fallback auto-start. Lease allocation phải trỏ đúng head đó. Các biến
+`NEMO_GYM_CONFIG_DICT`/`NEMO_GYM_CONFIG_PATH` thừa hưởng bị từ chối vì SDK ưu tiên
+chúng hơn initial config; operator dùng môi trường tiến trình sạch, không dump
+hay copy giá trị của run khác. Config G1 cũ cần render lại; không dùng YAML/receipt cũ.
+
 ## Chuỗi helper cho agent vận hành
 
 Tất cả helper nằm tại `tools/xtoken_all/`; dùng interpreter công ty đã có.
 Không bootstrap dependency hay bật Docker local.
 
-1. Đối chiếu active source với tarball, tạo source mới dưới `xtoken_all/src`;
+1. Đối chiếu active source với tarball, tạo source mới dưới `xtoken_all/ordures_ultra_v3`;
    giữ source gốc. Nếu thiếu bundled dependency, liên kết rõ thư mục 3rdparty
    đã có hoặc dùng PYTHONPATH đã provision, không tự clone/cài lại.
 2. Chuyển DAPO bằng `convert_general_qa.py`, tạo smoke bằng `make_smoke.py`.
@@ -91,7 +111,9 @@ Không bootstrap dependency hay bật Docker local.
    `provenance.json` chốt hash code, data, projection và effective YAML.
 4. Chạy `preflight.py --run-dir <run>` bằng `NRL_PYTHON`. Nó kiểm tra shard,
    tokenizer, projection qua loader thật của X-Token, budget từng prompt,
-   source import của hai worker và config/venv Gym. Nó không khởi động server.
+   source import/API FSDP/checkpoint của policy worker, API async của generation
+   worker và config/venv Gym. Nó không khởi động server. Rerun vô hiệu receipt cũ
+   trước khi import; lỗi giữa chừng không để lại trọn bộ gate thành công cũ.
 5. `probe_teacher.py --config <effective.yaml> --server-mode-evidence <json>`
    kiểm alias, ba ca tokenizer parity, một yêu cầu score nhỏ và cap top-20.
    Evidence JSON cần `teacher_url`, `served_model`, `logprobs_mode=raw_logprobs`,
@@ -104,7 +126,11 @@ Không bootstrap dependency hay bật Docker local.
    Helper không start/stop Ray. Nó đòi 1 Ray node/4 GPU và GPU mục tiêu không bận.
 7. Export `XTOKEN_ALL_ROOT`, `XTOKEN_RUN_DIR`, `NRL_PYTHON`,
    `NEMO_RL_VENV_DIR`, `XTOKEN_ALLOCATION_RECEIPT`; chạy `launch.sh`.
-   Launcher kiểm UUID/occupancy lại ngay trước chạy, receipt chưa quá 5 phút,
+   Trước launch chạy `ray_stream_probe.py --run-dir <run> --allocation-receipt <lease>`:
+   chỉ tạo một actor CPU không model trên Ray đã xác nhận, kiểm async generator,
+   ray.wait/get, thứ tự kết quả và dọn actor của probe. Nó không chạy task GPU.
+   Launcher kiểm UUID/occupancy lại ngay trước chạy, allocation chưa quá 5 phút,
+   các receipt preflight/teacher/Ray stream chưa quá `receipt_max_age_s`,
    hash source/data/projection/config; không `ray stop --force`.
 8. `check_result.py --run-dir <run>` đòi exit driver và tee bằng 0, đúng hai
    update, loss/gradient hữu hạn và gradient khác 0, teacher scores đúng dạng,
@@ -112,7 +138,9 @@ Không bootstrap dependency hay bật Docker local.
 
 ## Kiểm chứng và giới hạn
 
-Test nhẹ độc lập tensor: `tools/xtoken_all/tests/test_gym_contract.py`.
+Test nhẹ độc lập tensor: `tools/xtoken_all/tests/`. Với test archive-bound, đặt
+`XTOKEN_REVIEWED_GYM_ZIP` trỏ ZIP Gym đi kèm packet. Chúng chạy các method biên
+trích từ source thật của SDK với dependency double; không import toàn stack Gym.
 Test CPU tensor/Ray mock: `tests/unit/algorithms/x_token/test_gym_rollout.py`.
 Chạy thêm regression X-Token đang có và các test company processor/Gym/penalty
 trong runtime công ty. Không gộp nhiều test suite resource server Gym có cùng

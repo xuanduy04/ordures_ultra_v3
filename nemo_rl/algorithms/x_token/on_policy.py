@@ -28,6 +28,9 @@ def validate_on_policy_config(config):
     if knobs["max_prompt_tokens"] <= 0 or knobs["refit_buffer_size_gb"] <= 0:
         raise ValueError("Prompt and refit buffer limits must be positive")
     if "rollout_backend" in knobs and knobs["rollout_backend"] == "nemo_gym":
+        from nemo_rl.algorithms.x_token.gym_compat import validate_ray_address
+
+        validate_ray_address(knobs["nemo_gym"]["ray_address"])
         if not generation["vllm_cfg"]["async_engine"] or not generation["vllm_cfg"]["expose_http_server"]:
             raise ValueError("Gym requires an async vLLM engine with its HTTP server exposed")
         if generation["vllm_cfg"]["skip_tokenizer_init"]:

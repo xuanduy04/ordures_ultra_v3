@@ -8,6 +8,10 @@ on_policy:
     worker_python: ${oc.env:XTOKEN_GYM_PYTHON}
     venv_dir: ${oc.env:XTOKEN_GYM_VENV_DIR}
     source_root: ${oc.env:XTOKEN_GYM_SOURCE}
+    source_contract: ${oc.env:XTOKEN_SOURCE_ROOT}/tools/xtoken_all/super-source-contract.json
+    ray_address: ${oc.env:XTOKEN_RAY_ADDRESS}
+    receipt_max_age_s: 1800
+    ray_probe_timeout_s: 30
     skip_load_from_dotenv: true
     retain_truncated_token_ids: true
     result_timeout_s: 300

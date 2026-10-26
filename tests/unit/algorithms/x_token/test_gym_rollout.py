@@ -72,3 +72,25 @@ def test_release_failure_cannot_lease_an_update(monkeypatch):
     with pytest.raises(RuntimeError, match="release student"):
         rollout.generate(batch, training=True)
     assert rollout.pending_rollout is None
+
+
+def test_submit_failure_still_releases_generation(monkeypatch):
+    rollout, batch, generation, _, _ = harness(monkeypatch)
+    rollout.environment.run_rollouts.remote.side_effect = RuntimeError("submit failed")
+    with pytest.raises(RuntimeError, match="submit failed"):
+        rollout.generate(batch, training=True)
+    generation.finish_generation.assert_called_once()
+    assert rollout.pending_rollout is None
+
+
+def test_expired_batch_deadline_is_not_extended_by_ready_results(monkeypatch):
+    from nemo_rl.algorithms.x_token import gym_rollout
+
+    rollout, batch, generation, _, _ = harness(monkeypatch)
+    ticks = iter([0.0, 3.0])
+    monkeypatch.setattr(gym_rollout.time, "monotonic", lambda: next(ticks, 3.0))
+    monkeypatch.setattr(gym_rollout.ray, "cancel", MagicMock())
+    with pytest.raises(TimeoutError):
+        rollout.generate(batch, training=True)
+    generation.finish_generation.assert_called_once()
+    assert rollout.pending_rollout is None
