@@ -14,7 +14,7 @@ RUN_ID="$("$NRL_PYTHON" -B -c 'import sys,yaml; print(yaml.safe_load(open("tools
 export XTOKEN_RUN_DIR="$XTOKEN_ALL_ROOT/runs/$RUN_ID"
 case "$ACTION" in
   render)
-    : "${XTOKEN_RAY_ADDRESS:?Set this node's verified Ray head host:port}"
+    : "${XTOKEN_RAY_ADDRESS:?Set the local verified Ray head host:port}"
     "$NRL_PYTHON" -B tools/xtoken_all/prepare_pilot.py --arm "$ARM" --ray-address "$XTOKEN_RAY_ADDRESS"
     ;;
   check)
