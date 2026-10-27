@@ -1,7 +1,7 @@
 """Budget-bounded CPU, NCCL and native-worker checks on a pinned existing image.
 
 Invoke with the pre-existing Modal SDK, not a new local Python environment.
-Each GPU call has a 480-second ceiling and an estimated USD4 upper reservation.
+Each GPU call has a 480-second execution ceiling and a separate startup bound.
 """
 
 from datetime import datetime, timezone
@@ -79,21 +79,26 @@ def execute(command, env, timeout):
     return {"exit_code": code, "stdout": safe_log(stdout), "stderr": safe_log(stderr)}
 
 
-@app.function(image=IMAGE, cpu=2, memory=8192, timeout=420, retries=0)
+@app.function(image=IMAGE, cpu=2, memory=8192, timeout=420, startup_timeout=120, scaledown_window=2, retries=0)
 def cpu_checks():
     env = child_env()
     light = execute([PYTHON, "-B", "-m", "pytest", "--noconftest", "-o", "addopts=", "-p", "no:cacheprovider",
                      "tools/xtoken_all/tests", "-q", "--tb=short"], env, 180)
     unit = execute([PYTHON, "-B", "-m", "pytest", "--confcutdir=tests/unit/algorithms/x_token", "-o", "addopts=",
                     "-p", "no:cacheprovider", "tests/unit/algorithms/x_token", "-q", "--tb=short"], env, 180)
-    automodel = execute([POLICY_PYTHON, "-B", "-m", "pytest", "--noconftest", "-o", "addopts=", "-p", "no:cacheprovider",
+    # Reuse the driver's pure-Python pytest tool only after the worker's own
+    # site-packages. Never prepend the driver's Torch/native packages.
+    sites = execute([PYTHON, "-B", "-c", "import json,site;print(json.dumps(site.getsitepackages()))"], env, 15)
+    driver_sites = json.loads(sites["stdout"])
+    worker_pytest = "import sys;sys.path.extend(" + repr(driver_sites) + ");import pytest;raise SystemExit(pytest.main(sys.argv[1:]))"
+    automodel = execute([POLICY_PYTHON, "-B", "-c", worker_pytest, "--noconftest", "-o", "addopts=", "-p", "no:cacheprovider",
                         "tests/unit/models/automodel/test_automodel_train.py", "-k", "TestForwardWithPostProcessingFn",
-                        "-q", "-rs", "--tb=short"], env, 90)
+                        "-q", "-rs", "--tb=short"], dict(env, PYTEST_DISABLE_PLUGIN_AUTOLOAD="1"), 90)
     return {**source_fingerprint(), "light": light, "unit": unit, "automodel": automodel,
             "success": light["exit_code"] == unit["exit_code"] == 0 and automodel["exit_code"] in (0, 5)}
 
 
-@app.function(image=IMAGE, cpu=1, memory=2048, timeout=90, retries=0)
+@app.function(image=IMAGE, cpu=1, memory=2048, timeout=90, startup_timeout=120, scaledown_window=2, retries=0)
 def runtime_inventory():
     paths = [Path(PYTHON), *sorted(Path("/opt/ray_venvs").glob("*/bin/python"))]
     results = []
@@ -104,8 +109,8 @@ def runtime_inventory():
     return {"interpreters": results, "success": all(row["exit_code"] == 0 for row in results)}
 
 
-@app.function(image=IMAGE, cpu=8, memory=16384, timeout=480, retries=0)
-def gpu_checks(count):
+@app.function(image=IMAGE, cpu=8, memory=16384, timeout=480, startup_timeout=120, scaledown_window=2, retries=0)
+def gpu_checks(count, accelerator):
     if count not in (2, 3, 4):
         raise ValueError("Physical allocation must match the requested 2/3/4 GPUs")
     root = Path(tempfile.mkdtemp(prefix="nemo-algo-"))
@@ -116,6 +121,8 @@ def gpu_checks(count):
     metadata = json.loads(metadata_run["stdout"].splitlines()[-1])
     if metadata["gpu_count"] != count:
         raise ValueError("Physical CUDA allocation differs from requested GPU count")
+    if not all(accelerator in name for name in metadata["gpu_names"]):
+        raise ValueError("Physical accelerator differs from the explicitly requested hardware")
     print("ALGO_PHASE=" + json.dumps({"phase": "nccl", **metadata}), flush=True)
     launcher = [PYTHON, "-B", "-m", "torch.distributed.run", "--standalone", "--nproc-per-node=" + str(count)]
     ddp = execute(launcher + ["tools/xtoken_all/tests/variant_ddp_probe.py", "--output", str(root / "ddp.json")], env, 150)
@@ -144,10 +151,12 @@ def gpu_checks(count):
 
 
 @app.local_entrypoint()
-def main(phase: str, count: int, output_dir: str):
+def main(phase: str, count: int, output_dir: str, accelerator: str = "B200"):
     profile = os.environ["MODAL_PROFILE"]
     if profile not in ("nguyenngocminh30012005", "nguyenepti") or phase not in ("cpu", "gpu", "inspect"):
         raise ValueError("Use the two authorized profiles and cpu/gpu phase")
+    if accelerator not in ("B200", "H100") or count not in (2, 3, 4):
+        raise ValueError("Explicit B200/H100 and 2/3/4 GPU topology required")
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
     billed = subprocess.run(["modal", "billing", "report", "--for", "this month", "--show-resources", "--json"],
@@ -157,12 +166,16 @@ def main(phase: str, count: int, output_dir: str):
     ledger = output / (profile + "-reservations.json")
     previous = json.loads(ledger.read_text()) if ledger.is_file() else []
     reserved = sum((Decimal(row["upper_bound_usd"]) for row in previous), Decimal(0))
-    bound = Decimal("4.00") if phase == "gpu" else Decimal("0.15")
+    # Rates verified at https://modal.com/pricing on 2026-10-28. Reserve startup,
+    # 480s execution and 2s idle, CPU8/RAM16GiB, plus conservative rounding.
+    gpu_bounds = {"B200": {2: "3", 3: "4", 4: "5"}, "H100": {2: "2", 3: "3", 4: "4"}}
+    bound = Decimal(gpu_bounds[accelerator][count]) if phase == "gpu" else Decimal("0.15")
     allowed = max(reported, reserved) + bound + Decimal("2") <= Decimal("20")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     label = profile + "-" + phase + "-" + str(count) + "-" + stamp
     guard = {"profile": profile, "reported_month_usage_usd": str(reported), "local_reserved_upper_usd": str(reserved),
              "call_bound_usd": str(bound), "reserve_usd": "2", "authorized_budget_usd": "20", "allowed": allowed,
+             "accelerator": accelerator, "startup_timeout_s": 120, "scaledown_window_s": 2,
              "note": "Task began at reported usage zero on both profiles; CLI usage can lag and is not remaining credits"}
     (output / (label + "-guard.json")).write_text(json.dumps(guard, indent=2))
     print("ALGO_BUDGET=" + json.dumps(guard), flush=True)
@@ -177,7 +190,7 @@ def main(phase: str, count: int, output_dir: str):
         source_dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True, stderr=subprocess.PIPE).strip())
     except subprocess.CalledProcessError:
         source_commit, source_dirty = None, None
-    result = runtime_inventory.remote() if phase == "inspect" else cpu_checks.remote() if phase == "cpu" else gpu_checks.with_options(gpu="B200:" + str(count)).remote(count)
+    result = runtime_inventory.remote() if phase == "inspect" else cpu_checks.remote() if phase == "cpu" else gpu_checks.with_options(gpu=accelerator + ":" + str(count)).remote(count, accelerator)
     result["source_commit_at_dispatch"] = source_commit
     result["source_dirty_at_dispatch"] = source_dirty
     (output / (label + "-result.json")).write_text(json.dumps(result, indent=2))

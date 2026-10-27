@@ -111,6 +111,12 @@ với reference global-batch12. Numeric cross-tokenizer fixtures bao gồm1:n/n:
 padding và sample weights; đây không phải bằng chứng Gym/vLLM/FSDP2 end-to-end.
 Kết quả remote và source snapshot của mỗi lần chạy phải được đọc cùng report.
 
+Runner mặc định yêu cầu đúng B200. Có thể chọn --accelerator H100 riêng để
+kiểm logic CUDA khi B200 chờ capacity; report phải giữ tên GPU thực và không
+coi H100 là kiểm chứng runtime Blackwell. Native FSDP2/IPC chạy bằng interpreter
+của DTensorPolicyWorkerV2; numeric DDP dùng Python driver. Không ghép hai Torch
+site-packages để làm cho import thành công.
+
 Không gọi canary một vài update là hiệu quả khoa học hoặc replicate paper.
 Server Gemma/Qwen công ty không truy cập được từ Modal; built /opt/nemo-rl18GiB
 trên shared chưa được cung cấp qua HF. NGC image có digest + source overlay là
