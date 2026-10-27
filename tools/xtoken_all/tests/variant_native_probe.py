@@ -27,6 +27,7 @@ def exercise_native_variants(worker, root, rank, world):
         raise ValueError("Expected a 2/3/4-rank topology and global batch12")
     modes = os.environ["XTOKEN_VARIANT_MODES"].split(",")
     report = {"rank": rank, "world_size": world, "global_batch_size": 12,
+        "fsdp_mode": worker.cfg["dtensor_cfg"]["fsdp_mode"],
         "scope": "real DTensorPolicyWorkerV2/FSDP2 optimizer; synthetic uniform behavior and teacher-score fixtures; no Gym/vLLM", "modes": []}
     count = 12 // world
     for mode in modes:

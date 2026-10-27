@@ -128,7 +128,9 @@ def runtime_inventory():
     for path in paths:
         if "dtensor" in str(path) or str(path) == PYTHON:
             results.append({"interpreter": str(path), **execute([str(path), "-B", "-c", script], child_env(), 20)})
-    return {"interpreters": results, "success": all(row["exit_code"] == 0 for row in results)}
+    mesh_source = execute([PYTHON, "-B", "-c", "from pathlib import Path; p=Path('/opt/nemo-rl/3rdparty/Automodel-workspace/Automodel/nemo_automodel/components/distributed'); print((p/'fsdp2.py').read_text()); s=(p/'parallelizer.py').read_text().splitlines(); print(chr(10).join(s[190:250]+s[575:635]))"], child_env(), 10)
+    return {"interpreters": results, "mesh_source": mesh_source,
+            "success": mesh_source["exit_code"] == 0 and all(row["exit_code"] == 0 for row in results)}
 
 
 @app.function(image=IMAGE, cpu=8, memory=16384, timeout=480, startup_timeout=120, scaledown_window=2, retries=0)

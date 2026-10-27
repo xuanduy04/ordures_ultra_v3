@@ -156,6 +156,15 @@ def validate_and_prepare_config(
     tp_size = config["dtensor_cfg"].get("tensor_parallel_size", 1)
     cp_size = config["dtensor_cfg"].get("context_parallel_size", 1)
     sequence_parallel_enabled = config["dtensor_cfg"]["sequence_parallel"]
+    dp_replicate_size = 1
+    if "fsdp_mode" in config["dtensor_cfg"]:
+        mode = config["dtensor_cfg"]["fsdp_mode"]
+        if mode not in ("sharded", "replicated"):
+            raise ValueError("Use explicit fsdp_mode: sharded or replicated")
+        if mode == "replicated":
+            if tp_size != 1 or cp_size != 1 or ep_size != 1:
+                raise ValueError("Replicated FSDP mode is qualified only for TP=CP=EP=1")
+            dp_replicate_size = world_size
 
     # Validate parallelization configuration
     if cp_size > 1 and enable_seq_packing:
@@ -251,7 +260,7 @@ def setup_distributed(
     manager = create_fsdp2_manager(
         FSDP2Manager,
         dp_size=dp_size,
-        dp_replicate_size=1,
+        dp_replicate_size=dp_replicate_size,
         tp_size=tp_size,
         cp_size=cp_size,
         ep_size=ep_size,
@@ -270,6 +279,10 @@ def setup_distributed(
         custom_tp_plan=config["dtensor_cfg"].get("custom_parallel_plan", None),
         defer_fsdp_grad_sync=config["dtensor_cfg"].get("defer_fsdp_grad_sync", True),
     )
+    if dp_replicate_size > 1:
+        if manager.dp_shard_size != 1 or manager.dp_replicate_size != dp_replicate_size:
+            raise RuntimeError("Installed Automodel did not honor explicit replicated FSDP mesh")
+        print(f"NRL_FSDP_MODE=replicated dp_replicate_size={dp_replicate_size} dp_shard_size=1; weights/gradients/optimizer are replicated", flush=True)
 
     # Force setup distributed for world size 1 as FSDP2Manager skips it
     if world_size == 1:

@@ -28,7 +28,8 @@ def test_variant_recipe_has_integral_per_rank_microbatches_and_preserves_old_pil
     assert old == original
     assert cfg["policy"]["train_global_batch_size"] == cfg["distillation"]["num_prompts_per_step"] == 12
     assert 12 % gpus == 0 and cfg["policy"]["train_micro_batch_size"] == 1
-    assert cfg["policy"]["dtensor_cfg"] == {"tensor_parallel_size": 1, "context_parallel_size": 1}
+    assert cfg["policy"]["dtensor_cfg"] == {"tensor_parallel_size": 1, "context_parallel_size": 1,
+                                           "fsdp_mode": "replicated" if gpus == 3 else "sharded"}
     assert cfg["teachers"][0]["train_global_batch_size"] == 12
     assert cfg["loss_fn"]["variant"]["mode"] == settings["variant"]["mode"]
     assert cfg["loss_fn"]["teacher_distribution_mode"] == "topk_tail_kl"

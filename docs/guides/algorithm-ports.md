@@ -73,6 +73,16 @@ Loss mới chia theo tổng số student response tokens hợp lệ trên global
 kể cả khi CTOPD loại các span không phải1:1. Khác mẫu số kept-segments của một
 số author implementations; cần khớp normalization/LR trước so sánh paper.
 
+`variant_parallelism` trong recipe chọn `sharded` cho 2/4 GPU và `replicated`
+cho 3 GPU. Probe thật đã phát hiện FSDP của Automodel hiện tại không hỗ trợ
+uneven sharding theo dim 1 (ví dụ weight [192,64] trên 3 rank). Mode mới tạo
+mesh dp_replicate=3, dp_shard=1, đồng bộ qua cả 3 GPU. Trọng số, gradient và
+optimizer state không được chia: phần VRAM đó có thể gần gấp 3 lần sharding
+trên 3 GPU; activation/KV cache vẫn phụ thuộc batch/context. Cần kiểm VRAM cho
+model/config thật. Không đổi kích thước model, vocab hay bỏ GPU để qua probe.
+Nếu không khai fsdp_mode thì code giữ dp_replicate=1 như trước. Không tự động
+fallback khi native worker lỗi; lựa chọn replicated nằm rõ trong YAML.
+
 Trên source suite, đặt XTOKEN_PILOT_CONFIG tới pilot_algorithm.yaml rồi dùng
 run_xtoken.sh cross hoặc same, thêm --gpu-indices 0 1 / 0 1 2 / 0 1 2 3.
 Subset phải thuộc allocation UUID đã khai; không dò/chiếm GPU khác. Launcher

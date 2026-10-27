@@ -87,6 +87,7 @@ def pilot_config(baseline, spec, arm, old_run, run, old_source, source, ray_addr
         cfg["distillation"]["num_prompts_per_step"] = batch["global_batch_size"]
         cfg["policy"]["dtensor_cfg"]["tensor_parallel_size"] = 1
         cfg["policy"]["dtensor_cfg"]["context_parallel_size"] = 1
+        cfg["policy"]["dtensor_cfg"]["fsdp_mode"] = spec["variant_parallelism"][len(spec["runtime"]["gpu_indices"])]
         cfg["teachers"][0]["train_global_batch_size"] = batch["global_batch_size"]
         cfg["teachers"][0]["train_micro_batch_size"] = batch["micro_batch_size"]
         cfg["teachers"][0]["remote"]["score_mode"] = spec["variant"]["score_mode"]
