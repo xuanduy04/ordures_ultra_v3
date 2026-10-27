@@ -47,15 +47,19 @@ arms:
   same:
     run_id: B-on-02
     tokenizer_mode: same
-    gpu_uuids: null
-    server_mode_evidence: null
-    node: anhhbt-eval-7-0-1
-    teacher_url: http://172.29.191.69:8000
+    gpu_uuids:
+      - GPU-ba111adc-3819-f7e3-a762-812e64975d65
+      - GPU-a2658e40-0b51-9231-ef84-a6fb2aaf526b
+      - GPU-ccebdd37-60c8-a6c6-79a4-f99f9d1a747c
+      - GPU-a1b48a49-064e-4aa5-bbcd-7c641621069d
+    server_mode_evidence: /workspace/storage-shared/nlp/tungks/xtoken_all/tmp/server-mode-qwen32-032.json
+    node: anhhbt-eval-6-0-1
+    teacher_url: http://172.29.93.105:8001
     teacher_model: Qwen3-32B
     teacher_tokenizer: /workspace/storage-shared/models/Qwen3-32B
     teacher_vocab_size: 151936
   cross:
-    run_id: A-on-13
+    run_id: A-on-14
     tokenizer_mode: cross
     node: rl-test-opd-ultra-selfbuilt-trainllm-1-0-2
     gpu_uuids:
@@ -63,12 +67,12 @@ arms:
       - GPU-8cb6790e-e514-d9df-bf7d-da5001fa90ed
       - GPU-0df4fc7d-8df8-cc9c-627a-031032fc140d
       - GPU-47300b26-33c3-62c8-4ffc-5029e8c869a3
-    teacher_url: http://172.29.219.204:8001
+    teacher_url: http://172.29.93.105:8000
     teacher_model: gemma-4-26B-A4B-it
     teacher_vocab_size: 262144
     teacher_tokenizer: null
     projection_path: null
-    server_mode_evidence: null
+    server_mode_evidence: /workspace/storage-shared/nlp/tungks/xtoken_all/tmp/server-mode-gemma-032.json
   same235:
     run_id: C-on-01
     tokenizer_mode: same

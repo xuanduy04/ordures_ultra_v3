@@ -3,7 +3,7 @@
 set -euo pipefail
 XTOKEN_ENSURE_SOURCE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 XTOKEN_ALL_ROOT="${XTOKEN_ALL_ROOT:-/workspace/storage-shared/nlp/tungks/xtoken_all}"
-XTOKEN_RUNTIME_ARCHIVE="${XTOKEN_RUNTIME_ARCHIVE:-$XTOKEN_ALL_ROOT/runtime/runtime-opt-20261027.tar.gz}"
+XTOKEN_RUNTIME_ARCHIVE="${XTOKEN_RUNTIME_ARCHIVE:-$XTOKEN_ALL_ROOT/tmp/runtime-opt-20261027.tar.gz}"
 XTOKEN_SUPER_SOURCE="${XTOKEN_SUPER_SOURCE:-/workspace/storage-shared/nlp/vai-1.4-30b/nemo-rl/custom_opt_ultra_selfbuilt_nano/nemo-rl}"
 CUSTOM_NLTK_DATA_DIR="${CUSTOM_NLTK_DATA_DIR:-$(dirname "$XTOKEN_SUPER_SOURCE")/nltk_data}"
 [[ -z "${NRL_PYTHON:-}" || "$NRL_PYTHON" == /opt/nemo_rl_venv/bin/python ]] || { echo 'This audited bundle uses /opt/nemo_rl_venv/bin/python; another NRL_PYTHON profile is preserved, not overridden.' >&2; exit 2; }

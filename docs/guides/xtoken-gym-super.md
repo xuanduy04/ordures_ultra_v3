@@ -5,6 +5,41 @@ Gemma-4-26B-A4B-it chấm response bằng tokenizer riêng. Objective vẫn là
 `topk_tail_kl`, K=20 tại mỗi vị trí + OTHER, CE=0, T=1. Đây là adaptation;
 không gọi nó là P-KL nguyên bản, PPO hay sampled-token MOPD của GRPO.
 
+## Bản r15: typed config và phân bổ mới
+
+Lỗi A-on-13-20261027-200300-6dac53 xảy ra trước khi tạo actor Gym:
+`TeacherConfig` là Pydantic model nhưng validator r13/r14 đọc bằng `['remote']`.
+R15 đọc trường bắt buộc qua mapping hoặc attribute, giữ kiểm tra URL/model QA.
+Cùng validator chạy khi validate on-policy trước khi tạo Policy/load weights,
+và chạy lại ngay trước tạo actor. Không bỏ gate hoặc chuyển config sai thành pass.
+Regression dùng đúng định nghĩa `TeacherConfig` từ source, cả input dict, typed
+teacher, factory tạo actor và stale endpoint; không chỉ test renderer với dict.
+
+`tools/xtoken_all/pilot_200.yaml` là cấu hình chạy hiện tại:
+
+| Arm | Student node | Teacher | Run prefix |
+| --- | --- | --- | --- |
+| cross | rl-test-opd-ultra-selfbuilt-trainllm-1-0-2 | http://172.29.93.105:8000 / gemma-4-26B-A4B-it | A-on-14 |
+| same | anhhbt-eval-6-0-1 | http://172.29.93.105:8001 / Qwen3-32B | B-on-02 |
+
+Hai server được operator báo vLLM0.32.0; YAML trỏ tới evidence đã tạo trên shared
+storage: `tmp/server-mode-gemma-032.json` và `tmp/server-mode-qwen32-032.json`.
+Không suy raw_logprobs từ version0.32.0; probe vẫn kiểm nội dung evidence,
+tokenizer và top20 scoring. Mỗi run cần receipt mới theo effective.yaml mới.
+Same dùng đúng4 GPU UUID của eval-6 đã gửi trong T14; trạng thái GPU/Ray phải
+kiểm lại lúc chạy. Same235 giữ recipe cũ chưa reassigned/probe; không tự launch.
+
+Thực thi từ source mới, không vá source đang được process khác import:
+`bash run_xtoken.sh cross --check-only` hoặc `bash run_xtoken.sh same --check-only`.
+Khi kiểm tra đạt, bỏ `--check-only` trên đúng node để tạo run mới và train.
+Giữ200 step, warmup20, save10, keep20, cùng initial Qwen3-1.7B và data A-on-11.
+Không resume run fail hoặc chuyển checkpoint cross sang same.
+
+T15/T17 trong log operator xác nhận eval-6 đã restore /opt, torch.cuda=True,
+Ray2.55.1. Đây là bằng chứng setup từ node, chưa chứng minh full pilot r15.
+QA service venv không cần import vLLM; dùng probe app general_qa hiện có,
+không cài vLLM vào thin service để chữa một lỗi import không thuộc contract.
+
 ## Setup runtime trên node mới (r14)
 
 `bash ensure_runtime.sh` kiểm tra runtime thực tế; runtime phù hợp thì không đọc
@@ -15,7 +50,7 @@ Chỉnh các path ở đầu ensure_runtime.sh hoặc dùng biến môi trườn
 
 | Biến | Nội dung |
 | --- | --- |
-| XTOKEN_RUNTIME_ARCHIVE | Archive đã stage trên shared storage; mặc định xtoken_all/runtime/runtime-opt-20261027.tar.gz |
+| XTOKEN_RUNTIME_ARCHIVE | Archive đã stage trên shared storage; mặc định xtoken_all/tmp/runtime-opt-20261027.tar.gz theo T15 |
 | XTOKEN_SUPER_SOURCE | Source nemo-rl đầy đủ trong ZIP Super cũ, có3rdparty; mặc định đường dẫn shared custom_opt_ultra_selfbuilt_nano/nemo-rl đã dùng |
 | CUSTOM_NLTK_DATA_DIR | NLTK punkt_tab từ ZIP cũ; mặc định thư mục nltk_data cạnh Super source |
 
@@ -244,9 +279,10 @@ Smoke256 vẫn là profile mặc định; renderer không tự chuyển sang tra
 Pilot khẩn cấp lấy budget thực từ A-on-11 qua `prepare_pilot.py`, recipe
 `pilot_200.yaml`, thay vì tự ép profile8k. Dùng nguyên pool toán16.367 dòng,
 kiểm path/row count/hash với provenance A-on-11, không đổi sang math/code20k.
-B-on-02 chạy same-tokenizer Qwen3-32B ở node anhhbt-eval-7-0-1; A-on-13 là
-preset cross mới warmup20 để chạy khi node A rảnh. A-on-11 đang chạy được giữ
-nguyên; lịch warmup250 đã thực thi không thể trở thành warmup20 hồi tố.
+B-on-02 chạy same-tokenizer Qwen3-32B ở node anhhbt-eval-6-0-1 theo phân bổ r15;
+A-on-14 là prefix cross mới sau lỗi A-on-13, xem bảng hiện hành ở đầu guide.
+Giữ nguyên artifact A-on-11; lịch warmup250 đã thực thi không thể trở thành
+warmup20 hồi tố.
 
 Renderer nay nhận một trong `--projection <path>` hoặc `--same-tokenizer`;
 same-tokenizer cần `--teacher-vocab-size` từ metadata model. Preflight kiểm
@@ -270,8 +306,9 @@ budget, loss top20+OTHER. Profile riêng
 `xtoken_gym_qwen3_235b_same_tokenizer_train.yaml` kế thừa lịch200/warmup20/save10,
 keep20. Tokenizer local mặc định là bản Qwen student đã stage; probe server
 phải kiểm parity. Endpoint235B từ thông tin cũ cần probe lại, không coi là live
-qualification. C xếp sau B trên anhhbt; chưa có node student thứ ba để chạy cả3
-song song. Handoff hiện hành: `tools/xtoken_all/HANDOFF-three-arms-r11.md`.
+qualification. Recipe C còn trỏ eval-7 cũ và chưa có allocation mới; user mới
+chọn B cho eval-6, không tự xếp C vào node này. Handoff hiện hành:
+`tools/xtoken_all/HANDOFF-three-arms-r11.md`, đọc mục r15 trước lịch sử bên dưới.
 
 `render.py` nhận `--gym-actor-python`, `--gym-venvs`, `--gym-source` trỏ các thành phần
 đã provision. Gym import phải đúng source đã khai; config paths dùng đường dẫn

@@ -133,7 +133,7 @@ def create_gym_environment(config, generation):
 
     cfg = config.on_policy["nemo_gym"]
     reject_inherited_gym_config(os.environ)
-    validate_teacher_endpoint({"teachers": config.teachers, "on_policy": config.on_policy})
+    validate_teacher_endpoint(config)
     verify_gym_source(cfg["source_root"], cfg["source_contract"])
     source = str(Path(__file__).resolve().parents[3])
     runtime = gym_actor_runtime_env(cfg, source, os.environ)

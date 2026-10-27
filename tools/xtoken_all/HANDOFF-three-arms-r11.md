@@ -1,4 +1,51 @@
-# DSH — r14: ensure runtime trên node mới, giữ launcher Super-120B
+# DSH — r15: sửa TeacherConfig, cross Gemma và same Qwen32 trên eval-6
+
+## Đọc phần này trước; các mục r14 trở xuống là lịch sử đối chiếu
+
+R13/r14 có lỗi thực: factory Gym nhận TeacherConfig đã được Pydantic normalize
+nhưng validator đọc teacher['remote']. Run A-on-13-20261027-200300-6dac53 dừng
+ở đây sau load weights, chưa tạo Gym. R15 sửa cả raw dict/typed object, validate
+sớm trước Policy/load weights và kiểm lại ở factory. Không bỏ kiểm URL/model QA.
+
+Giải nén packet r15 vào thư mục mới dưới xtoken_all, vào source/. Không overlay
+lên source job đang import, không sửa receipts/effective.yaml của run cũ. Root
+metadata và ensure_runtime.sh đã kèm. Runtime archive13GB không nằm trong packet;
+đã stage ở /workspace/storage-shared/nlp/tungks/xtoken_all/tmp/runtime-opt-20261027.tar.gz.
+ensure_runtime.sh dùng path đó mặc định; healthy runtime bỏ qua giải nén sau khi
+kiểm import/API thật. Không install/rebuild, không restart teacher hoặc kill Ray.
+
+| Arm | Node chạy student | Teacher | Prefix mới |
+| --- | --- | --- | --- |
+| cross | rl-test-opd-ultra-selfbuilt-trainllm-1-0-2 | http://172.29.93.105:8000, gemma-4-26B-A4B-it | A-on-14 |
+| same | anhhbt-eval-6-0-1 | http://172.29.93.105:8001, Qwen3-32B | B-on-02 |
+
+YAML đã có4 UUID GPU đúng từng node. Dùng tools/xtoken_all/pilot_200.yaml trong
+source r15, không chép nguyên spec r13 đè lại node/URL cũ. Shared evidence:
+tmp/server-mode-gemma-032.json và tmp/server-mode-qwen32-032.json dưới xtoken_all,
+do operator tạo từ args server. Teacher vLLM0.32.0 không được tự coi raw_logprobs
+theo version; probe phải đọc evidence và chấm lại response/tokenizer. Không copy
+receipt T12 cũ vào run mới. Nếu deployment khác evidence thì dừng và cập nhật
+thông tin server thật; không sửa server tự động. Same235 chưa được chọn cho
+eval-6, giữ recipe cũ để chạy sau khi có allocation/probe mới, không launch lúc này.
+
+DSH trên node cross: từ source r15 chạy bash run_xtoken.sh cross --check-only.
+DSH trên eval-6: từ source r15 chạy bash run_xtoken.sh same --check-only.
+Check-only có thể start head nếu thiếu theo YAML, kiểm allocation và gọi scoring
+teacher nhỏ; không train. Khi các gate đạt, dùng cùng lệnh bỏ --check-only trong
+tmux trên node tương ứng. Mỗi lần tạo run ID unique; không resume A-on-13 fail.
+Nếu GPU bận hoặc Ray khác allocation thì dừng, không tự kill process để lấy GPU.
+
+Giữ student Qwen3-1.7B initial,16367 mẫu toán/hash A-on-11,200 update,warmup20,
+cosine180,save10,keep20,save_optimizer=true; top20+OTHER,T1,CE0. Không gọi loss
+xấp xỉ là P-KL/H-KL paper. Cross và same là hai run độc lập cùng initial weights.
+
+Evidence operator T15/T17: eval-6 restore3 venv stores, torch2.10.0+cu129/cuda=True,
+Ray2.55.1 head0/4GPU tại172.29.85.72. Đây là snapshot setup, vẫn kiểm lại allocation.
+QA venv không có vLLM là bình thường: kiểm import app general_qa bằng helper cũ,
+không pip install training stack vào service venv. Chưa có live pilot r15; xem
+qualification.json/evidence cho test local và tái hiện typed-config thực tế.
+
+## Ghi nhận r14
 
 Thêm ensure_runtime.sh và test fixture, không thêm môi trường/dependency mới.
 run_xtoken.sh gọi ensure trước bước setup Super. Cách chạy cross/same/same235 cũ

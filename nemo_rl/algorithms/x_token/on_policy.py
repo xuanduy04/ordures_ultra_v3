@@ -28,8 +28,9 @@ def validate_on_policy_config(config):
     if knobs["max_prompt_tokens"] <= 0 or knobs["refit_buffer_size_gb"] <= 0:
         raise ValueError("Prompt and refit buffer limits must be positive")
     if "rollout_backend" in knobs and knobs["rollout_backend"] == "nemo_gym":
-        from nemo_rl.algorithms.x_token.gym_compat import validate_ray_address
+        from nemo_rl.algorithms.x_token.gym_compat import validate_ray_address, validate_teacher_endpoint
 
+        validate_teacher_endpoint(config)
         if "worker_python" in knobs["nemo_gym"] or not knobs["nemo_gym"]["actor_python"]:
             raise ValueError("Re-render Gym config with explicit actor_python for r7")
         validate_ray_address(knobs["nemo_gym"]["ray_address"])

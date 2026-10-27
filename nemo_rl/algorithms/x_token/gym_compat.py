@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+from collections.abc import Mapping
 from pathlib import Path
 
 
@@ -71,17 +72,25 @@ def validate_ray_address(address):
     return address
 
 
+def _teacher_endpoint_and_qa(config):
+    """Read required fields before and after MasterConfig normalizes teachers."""
+    teachers = config["teachers"] if isinstance(config, Mapping) else config.teachers
+    on_policy = config["on_policy"] if isinstance(config, Mapping) else config.on_policy
+    teacher = teachers[0]
+    remote = teacher["remote"] if isinstance(teacher, Mapping) else teacher.remote
+    qa = on_policy["nemo_gym"]["global_config"]["general_qa"]["resources_servers"]["general_qa"]
+    return remote, qa
+
+
 def bind_teacher_endpoint(config):
     """A resolved template must not retain the previous teacher's judge URL."""
-    teacher = config["teachers"][0]["remote"]
-    qa = config["on_policy"]["nemo_gym"]["global_config"]["general_qa"]["resources_servers"]["general_qa"]
+    teacher, qa = _teacher_endpoint_and_qa(config)
     qa["judge_server_url"] = teacher["url"].rstrip("/")
     qa["judge_model"] = teacher["model"]
 
 
 def validate_teacher_endpoint(config):
-    teacher = config["teachers"][0]["remote"]
-    qa = config["on_policy"]["nemo_gym"]["global_config"]["general_qa"]["resources_servers"]["general_qa"]
+    teacher, qa = _teacher_endpoint_and_qa(config)
     if qa["judge_server_url"].rstrip("/") != teacher["url"].rstrip("/") or qa["judge_model"] != teacher["model"]:
         raise ValueError("Stale general_qa judge endpoint; render from the current teacher settings")
 

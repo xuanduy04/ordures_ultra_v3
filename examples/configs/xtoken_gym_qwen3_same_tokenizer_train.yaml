@@ -15,7 +15,7 @@ teachers:
     dynamic_batching: ${policy.dynamic_batching}
     sequence_packing: ${policy.sequence_packing}
     remote:
-      url: http://172.29.191.69:8000
+      url: http://172.29.93.105:8001
       model: Qwen3-32B
       model_vocab_size: 151936
       score_mode: topk
