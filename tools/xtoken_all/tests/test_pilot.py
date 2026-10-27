@@ -1,6 +1,7 @@
 """Pilot budget, same-vocab identity, rendering and provenance regressions."""
 
 from copy import deepcopy
+import ast
 import importlib.util
 import json
 from pathlib import Path, PurePosixPath
@@ -60,6 +61,7 @@ def test_both_arms_preserve_actual_pilot_data_and_budgets(arm):
     assert cfg["policy"]["scheduler"][0]["kwargs"]["total_iters"] == 20
     assert cfg["policy"]["scheduler"][1]["kwargs"]["T_max"] == 180
     assert cfg["checkpointing"]["save_period"] == 10
+    assert cfg["checkpointing"]["keep_top_k"] == 20
     assert cfg["checkpointing"]["checkpoint_dir"] == "/root/runs/new/checkpoints"
     assert cfg["data"] == old["data"] and cfg["policy"]["generation"] == old["policy"]["generation"]
     assert cfg["policy"]["max_total_sequence_length"] == old["policy"]["max_total_sequence_length"]
@@ -82,6 +84,20 @@ def test_yaml_profiles_share_the_approved_budget():
     assert train["distillation"]["max_num_steps"] == spec()["distillation"]["max_num_steps"] == 200
     assert train["policy"]["scheduler"] == spec()["scheduler"]
     assert train["checkpointing"]["save_period"] == 10
+    assert train["checkpointing"]["keep_top_k"] == spec()["checkpointing"]["keep_top_k"] == 20
+
+
+def test_actual_super_retention_keeps_every_pilot_checkpoint():
+    tree = ast.parse((ROOT / "nemo_rl/utils/checkpoint.py").read_text())
+    method = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "remove_old_checkpoints")
+    history = [(step, "/checkpoints/step_" + str(step), {}) for step in range(10, 201, 10)]
+    remove = MagicMock()
+    namespace = {"_load_checkpoint_history": lambda _: history, "shutil": SimpleNamespace(rmtree=remove)}
+    exec(compile(ast.Module(body=[method], type_ignores=[]), "actual_super_retention", "exec"), namespace)
+    manager = SimpleNamespace(checkpoint_dir="/checkpoints", keep_top_k=spec()["checkpointing"]["keep_top_k"],
+        ft_keep_latest_k=None, save_period=10, metric_name=None)
+    namespace["remove_old_checkpoints"](manager)
+    remove.assert_not_called()
 
 
 class Tokenizer:

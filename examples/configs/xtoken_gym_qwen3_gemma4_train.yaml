@@ -33,4 +33,4 @@ policy:
 
 checkpointing:
   save_period: 10
-  keep_top_k: 3
+  keep_top_k: 20

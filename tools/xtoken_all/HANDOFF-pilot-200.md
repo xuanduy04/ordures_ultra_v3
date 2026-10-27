@@ -37,9 +37,10 @@ refit4GiB, Gym sampling và objective top20+OTHER từ YAML A-on-11 thực tế.
 profile train tổng quát. Hai profile train tổng quát cũng đã đổi 200/warmup20.
 
 - 200 update mới, warmup20 với start_factor0.02, cosine180, giữ peak LR cũ.
-- Save10,20,...,200; keep_top_k=3, optimizer included, synchronous finalize.
-  Checkpoint cũ sẽ bị prune; đánh giá step100 lúc còn tồn tại hoặc giữ bản copy
-  riêng trước khi prune. Không tuyên bố giữ đủ20 checkpoint.
+- Save10,20,...,200; keep_top_k=20, optimizer included, synchronous finalize.
+  Giữ đủ20 checkpoint định kỳ của pilot để so sánh các mốc. Không giảm retention
+  hoặc xóa checkpoint để tiết kiệm disk nếu chưa được user yêu cầu.
+  YAML mới chỉ có hiệu lực khi config được nạp; không tự đổi manager đang chạy.
 - B projection_matrix_path=null và projection_sha256=null; không dummy identity.
 Teacher tokenizer dùng `/workspace/storage-shared/models/Qwen3-32B`, kwargs giống student, head size
   kỳ vọng151936; teacher probe bắt /tokenize khớp ID trên ba mẫu và score top20.

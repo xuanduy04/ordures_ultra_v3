@@ -17,7 +17,7 @@ scheduler:
   - milestones: [20]
 checkpointing:
   save_period: 10
-  keep_top_k: 3
+  keep_top_k: 20
 arms:
   same:
     run_id: B-on-01
