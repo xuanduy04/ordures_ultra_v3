@@ -182,6 +182,7 @@ def test_actual_rollout_logs_exclude_code_scores(pool, capsys, code_only):
             return sum(self)
 
     batch = {"gym_examples": examples, "sample_mask": Mask([1.0] * len(examples)), "idx": list(range(len(examples)))}
+    state.response_collator.return_value["sample_mask"] = Mask([1.0] * len(examples))
     namespace = {"ray": ray, "torch": torch, "time": time, "json": json, "BatchedDataDict": dict,
         "prepare_example": protocol.prepare_example, "restore_order": protocol.restore_order,
         "unpack_result": protocol.unpack_result, "reward_metric_valid": protocol.reward_metric_valid}

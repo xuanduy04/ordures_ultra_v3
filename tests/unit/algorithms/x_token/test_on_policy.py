@@ -93,6 +93,30 @@ def test_replacement_character_and_overflow_fail_explicitly():
         collator(prompts, generation, [[5]], 0, 1)
 
 
+def test_mixed_replacement_character_batch_masks_only_unrepresentable_sample():
+    student, collator, _, _ = fixture()
+    student.vocab[4] = "\ufffd"
+    prompts = BatchedDataDict(prompts=[[{"role": "user", "content": "q"}]] * 2,
+                             sample_mask=torch.tensor([1., 1.]), idx=[7, 8])
+    sampled = torch.tensor([[5, 4, 1], [5, 2, 1]])
+    generation = {"output_ids": sampled, "unpadded_sequence_lengths": torch.tensor([3, 3])}
+    batch = collator(prompts, generation, [[5], [5]], 66, 67)
+    assert batch["input_ids"][:, :3].tolist() == sampled.tolist()
+    assert batch["sample_mask"].tolist() == [0., 1.]
+    assert not batch["token_mask"][0].any()
+    assert not batch["teacher_0_token_mask"][0].any()
+    assert not batch["alignment_0_pair_valid"][0].any()
+
+
+def test_same_tokenizer_keeps_ids_even_if_decode_would_be_lossy():
+    student, collator, prompts, generation = fixture()
+    student.vocab[4] = "\ufffd"
+    collator.aligners = [None]
+    batch = collator(prompts, generation, [[5]], 0, 1)
+    assert batch["sample_mask"].tolist() == [1.]
+    assert batch["token_mask"].sum() == 1
+
+
 def test_teacher_boundary_straddling_token_excluded():
     _, collator, prompts, generation = fixture()
     teacher = collator.teacher_tokenizers[0]

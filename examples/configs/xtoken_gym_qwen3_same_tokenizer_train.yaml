@@ -1,9 +1,9 @@
 defaults: xtoken_gym_qwen3_gemma4_train.yaml
 
 teachers:
-  - model_name: ${oc.env:XTOKEN_STUDENT_MODEL}
+  - model_name: /workspace/storage-shared/models/Qwen3-32B
     tokenizer:
-      name: ${oc.env:XTOKEN_STUDENT_MODEL}
+      name: /workspace/storage-shared/models/Qwen3-32B
       chat_template_kwargs:
         enable_thinking: false
     projection_matrix_path: null

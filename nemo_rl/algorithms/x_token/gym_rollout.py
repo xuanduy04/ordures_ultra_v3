@@ -87,7 +87,7 @@ class NemoGymOnPolicyRollout(OnPolicyRollout):
             if not self.generation.finish_generation():
                 raise RuntimeError("Could not release student generation memory")
         results = restore_order(returned, len(examples))
-        rows, rewards, mask = [], [], prompt_batch["sample_mask"].clone()
+        rows, rewards_by_index, mask = [], {}, prompt_batch["sample_mask"].clone()
         for index, result in enumerate(results):
             row, valid, reward = unpack_result(result, prompt_ids[index])
             if len(row) - len(prompt_ids[index]) > self.generation_config["max_new_tokens"]:
@@ -95,7 +95,7 @@ class NemoGymOnPolicyRollout(OnPolicyRollout):
             rows.append(row)
             mask[index] *= valid
             if valid and reward_metric_valid(examples[index]):
-                rewards.append(reward)
+                rewards_by_index[index] = reward
         maximum = max(map(len, rows))
         ids = torch.full((len(rows), maximum), self.tokenizer.pad_token_id, dtype=torch.long)
         for index, row in enumerate(rows):
@@ -105,13 +105,14 @@ class NemoGymOnPolicyRollout(OnPolicyRollout):
         self.rollout_counter += 1
         batch = self.response_collator(prepared, generation, prompt_ids,
                                       self.policy_version, self.rollout_counter)
+        rewards = [reward for index, reward in rewards_by_index.items() if float(batch["sample_mask"][index]) > 0]
         if training:
             self.pending_rollout = (self.policy_version, self.rollout_counter)
         print("XTOKEN_ROLLOUT=" + json.dumps({
             "backend": "nemo_gym", "policy_version": self.policy_version,
             "rollout_id": self.rollout_counter, "training": training,
             "batch_size": len(rows), "response_tokens": int(batch["token_mask"].sum()),
-            "valid_samples": int((mask > 0).sum()),
+            "valid_samples": int((batch["sample_mask"] > 0).sum()),
             "gym_reward_mean": sum(rewards) / len(rewards) if rewards else None,
             "gym_reward_sample_count": len(rewards),
             "gym_code_qa_scores_excluded": sum(not reward_metric_valid(example) for example in examples),

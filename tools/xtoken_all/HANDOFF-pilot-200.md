@@ -8,15 +8,16 @@ path; không tạo provenance mới từ suy đoán và không copy checkpoint A
 
 ## Việc cần làm ngay
 
-1. Giữ nguyên A-on-11 và source nó đang import. Không stop/restart hoặc sửa
-   scheduler của run đang chạy. Đã chạy warmup250 thì không thể đổi lịch sử
+1. Giữ nguyên artifact/source A-on-11. Log mới cho thấy nó hoàn tất step66 rồi
+   dừng ở step67 vì student decode có replacement character. Không sửa
+   scheduler trong artifact cũ. Đã chạy warmup250 thì không thể đổi lịch sử
    thành warmup20. A-on-11 là baseline lịch cũ; preset chuẩn A-on-12 là run mới.
 2. B chạy trên `anhhbt-eval-7-0-1`, 4 GPU 0–3. Teacher Qwen3-32B ở
    `http://172.29.191.69:8000`; xác nhận alias bằng probe /v1/models. Không host
    hoặc restart teacher. Không dùng GPU trên node A để chạy B.
 3. Bung packet vào thư mục staging mới. Đặt `source/` thành checkout/overlay mới
-   `/workspace/storage-shared/nlp/tungks/xtoken_all/ordures_ultra_v3_pilot200`.
-   Đây phải là source tree hoàn chỉnh từ packet; không đổi tên/ghi đè checkout A.
+   `/workspace/storage-shared/nlp/tungks/xtoken_all/ordures_ultra_v3_pilot200_r10`.
+   Đây phải là source tree hoàn chỉnh từ packet; không đổi tên/ghi đè checkout A hoặc B đang chạy.
    Tái dùng 3rdparty/PYTHONPATH đã provision như r8, không cài dependency.
 4. Source metadata pyproject/uv.lock/default_runtime_env/.python-version dùng
    `reference-base-metadata/` trong packet nếu thiếu. Không chạy install theo đó.
@@ -40,7 +41,7 @@ profile train tổng quát. Hai profile train tổng quát cũng đã đổi 200
   Checkpoint cũ sẽ bị prune; đánh giá step100 lúc còn tồn tại hoặc giữ bản copy
   riêng trước khi prune. Không tuyên bố giữ đủ20 checkpoint.
 - B projection_matrix_path=null và projection_sha256=null; không dummy identity.
-  Teacher tokenizer dùng bản Qwen student đã có, kwargs giống student, head size
+Teacher tokenizer dùng `/workspace/storage-shared/models/Qwen3-32B`, kwargs giống student, head size
   kỳ vọng151936; teacher probe bắt /tokenize khớp ID trên ba mẫu và score top20.
   Local identity phải khớp vocab→ID, template/kwargs, context và padding grid.
 - B dùng cùng loss coarse KL top20+OTHER với A, không đổi sang native OPD cũ,
@@ -59,7 +60,7 @@ export XTOKEN_ALL_ROOT=/workspace/storage-shared/nlp/tungks/xtoken_all
 export NRL_PYTHON=/opt/nemo_rl_venv/bin/python
 export NEMO_RL_VENV_DIR=/opt/ray_venvs
 export NRL_IGNORE_VERSION_MISMATCH=1
-SOURCE="$XTOKEN_ALL_ROOT/ordures_ultra_v3_pilot200"
+SOURCE="$XTOKEN_ALL_ROOT/ordures_ultra_v3_pilot200_r10"
 export XTOKEN_RAY_ADDRESS="$(hostname -I | awk '{print $1}'):6379"
 if [ "$(hostname -s)" = anhhbt-eval-7-0-1 ] && [ -f "$SOURCE/tools/xtoken_all/pilot_200.sh" ]; then
   cd "$SOURCE" && bash tools/xtoken_all/pilot_200.sh same render &&
@@ -78,8 +79,9 @@ exit "$STATUS"
 Ray address trên chỉ là địa chỉ local theo R7b port6379; phải xác nhận head
 thuộc job trước launch. Nếu node dùng NIC/head khác, sửa biến ở block mới.
 
-Teacher B từng được DSH ghi là vLLM0.14.2 nhưng chưa có raw /version trong log
-đã bàn giao. Policy không đoán default cho version chưa review. Nếu probe báo
+Teacher B trả /version `0.14.2.dev0+gd7de043d5.d20260219` và /v1/models alias
+Qwen3-32B trong log R8, Ray B là172.29.167.243:6379. Policy không đoán default
+cho version chưa review. Nếu probe báo
 mode unconfirmed, giữ preflight thành công và cung cấp deployment evidence thật
 theo schema probe cũ (`operator_checked_server_args` hoặc `server_reported_config`),
 đặt `XTOKEN_TEACHER_MODE_EVIDENCE` tới file JSON rồi chạy lại action check.
@@ -100,7 +102,7 @@ Block P200-B02 — chạy trên node anhhbt-eval-7-0-1 — ghi allocation mới,
 export XTOKEN_ALL_ROOT=/workspace/storage-shared/nlp/tungks/xtoken_all
 export NRL_PYTHON=/opt/nemo_rl_venv/bin/python NEMO_RL_VENV_DIR=/opt/ray_venvs
 export NRL_IGNORE_VERSION_MISMATCH=1
-SOURCE="$XTOKEN_ALL_ROOT/ordures_ultra_v3_pilot200"
+SOURCE="$XTOKEN_ALL_ROOT/ordures_ultra_v3_pilot200_r10"
 export PYTHONPATH="$SOURCE${PYTHONPATH:+:$PYTHONPATH}"
 export XTOKEN_RUN_DIR="$XTOKEN_ALL_ROOT/runs/B-on-01"
 export XTOKEN_ALLOCATION_RECEIPT="$XTOKEN_RUN_DIR/allocation-$(date +%s).json"

@@ -24,6 +24,7 @@ arms:
     node: anhhbt-eval-7-0-1
     teacher_url: http://172.29.191.69:8000
     teacher_model: Qwen3-32B
+    teacher_tokenizer: /workspace/storage-shared/models/Qwen3-32B
     teacher_vocab_size: 151936
   cross:
     run_id: A-on-12

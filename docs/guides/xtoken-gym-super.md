@@ -186,6 +186,24 @@ sub-venv đã provision. PYTHONPATH đặt source này trước source Gym kế 
 runtime import path còn lại. Preflight kiểm import cả Gym parent và ba sub-venv.
 Không yêu cầu đồng bộ toàn bộ 3rdparty hoặc tải lại ZIP lớn.
 
+## Recovery r10: decode và checkpoint eval
+
+Log A-on-11 mới cho thấy update66 hoàn tất rồi rollout67 dừng khi decode sampled
+student IDs chứa U+FFFD, trước teacher scoring. Collator nay mask riêng mẫu không
+thể giữ text cho cross-tokenizer alignment, ghi `XTOKEN_RESPONSE_MASK`, giữ nguyên
+sampled IDs và train các mẫu hợp lệ còn lại. Same-tokenizer dùng IDs trực tiếp,
+không decode rồi encode lại. Toàn batch bị mask vẫn dừng trước optimizer; không
+update rỗng hoặc dùng lại rollout. Các structural error khác không bị nuốt.
+
+Checkpoint safetensors Super có shard offsets và metadata ẩn `.hf_metadata`;
+không chỉ đổi tên file để serve. `tools/xtoken_all/export_checkpoint.py` inspect
+metadata/header rồi gọi hàm consolidate trong Automodel đã provision, tạo output
+HF mới có config/tokenizer/index và kiểm load CPU theo `--validate-load`.
+Hash trước/sau bảo vệ source; lỗi để FAILED. Native DCP converter cũ không phải
+đường ghép sharded safetensors này. Handoff chi tiết và block E01/E02 nằm ở
+`tools/xtoken_all/HANDOFF-recovery-r10.md`. Chưa có bằng chứng export/load checkpoint
+thật trên node; file closure và fixture pass không phải numerical parity.
+
 Renderer bắt buộc `--ray-address host:port`. Driver chỉ nối head đã chỉ định,
 không fallback auto-start. Lease allocation phải trỏ đúng head đó. Các biến
 `NEMO_GYM_CONFIG_DICT`/`NEMO_GYM_CONFIG_PATH` thừa hưởng bị từ chối vì SDK ưu tiên

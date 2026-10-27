@@ -1,10 +1,12 @@
 """Preserve sampled student IDs while aligning response-only teacher tokens."""
 
 from dataclasses import fields
+import json
 
 import torch
 
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
+from nemo_rl.data.xtoken_response_text import response_for_alignment
 
 
 class PromptCollator:
@@ -76,6 +78,7 @@ class RolloutCrossTokenizerCollator:
 
     def __call__(self, prompt_batch, generation, prompt_ids, policy_version, rollout_id):
         rows, responses, texts, prompt_lengths = [], [], [], []
+        masked_responses = []
         for index, prompt in enumerate(prompt_ids):
             total = int(generation["unpadded_sequence_lengths"][index])
             if total < len(prompt) or total > generation["output_ids"].shape[1]:
@@ -88,11 +91,12 @@ class RolloutCrossTokenizerCollator:
                 response = response[:-1]
             if any(token in self.student_tokenizer.all_special_ids for token in response):
                 raise ValueError("A non-terminal control token appeared in the response")
-            text = self.student_tokenizer.decode(
-                response, skip_special_tokens=False, clean_up_tokenization_spaces=False,
-            )
-            if "\ufffd" in text:
-                raise ValueError("Response has replacement characters; teacher text cannot preserve its bytes")
+            sampled_response_length = len(response)
+            response, text, reason = response_for_alignment(
+                self.student_tokenizer, response, any(aligner is not None for aligner in self.aligners))
+            if reason is not None:
+                masked_responses.append({"batch_index": index, "source_index": int(prompt_batch["idx"][index]),
+                    "sampled_response_tokens": sampled_response_length, "reason": reason})
             rows.append(row)
             responses.append(response)
             texts.append(text)
@@ -104,8 +108,13 @@ class RolloutCrossTokenizerCollator:
             token_mask[index, start:start + len(response)] = 1
         sample_mask = prompt_batch["sample_mask"].clone()
         sample_mask *= torch.tensor([bool(response) for response in responses], dtype=sample_mask.dtype)
+        if masked_responses:
+            print("XTOKEN_RESPONSE_MASK=" + json.dumps({"policy_version": policy_version,
+                "rollout_id": rollout_id, "masked_count": len(masked_responses), "batch_size": len(rows),
+                "sampled_ids_preserved": True, "samples": masked_responses}), flush=True)
         if not bool((sample_mask > 0).any()):
-            raise ValueError("No non-empty response in this rollout batch; no optimizer update was made")
+            raise ValueError("No non-empty valid response in this rollout batch; "
+                             f"replacement-character masked samples={len(masked_responses)}; no optimizer update was made")
         out = BatchedDataDict(
             input_ids=student_ids,
             input_lengths=torch.tensor(list(map(len, rows)), dtype=torch.long),
@@ -159,6 +168,7 @@ class RolloutCrossTokenizerCollator:
             )
             # Only byte-equivalent response chunks survive; prefixes never enter alignment.
             alignment.pair_valid &= alignment.pair_is_correct
+            alignment.pair_valid &= (sample_mask > 0).unsqueeze(-1)
             if not bool((alignment.pair_valid & (sample_mask > 0).unsqueeze(-1)).any()):
                 raise ValueError(f"Teacher {teacher_index}: no exact response chunk survived alignment")
             student_chunks = torch.full_like(student_ids, -1)

@@ -24,7 +24,7 @@ def harness(monkeypatch):
     environment.run_rollouts.remote.side_effect = lambda *args: iter([(0, payload, None)])
     monkeypatch.setattr(gym_rollout.ray, "get", lambda reference, **kwargs: reference)
     monkeypatch.setattr(gym_rollout.ray, "wait", lambda references, **kwargs: (references, []))
-    collator = MagicMock(return_value={"token_mask": torch.tensor([[0, 0, 1, 1]])})
+    collator = MagicMock(return_value={"token_mask": torch.tensor([[0, 0, 1, 1]]), "sample_mask": torch.tensor([1.0])})
     refit = MagicMock()
     rollout = NemoGymOnPolicyRollout(
         MagicMock(), generation, tokenizer, collator,

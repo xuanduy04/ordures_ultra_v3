@@ -39,7 +39,8 @@ def pilot_config(baseline, spec, arm, old_run, run, old_source, source, ray_addr
     if arm == "same":
         teacher = cfg["teachers"][0]
         teacher["tokenizer"] = deepcopy(cfg["policy"]["tokenizer"])
-        teacher["model_name"] = cfg["policy"]["model_name"]
+        teacher["tokenizer"]["name"] = spec["arms"][arm]["teacher_tokenizer"]
+        teacher["model_name"] = spec["arms"][arm]["teacher_tokenizer"]
         teacher["projection_matrix_path"] = None
         teacher["remote"].update(url=spec["arms"][arm]["teacher_url"],
             model=spec["arms"][arm]["teacher_model"], model_vocab_size=spec["arms"][arm]["teacher_vocab_size"],
