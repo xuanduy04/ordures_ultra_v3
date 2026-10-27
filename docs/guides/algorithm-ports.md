@@ -79,6 +79,22 @@ Subset phải thuộc allocation UUID đã khai; không dò/chiếm GPU khác. L
 re-render cluster/worker counts và kiểm divisibility trước model loading.
 Không dùng wrapper pilot_200.sh cũ để chạy variant recipe.
 
+Mỗi nhánh tung/algo/<tên> cùng chứa các mode, nhưng pilot_algorithm.yaml chọn
+mặc định riêng của thuật toán đó. run_xtoken.sh vẫn mặc định recipe r16 để lệnh
+cũ không đổi nghĩa. Một lệnh chọn recipe mới, ví dụ 2 GPU:
+
+```bash
+XTOKEN_PILOT_CONFIG="$PWD/tools/xtoken_all/pilot_algorithm.yaml" bash run_xtoken.sh cross --gpu-indices 0 1
+```
+
+Thay cross bằng same để dùng Qwen32; dùng 0 1 2 hoặc 0 1 2 3 cho 3/4 GPU. Trước
+chạy phải sửa student/teacher/dataset/allocation paths trong YAML cho node thực,
+và đặt source dưới root của recipe. Baseline A-on-11 cùng provenance.json,
+effective.yaml và các assets được tham chiếu phải còn đọc được; recipe không
+tự tải hoặc bịa thay thế các assets này. Cần Ray head thuộc đúng allocation;
+nếu đã có head khác dùng 4 GPU thì không thu nhỏ/kill nó để nhường 3 GPU. Dùng
+head/port riêng đã được operator cấp, hoặc đợi allocation cũ giải phóng.
+
 Recipe variant tắt hai optional DeepGEMM switches qua runtime.environment;
 chỉ có hiệu lực cho run dùng recipe này. Nó giữ backend cũ của các recipe
 legacy. Không rebuild venv, sửa glibc hoặc thay teacher. Generation runtime
