@@ -103,11 +103,12 @@ def check(run):
     from nemo_rl.algorithms.x_token.gym_protocol import prepare_example
     from nemo_rl.algorithms.x_token.loss_utils import get_sparse_projection_matrix
     from nemo_rl.algorithms.x_token.on_policy import validate_on_policy_config
-    from nemo_rl.algorithms.x_token.gym_compat import reject_inherited_gym_config, verify_gym_source, gym_actor_runtime_env
+    from nemo_rl.algorithms.x_token.gym_compat import reject_inherited_gym_config, verify_gym_source, gym_actor_runtime_env, validate_teacher_endpoint
     from nemo_rl.algorithms.xtoken_off_policy_distillation import MasterConfig
 
     reject_inherited_gym_config(os.environ)
     cfg = OmegaConf.to_container(OmegaConf.load(config_path), resolve=True)
+    validate_teacher_endpoint(cfg)
     meta = json.loads((run / "provenance.json").read_text())
     config_hash = sha256(config_path)
     assert config_hash == meta["effective_config_sha256"]

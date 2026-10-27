@@ -106,20 +106,28 @@ def test_actual_factory_passes_same_runtime_plan_to_nemogym(knobs, monkeypatch):
                         SimpleNamespace(NemoGym=nemo_gym, NemoGymConfig=dict))
     ray = MagicMock()
     ray.get_runtime_context.return_value.namespace = "existing-namespace"
-    knobs.update(global_config={"config_paths": []}, source_contract="fixture-contract",
+    knobs.update(global_config={"config_paths": [], "general_qa": {"resources_servers": {"general_qa": {
+        "judge_server_url": "http://teacher", "judge_model": "teacher"}}}}, source_contract="fixture-contract",
                  skip_load_from_dotenv=True, retain_truncated_token_ids=True, result_timeout_s=5)
     namespace = {"Path": Path, "os": os, "ray": ray, "__file__": str(path),
                  "reject_inherited_gym_config": compat.reject_inherited_gym_config,
+                 "validate_teacher_endpoint": compat.validate_teacher_endpoint,
                  "verify_gym_source": MagicMock(), "gym_actor_runtime_env": compat.gym_actor_runtime_env}
     exec(compile(ast.Module(body=[fn], type_ignores=[]), str(path), "exec"), namespace)
     env = {"PYTHONPATH": "existing-source", "NRL_IGNORE_VERSION_MISMATCH": "1"}
     monkeypatch.setattr(os, "environ", env)
-    namespace[fn.name](SimpleNamespace(on_policy={"nemo_gym": knobs}),
+    config = SimpleNamespace(on_policy={"nemo_gym": knobs}, teachers=[{"remote": {"url": "http://teacher", "model": "teacher"}}])
+    namespace[fn.name](config,
         SimpleNamespace(cfg={"model_name": "student"}, dp_openai_server_base_urls=["http://student"]))
     assert nemo_gym.options.call_args.kwargs["runtime_env"] == compat.gym_actor_runtime_env(knobs, ROOT, env)
     actor_config = nemo_gym.options.return_value.remote.call_args.args[0]
     assert actor_config["initial_global_config_dict"]["uv_venv_dir"] == knobs["venv_dir"]
     assert actor_config["base_urls"] == ["http://student"]
+    nemo_gym.reset_mock()
+    knobs["global_config"]["general_qa"]["resources_servers"]["general_qa"]["judge_server_url"] = "http://dead-teacher"
+    with pytest.raises(ValueError, match="Stale general_qa"):
+        namespace[fn.name](config, SimpleNamespace())
+    nemo_gym.options.assert_not_called()
 
 
 @pytest.mark.parametrize("service,module,class_name", [

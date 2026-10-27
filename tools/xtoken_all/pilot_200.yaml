@@ -1,6 +1,31 @@
+# One-line entrypoint: bash run_xtoken.sh cross (or same / same235).
+# Inherit only the original assets/budgets from this completed run, never its weights.
 baseline_run: A-on-11
+root: /workspace/storage-shared/nlp/tungks/xtoken_all
+run_id_mode: unique
+student:
+  # null keeps the original initial checkpoint/tokenizer from the baseline YAML.
+  model_path: null
+  tokenizer_path: null
+  chat_template_kwargs:
+    enable_thinking: false
+runtime:
+  worker_venvs: /opt/ray_venvs
+  gym_actor_python: /opt/ray_venvs/nemo_rl.environments.nemo_gym.NemoGym/bin/python
+  gym_source: /workspace/storage-shared/nlp/vai-1.4-30b/nemo-rl/custom_opt_ultra_selfbuilt_nano/nemo-rl/3rdparty/Gym-workspace/Gym
+  gym_venvs: /opt/gym_venvs
+  gpu_indices: [0, 1, 2, 3]
+  ray_host: null
+  ray_port: 6379
+  ray_executable: /opt/nemo_rl_venv/bin/ray
+  ray_start_if_missing: true
+  ray_timeout_s: 180
 data_path: /workspace/storage-shared/nlp/tungks/xtoken_all/data/dapo-r2-train/train.jsonl
 expected_rows: 16367
+data_sha256: eaa5ab3fca49b3d82deb944b3466d6c4bde07da6fafbf960c9e0e34945e0c88b
+# null means an already converted general_qa JSONL. Raw inputs use the existing
+# math or math_code converter; see the guide, not a new conversion implementation.
+dataset_conversion: null
 distillation:
   max_num_steps: 200
   max_num_epochs: 1
@@ -22,6 +47,8 @@ arms:
   same:
     run_id: B-on-02
     tokenizer_mode: same
+    gpu_uuids: null
+    server_mode_evidence: null
     node: anhhbt-eval-7-0-1
     teacher_url: http://172.29.191.69:8000
     teacher_model: Qwen3-32B
@@ -30,10 +57,23 @@ arms:
   cross:
     run_id: A-on-13
     tokenizer_mode: cross
-    node: rl-test-opd-ultra-selfbuilt-trainllm-1-0-1
+    node: rl-test-opd-ultra-selfbuilt-trainllm-1-0-2
+    gpu_uuids:
+      - GPU-654c372c-01fb-9f78-efa2-c3ae4753b451
+      - GPU-8cb6790e-e514-d9df-bf7d-da5001fa90ed
+      - GPU-0df4fc7d-8df8-cc9c-627a-031032fc140d
+      - GPU-47300b26-33c3-62c8-4ffc-5029e8c869a3
+    teacher_url: http://172.29.219.204:8001
+    teacher_model: gemma-4-26B-A4B-it
+    teacher_vocab_size: 262144
+    teacher_tokenizer: null
+    projection_path: null
+    server_mode_evidence: null
   same235:
     run_id: C-on-01
     tokenizer_mode: same
+    gpu_uuids: null
+    server_mode_evidence: null
     node: anhhbt-eval-7-0-1
     teacher_url: http://172.29.131.162:8000
     teacher_model: Qwen3-235B-A22B-Instruct

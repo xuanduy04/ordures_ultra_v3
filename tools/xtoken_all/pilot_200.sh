@@ -15,7 +15,7 @@ export XTOKEN_RUN_DIR="$XTOKEN_ALL_ROOT/runs/$RUN_ID"
 case "$ACTION" in
   render)
     : "${XTOKEN_RAY_ADDRESS:?Set the local verified Ray head host:port}"
-    "$NRL_PYTHON" -B tools/xtoken_all/prepare_pilot.py --arm "$ARM" --ray-address "$XTOKEN_RAY_ADDRESS"
+    "$NRL_PYTHON" -B tools/xtoken_all/prepare_pilot.py --arm "$ARM" --ray-address "$XTOKEN_RAY_ADDRESS" --run-id "$RUN_ID"
     ;;
   check)
     "$NRL_PYTHON" -B tools/xtoken_all/preflight.py --run-dir "$XTOKEN_RUN_DIR"

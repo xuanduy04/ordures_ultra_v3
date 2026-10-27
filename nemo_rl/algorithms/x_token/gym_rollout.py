@@ -12,7 +12,7 @@ from nemo_rl.algorithms.x_token.gym_protocol import (
     prepare_example, restore_order, unpack_result, reward_metric_valid,
 )
 from nemo_rl.algorithms.x_token.on_policy import OnPolicyRollout
-from nemo_rl.algorithms.x_token.gym_compat import gym_actor_runtime_env, reject_inherited_gym_config, verify_gym_source
+from nemo_rl.algorithms.x_token.gym_compat import gym_actor_runtime_env, reject_inherited_gym_config, verify_gym_source, validate_teacher_endpoint
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 
 
@@ -133,6 +133,7 @@ def create_gym_environment(config, generation):
 
     cfg = config.on_policy["nemo_gym"]
     reject_inherited_gym_config(os.environ)
+    validate_teacher_endpoint({"teachers": config.teachers, "on_policy": config.on_policy})
     verify_gym_source(cfg["source_root"], cfg["source_contract"])
     source = str(Path(__file__).resolve().parents[3])
     runtime = gym_actor_runtime_env(cfg, source, os.environ)

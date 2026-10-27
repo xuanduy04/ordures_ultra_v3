@@ -44,7 +44,7 @@ def main():
     actor, stream, completed = None, None, False
     try:
         node_ids = sorted(node["NodeID"] for node in ray.nodes() if node["Alive"])
-        assert node_ids == sorted(lease["ray_node_ids"]) and ray.cluster_resources()["GPU"] == 4
+        assert node_ids == sorted(lease["ray_node_ids"]) and ray.cluster_resources()["GPU"] == len(lease["gpu_indices"])
 
         @ray.remote(num_cpus=0, max_restarts=0, max_task_retries=0)  # pragma: no cover
         class Stream:

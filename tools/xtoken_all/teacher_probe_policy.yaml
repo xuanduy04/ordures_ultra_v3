@@ -1,6 +1,10 @@
 # Versioned upstream facts; custom deployment overrides must be reported explicitly.
 allow_upstream_default_assumption: true
 known_upstream_defaults:
+  "0.30.0":
+    logprobs_mode: raw_logprobs
+    max_logprobs: 20
+    reference_url: https://docs.vllm.ai/en/v0.30.0/cli/serve/#--logprobs-mode
   "0.31.0":
     logprobs_mode: raw_logprobs
     max_logprobs: 20

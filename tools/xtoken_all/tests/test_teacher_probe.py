@@ -46,9 +46,16 @@ def test_known_default_allows_measured_scores_without_claiming_mode_proof():
     contract.validate_teacher_probe(result, POLICY)
 
 
-@pytest.mark.parametrize("version", ["0.30.0", "0.31.0+custom", "unknown"])
+@pytest.mark.parametrize("version", ["0.14.2.dev0+gd7de043d5.d20260219", "0.31.0+custom", "unknown"])
 def test_unknown_exact_version_cannot_infer_default(version):
     assert contract.mode_basis(REMOTE, version, None, POLICY)["accepted"] is False
+
+
+def test_v030_default_is_documented_assumption_not_deployment_proof():
+    result = contract.mode_basis(REMOTE, "0.30.0", None, POLICY)
+    assert result["accepted"] is True
+    assert result["server_logprobs_mode_verified"] is False
+    assert result["mode_assumption_accepted"] is True
 
 
 @pytest.mark.parametrize("mode", ["raw_logits", "processed_logits", "processed_logprobs"])

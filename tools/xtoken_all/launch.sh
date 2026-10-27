@@ -7,7 +7,7 @@ set -euo pipefail
 : "${NEMO_RL_VENV_DIR:?Set the existing policy/generation worker venv store}"
 : "${XTOKEN_ALLOCATION_RECEIPT:?Set the fresh allocation/Ray ownership receipt}"
 export PYTHONDONTWRITEBYTECODE=1 UV_OFFLINE=1 HF_HUB_OFFLINE=1
-export CUDA_VISIBLE_DEVICES=0,1,2,3
+export CUDA_VISIBLE_DEVICES="$("$NRL_PYTHON" -B -c 'import json,sys; print(",".join(map(str,json.load(open(sys.argv[1]))["gpu_indices"])))' "$XTOKEN_ALLOCATION_RECEIPT")"
 SOURCE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export PYTHONPATH="${SOURCE_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 cd "$SOURCE_ROOT"
@@ -29,8 +29,9 @@ assert source_snapshot(Path.cwd())['sha256'] == meta['source_sha256'], 'Source c
 from omegaconf import OmegaConf
 cfg = OmegaConf.to_container(OmegaConf.load(run / 'effective.yaml'), resolve=True)
 from nemo_rl.algorithms.x_token.gym_compat import (
-    reject_inherited_gym_config, verify_gym_source, gym_actor_runtime_env, validate_gym_actor_report,
+    reject_inherited_gym_config, verify_gym_source, gym_actor_runtime_env, validate_gym_actor_report, validate_teacher_endpoint,
 )
+validate_teacher_endpoint(cfg)
 reject_inherited_gym_config(os.environ)
 actor_runtime = gym_actor_runtime_env(cfg['on_policy']['nemo_gym'], Path.cwd(), os.environ)
 verify_gym_source(cfg['on_policy']['nemo_gym']['source_root'], cfg['on_policy']['nemo_gym']['source_contract'])
@@ -53,19 +54,19 @@ for name in ('teacher-probe', 'assets-check', 'source-check', 'gym-preflight', '
         assert len(services) == 3 and {item['service'] for item in services} == {'model', 'qa', 'agent'}
         assert all(item['app_import_completed'] and not item['servers_started'] for item in services)
 lease = json.loads(allocation.read_text())
-assert lease['success'] and lease['gpu_indices'] == [0, 1, 2, 3] and lease['ray_ownership_verified']
+assert lease['success'] and len(lease['gpu_indices']) == cfg['cluster']['gpus_per_node'] and lease['ray_ownership_verified']
 assert lease['ray_address'] == cfg['on_policy']['nemo_gym']['ray_address'], 'Ray head differs from rendered config'
 assert 0 <= (datetime.now(timezone.utc) - datetime.fromisoformat(lease['checked_at_utc'])).total_seconds() < 300
 raw = subprocess.check_output(['nvidia-smi', '--query-gpu=index,uuid', '--format=csv,noheader,nounits'], text=True)
 devices = {int(line.split(',')[0]): line.split(',')[1].strip() for line in raw.splitlines()}
-assert [devices[i] for i in range(4)] == lease['gpu_uuids']
+assert [devices[i] for i in lease['gpu_indices']] == lease['gpu_uuids']
 apps = subprocess.check_output(['nvidia-smi', '--query-compute-apps=gpu_uuid,pid', '--format=csv,noheader,nounits'], text=True)
 assert not any(line.split(',')[0].strip() in lease['gpu_uuids'] for line in apps.splitlines()), 'Target GPUs are occupied'
 import ray
 ray.init(address=lease['ray_address'], log_to_driver=False)
 try:
     nodes = [node['NodeID'] for node in ray.nodes() if node['Alive']]
-    assert sorted(nodes) == sorted(lease['ray_node_ids']) and ray.cluster_resources()['GPU'] == 4
+    assert sorted(nodes) == sorted(lease['ray_node_ids']) and ray.cluster_resources()['GPU'] == len(lease['gpu_indices'])
 finally:
     ray.shutdown()
 for worker in ('nemo_rl.models.policy.workers.dtensor_policy_worker_v2.DTensorPolicyWorkerV2',

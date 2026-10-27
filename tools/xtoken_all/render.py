@@ -22,6 +22,7 @@ def main():
     parser.add_argument("--config", type=Path, help="Optional training profile; default remains the two-update smoke recipe")
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--student", type=Path, required=True)
+    parser.add_argument("--student-tokenizer", type=Path)
     parser.add_argument("--teacher-tokenizer", type=Path, required=True)
     tokenizer_mode = parser.add_mutually_exclusive_group(required=True)
     tokenizer_mode.add_argument("--projection", type=Path)
@@ -47,11 +48,9 @@ def main():
     for path in (args.data, args.gym_actor_python):
         if not path.is_file():
             raise FileNotFoundError(path)
-    within(args.data, root)
     if args.projection is not None:
         if not args.projection.is_file():
             raise FileNotFoundError(args.projection)
-        within(args.projection, root)
     if args.teacher_url.rstrip("/").endswith("/v1") or "@" in args.teacher_url or "?" in args.teacher_url:
         raise ValueError("Use teacher base URL without /v1 or embedded credentials")
     if args.teacher_api_key_env and args.teacher_api_key_env not in os.environ:
@@ -63,7 +62,7 @@ def main():
     from nemo_rl.utils.config import load_config, register_omegaconf_resolvers
     from nemo_rl.algorithms.xtoken_off_policy_distillation import MasterConfig
     from nemo_rl.algorithms.x_token.on_policy import validate_on_policy_config
-    from nemo_rl.algorithms.x_token.gym_compat import gym_actor_runtime_env
+    from nemo_rl.algorithms.x_token.gym_compat import gym_actor_runtime_env, bind_teacher_endpoint
 
     # Preserve the venv entrypoint; resolving its symlink selects base Python.
     os.environ.update(XTOKEN_GYM_ACTOR_PYTHON=os.path.abspath(args.gym_actor_python),
@@ -75,6 +74,8 @@ def main():
     register_omegaconf_resolvers()
     config_path = within(args.config, root) if args.config is not None else source / "examples/configs/xtoken_gym_qwen3_gemma4.yaml"
     cfg = load_config(config_path)
+    cfg["policy"]["model_name"] = str(args.student.resolve())
+    cfg["policy"]["tokenizer"]["name"] = str((args.student_tokenizer if args.student_tokenizer is not None else args.student).resolve())
     teacher = cfg["teachers"][0]
     teacher["model_name"] = str(args.teacher_tokenizer.resolve())
     teacher["tokenizer"]["name"] = str(args.teacher_tokenizer.resolve())
@@ -90,14 +91,13 @@ def main():
     teacher["remote"]["api_key_env"] = args.teacher_api_key_env
     teacher["train_global_batch_size"] = cfg["policy"]["train_global_batch_size"]
     teacher["max_total_sequence_length"] = cfg["on_policy"]["teacher_max_total_sequence_length"]
+    bind_teacher_endpoint(cfg)
     resolved = OmegaConf.to_container(cfg, resolve=True)
     validate_on_policy_config(MasterConfig(**resolved))
     gym_actor_runtime_env(resolved["on_policy"]["nemo_gym"], source, os.environ)
     model = json.loads((args.student / "config.json").read_text())
-    for key, expected in {"model_type": "qwen3", "hidden_size": 2048,
-                          "num_hidden_layers": 28, "tie_word_embeddings": True}.items():
-        if model[key] != expected:
-            raise ValueError("Unexpected student architecture: " + key)
+    if not isinstance(model["model_type"], str) or type(model["vocab_size"]) is not int or model["vocab_size"] <= 0:
+        raise ValueError("Student config must provide model_type and a positive vocab_size")
     run.mkdir(parents=True, exist_ok=False)
     OmegaConf.save(OmegaConf.create(resolved), run / "effective.yaml")
     provenance = {"mode": "on", "rollout_backend": "nemo_gym",

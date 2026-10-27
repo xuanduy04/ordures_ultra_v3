@@ -27,6 +27,7 @@ def load(name, path):
 
 pilot = load("pilot_config_test", TOOLS / "prepare_pilot.py")
 identity = load("pilot_identity_test", TOOLS / "tokenizer_contract.py")
+compat = load("pilot_gym_compat_test", ROOT / "nemo_rl/algorithms/x_token/gym_compat.py")
 
 
 def spec():
@@ -47,7 +48,11 @@ def baseline():
         "on_policy": {"max_prompt_tokens": 1792, "refit_buffer_size_gb": 4.0,
             "teacher_max_total_sequence_length": 4096,
             "nemo_gym": {"actor_python": "/venvs/gym/bin/python", "source_root": "/gym", "venv_dir": "/gym-venvs", "ray_address": "old-head:6379",
-                "source_contract": "/old-source/tools/xtoken_all/super-source-contract.json", "global_config": {"nemo_gym_log_dir": "/root/runs/A-on-11/gym-logs"}}}}
+                "source_contract": "/old-source/tools/xtoken_all/super-source-contract.json", "global_config": {
+                    "nemo_gym_log_dir": "/root/runs/A-on-11/gym-logs",
+                    "general_qa": {"resources_servers": {"general_qa": {"judge_server_url": "http://old-dead-teacher", "judge_model": "old"}}},
+                    "policy_model": {"responses_api_models": {"vllm_model": {"chat_template_kwargs": {}}}},
+                    "policy_model_reasoning_off": {"responses_api_models": {"vllm_model": {"chat_template_kwargs": {}}}}}}}}
 
 
 @pytest.mark.parametrize("arm", ["same", "cross", "same235"])
@@ -75,7 +80,9 @@ def test_both_arms_preserve_actual_pilot_data_and_budgets(arm):
         if arm == "same235":
             assert cfg["teachers"][0]["tokenizer"]["name"] == old["policy"]["tokenizer"]["name"]
     else:
-        assert cfg["teachers"] == old["teachers"]
+        assert cfg["teachers"][0]["projection_matrix_path"] == old["teachers"][0]["projection_matrix_path"]
+        assert cfg["teachers"][0]["tokenizer"] == old["teachers"][0]["tokenizer"]
+        assert cfg["teachers"][0]["remote"]["url"] == spec()["arms"][arm]["teacher_url"]
 
 
 def test_yaml_profiles_share_the_approved_budget():
@@ -100,6 +107,132 @@ def test_independent_arms_reject_a_multi_teacher_baseline():
     with pytest.raises(ValueError, match="one teacher per independent run"):
         pilot.pilot_config(old, spec(), "same235", PurePosixPath("/root/runs/old"), PurePosixPath("/root/runs/new"),
                            PurePosixPath("/old-source"), PurePosixPath("/new-source"), "host:6379")
+
+
+def test_yaml_can_replace_initial_student_and_both_gym_templates():
+    settings = spec()
+    settings["student"].update(model_path="/models/new-student", tokenizer_path="/models/new-tokenizer",
+                               chat_template_kwargs={"enable_thinking": True})
+    settings["arms"]["same235"]["teacher_tokenizer"] = None
+    cfg = pilot.pilot_config(baseline(), settings, "same235", PurePosixPath("/root/old"), PurePosixPath("/root/new"),
+        PurePosixPath("/source/old"), PurePosixPath("/source/new"), "host:6379")
+    assert cfg["policy"]["model_name"] == "/models/new-student"
+    assert cfg["policy"]["tokenizer"]["name"] == cfg["teachers"][0]["tokenizer"]["name"] == "/models/new-tokenizer"
+    for name in ("policy_model", "policy_model_reasoning_off"):
+        assert cfg["on_policy"]["nemo_gym"]["global_config"][name]["responses_api_models"]["vllm_model"]["chat_template_kwargs"] == {"enable_thinking": True}
+
+
+def test_new_run_names_do_not_overwrite_old_runs():
+    assert pilot.run_name("A-on-13", "fixed") == "A-on-13"
+    names = {pilot.run_name("A-on-13", "unique") for _ in range(50)}
+    assert len(names) == 50 and all(name.startswith("A-on-13-") for name in names)
+    with pytest.raises(ValueError):
+        pilot.run_name("A", "overwrite")
+
+
+@pytest.mark.parametrize("check_only", [True, False])
+def test_one_line_pipeline_reuses_helpers_in_order(tmp_path, monkeypatch, check_only):
+    calls = []
+    monkeypatch.setattr(pilot.subprocess, "run", lambda command, **kw: calls.append(command))
+    monkeypatch.setattr(pilot, "allocation_command", lambda *args: (["allocation-helper"], []))
+    settings = spec()
+    settings["arms"]["cross"]["server_mode_evidence"] = "/operator/checked-mode.json"
+    pilot.finish_pipeline(ROOT, tmp_path, tmp_path, settings, "cross", "local:6379", check_only)
+    commands = [Path(command[2]).name if len(command) > 2 else Path(command[-1]).name for command in calls]
+    assert commands[:4] == ["preflight.py", "probe_teacher.py", "allocation-helper", "ray_stream_probe.py"]
+    assert "--server-mode-evidence" in calls[1]
+    assert commands[4:] == ([] if check_only else ["launch.sh", "check_pilot.py"])
+
+
+def test_dataset_change_requires_matching_hash_and_preserves_original(tmp_path):
+    data = tmp_path / "pool.jsonl"
+    data.write_text('{}\n')
+    settings = spec()
+    settings.update(data_path=str(data), data_sha256=None, dataset_conversion=None)
+    assert pilot.prepare_dataset(tmp_path, settings) == data.resolve()
+    settings["data_sha256"] = "wrong"
+    with pytest.raises(ValueError, match="SHA256"):
+        pilot.prepare_dataset(tmp_path, settings)
+    assert data.read_text() == '{}\n'
+
+
+def test_dataset_conversion_reuses_old_converter_and_rejects_modified_cache(tmp_path, monkeypatch):
+    data = tmp_path / "raw.jsonl"
+    data.write_text('{}\n')
+    calls = []
+    def convert(source, output, rows, prompt, answer, dataset):
+        calls.append((source, rows, prompt, answer, dataset))
+        output.mkdir(parents=True)
+        (output / "train.jsonl").write_text('{"converted":true}\n')
+        (output / "conversion.json").write_text(json.dumps({"success": True, "source_sha256": pilot.sha256(source),
+            "output_sha256": pilot.sha256(output / "train.jsonl")}))
+    monkeypatch.setitem(sys.modules, "convert_general_qa", SimpleNamespace(convert=convert))
+    settings = spec()
+    settings.update(data_path=str(data), data_sha256=None, expected_rows=1,
+        dataset_conversion={"kind": "math", "options": {"prompt_field": "prompt", "answer_field": "answer", "dataset": "fixture"}})
+    result = pilot.prepare_dataset(tmp_path, settings)
+    assert pilot.prepare_dataset(tmp_path, settings) == result and len(calls) == 1
+    assert calls[0][1:] == (1, "prompt", "answer", "fixture")
+    result.write_text("modified")
+    with pytest.raises(ValueError, match="changed after"):
+        pilot.prepare_dataset(tmp_path, settings)
+
+
+@pytest.mark.parametrize("state", ["owned", "missing", "foreign", "remote", "multiple"])
+def test_auto_ray_does_not_kill_or_attach_to_foreign_heads(monkeypatch, state):
+    allocation = load("pilot_allocation_test", TOOLS / "check_allocation.py")
+    monkeypatch.setattr(allocation.subprocess, "check_output", lambda *args, **kw: "172.1.1.1 ")
+    observations = iter(([10],) if state == "owned" else ([1, 2],) if state == "multiple" else ([], [20]))
+    monkeypatch.setattr(allocation, "owned_gcs_processes", lambda _: next(observations))
+    connection = MagicMock()
+    connection.__enter__.return_value.connect_ex.return_value = 0 if state == "foreign" else 1
+    monkeypatch.setattr(allocation.socket, "socket", lambda: connection)
+    start = MagicMock()
+    monkeypatch.setattr(allocation.subprocess, "run", start)
+    address = "172.1.1.2:6379" if state == "remote" else "172.1.1.1:6379"
+    if state in ("remote", "foreign", "multiple"):
+        with pytest.raises(ValueError):
+            allocation.ensure_local_head(address, 4, True, Path("/venv/bin/ray"), 90)
+        start.assert_not_called()
+    else:
+        host, pids = allocation.ensure_local_head(address, 4, True, Path("/venv/bin/ray"), 90)
+        assert host == "172.1.1.1" and len(pids) == 1
+        if state == "missing":
+            assert start.call_args.args[0] == [str(Path("/venv/bin/ray")), "start", "--head", "--node-ip-address=172.1.1.1",
+                "--port=6379", "--num-gpus=4", "--include-dashboard=False"]
+            assert start.call_args.kwargs["timeout"] == 90
+        else:
+            start.assert_not_called()
+
+
+def test_allocation_refuses_changed_uuid_before_any_ray_action(monkeypatch):
+    settings = spec()
+    settings["arms"]["cross"]["gpu_uuids"] = ["expected"]
+    settings["runtime"]["gpu_indices"] = [0]
+    monkeypatch.setattr(pilot.subprocess, "check_output", lambda *args, **kw: "0, changed\n")
+    with pytest.raises(ValueError, match="UUIDs"):
+        pilot.allocation_command(ROOT, settings, "cross", "host:6379", Path("receipt.json"))
+
+
+def test_owned_gcs_scan_checks_real_executable_and_exact_port(tmp_path, monkeypatch):
+    allocation = load("pilot_gcs_scan_test", TOOLS / "check_allocation.py")
+    for pid, arguments in ((10, ["/ray/gcs_server", "--port=6379"]), (11, ["/ray/gcs_server", "--port", "6380"]),
+                           (12, ["/bin/echo", "gcs_server", "--port=6379"])):
+        folder = tmp_path / str(pid)
+        folder.mkdir()
+        (folder / "cmdline").write_bytes(("\0".join(arguments) + "\0").encode())
+    monkeypatch.setattr(allocation.os, "geteuid", lambda: tmp_path.stat().st_uid, raising=False)
+    monkeypatch.setattr(allocation, "Path", lambda value: tmp_path if value == "/proc" else Path(value))
+    assert allocation.owned_gcs_processes(6379) == [10]
+    assert allocation.owned_gcs_processes(6380) == [11]
+
+
+def test_changed_cross_tokenizer_does_not_silently_reuse_the_old_map():
+    settings = spec()
+    settings["student"]["tokenizer_path"] = "/new/tokenizer"
+    with pytest.raises(ValueError, match="matching projection_path"):
+        pilot.pilot_config(baseline(), settings, "cross", PurePosixPath("/root/old"), PurePosixPath("/root/new"),
+            PurePosixPath("/source/old"), PurePosixPath("/source/new"), "host:6379")
 
 
 def test_actual_super_retention_keeps_every_pilot_checkpoint():
@@ -167,14 +300,15 @@ def test_actual_renderer_supports_null_projection(tmp_path, monkeypatch):
     actor.write_text("fixture")
     data = tmp_path / "data.jsonl"
     data.write_text("{}\n")
-    (tmp_path / "student/config.json").write_text(json.dumps({"model_type": "qwen3", "hidden_size": 2048, "num_hidden_layers": 28, "tie_word_embeddings": True}))
+    (tmp_path / "student/config.json").write_text(json.dumps({"model_type": "other-supported-model", "vocab_size": 151936}))
     omega = SimpleNamespace(to_container=lambda value, **kwargs: deepcopy(value), create=lambda value: value,
                             save=lambda value, path: path.write_text(yaml.safe_dump(value)))
     monkeypatch.setitem(sys.modules, "omegaconf", SimpleNamespace(OmegaConf=omega))
     monkeypatch.setitem(sys.modules, "nemo_rl.utils.config", SimpleNamespace(load_config=lambda _: cfg, register_omegaconf_resolvers=lambda: None))
     monkeypatch.setitem(sys.modules, "nemo_rl.algorithms.xtoken_off_policy_distillation", SimpleNamespace(MasterConfig=lambda **kw: kw))
     monkeypatch.setitem(sys.modules, "nemo_rl.algorithms.x_token.on_policy", SimpleNamespace(validate_on_policy_config=lambda _: None))
-    monkeypatch.setitem(sys.modules, "nemo_rl.algorithms.x_token.gym_compat", SimpleNamespace(gym_actor_runtime_env=lambda *args: None))
+    monkeypatch.setitem(sys.modules, "nemo_rl.algorithms.x_token.gym_compat", SimpleNamespace(
+        gym_actor_runtime_env=lambda *args: None, bind_teacher_endpoint=compat.bind_teacher_endpoint))
     monkeypatch.setattr(renderer, "source_snapshot", lambda _: {"sha256": "fixture-source"})
     monkeypatch.setattr(renderer, "within", lambda path, root: Path(path).resolve())
     monkeypatch.setenv("XTOKEN_ALL_ROOT", str(tmp_path))
@@ -188,6 +322,11 @@ def test_actual_renderer_supports_null_projection(tmp_path, monkeypatch):
     assert effective["teachers"][0]["projection_matrix_path"] is None
     assert "from_pretrained_kwargs" not in effective["teachers"][0]["tokenizer"]
     assert provenance["projection_sha256"] is None and provenance["tokenizer_mode"] == "same"
+    assert effective["policy"]["model_name"] == str((tmp_path / "student").resolve())
+    assert effective["policy"]["tokenizer"]["name"] == str((tmp_path / "student").resolve())
+    compat.validate_teacher_endpoint(effective)
+    qa = effective["on_policy"]["nemo_gym"]["global_config"]["general_qa"]["resources_servers"]["general_qa"]
+    assert qa == {"judge_server_url": "http://teacher", "judge_model": "Qwen3-32B"}
 
 
 @pytest.mark.parametrize("failure", [None, "stale", "missing-step", "nonfinite", "exit", "checkpoint"])

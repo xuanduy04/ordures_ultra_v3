@@ -71,6 +71,21 @@ def validate_ray_address(address):
     return address
 
 
+def bind_teacher_endpoint(config):
+    """A resolved template must not retain the previous teacher's judge URL."""
+    teacher = config["teachers"][0]["remote"]
+    qa = config["on_policy"]["nemo_gym"]["global_config"]["general_qa"]["resources_servers"]["general_qa"]
+    qa["judge_server_url"] = teacher["url"].rstrip("/")
+    qa["judge_model"] = teacher["model"]
+
+
+def validate_teacher_endpoint(config):
+    teacher = config["teachers"][0]["remote"]
+    qa = config["on_policy"]["nemo_gym"]["global_config"]["general_qa"]["resources_servers"]["general_qa"]
+    if qa["judge_server_url"].rstrip("/") != teacher["url"].rstrip("/") or qa["judge_model"] != teacher["model"]:
+        raise ValueError("Stale general_qa judge endpoint; render from the current teacher settings")
+
+
 def init_existing_gym_ray(config, ray_module, environ):
     """Attach to the approved head; never fall back to creating another one."""
     reject_inherited_gym_config(environ)

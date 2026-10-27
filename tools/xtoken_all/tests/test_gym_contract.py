@@ -184,6 +184,10 @@ def test_source_fingerprint_detects_code_edits(tmp_path):
     after = integrity.source_snapshot(tmp_path)
     assert before["sha256"] != after["sha256"]
     assert list(after["files"]) == ["nemo_rl/example.py"]
+    (tmp_path / "run_xtoken.sh").write_text("exit 0\n")
+    launcher = integrity.source_snapshot(tmp_path)
+    assert launcher["sha256"] != after["sha256"]
+    assert "run_xtoken.sh" in launcher["files"]
 
 
 @pytest.mark.parametrize("retain,has_ids", [(False, True), (True, True), (True, False)])

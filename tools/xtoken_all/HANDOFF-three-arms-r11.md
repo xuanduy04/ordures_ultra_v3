@@ -1,10 +1,61 @@
-# DSH — r11: ba run độc lập, cùng Qwen3-1.7B, 200 step, giữ đủ20 checkpoint
+# DSH — r12: một lệnh, tái dùng setup Super-120B
+
+R12 là cách chạy hiện hành, thay quy trình nhiều block bên dưới. Source chỉ có
+một file mới: `run_xtoken.sh`. Không thêm controller hoặc viết lại QA/converter.
+
+Giải nén packet vào thư mục mới dưới `/workspace/storage-shared/nlp/tungks/xtoken_all/`,
+vào `source/`. Metadata nguyên bản đã kèm; không copy đè source job đang chạy.
+Chỉnh `tools/xtoken_all/pilot_200.yaml` rồi chạy trong tmux trên đúng student node:
+
+| Một lệnh | Teacher | Student node |
+| --- | --- | --- |
+| `bash run_xtoken.sh cross` | Gemma-4-26B-A4B-it, `172.29.219.204:8001` | pod cross hiện tại `rl-test-opd-ultra-selfbuilt-trainllm-1-0-2` |
+| `bash run_xtoken.sh same` | Qwen3-32B, `172.29.191.69:8000` | anhhbt-eval-7-0-1 |
+| `bash run_xtoken.sh same235` | Qwen3-235B-A22B-Instruct, `172.29.131.162:8000` | anhhbt, sau khi same kết thúc và GPU rảnh |
+
+Chỉ kiểm tra, chưa train: `bash run_xtoken.sh cross --check-only`. Check-only vẫn
+có thể start head Ray local nếu thiếu, tạo run/receipt và gọi scoring teacher nhỏ.
+Mỗi lần chạy sinh ID mới; không xóa plan/run cũ, không resume A-on-11 hoặc arm khác.
+
+YAML chứa root, student, teacher, dataset, GPU và runtime. `student.model_path:null`
+giữ initial checkpoint gốc trong A-on-11/effective.yaml, không phải checkpoint66.
+Script chỉ giữ interpreter + path YAML và source đúng `use_custom_opt.sh` của Super.
+Không install, rebuild, kill Ray, restart teacher hoặc tự bỏ gate.
+
+Launcher dùng helper cũ theo thứ tự: allocation/owned local Ray → render →
+preflight assets/import Gym → teacher probe → allocation mới → Ray stream probe →
+launch.sh → check_pilot.py. Khóa từng GPU UUID để các launcher mới không đè nhau.
+Ray cùng user root chưa chứng minh thuộc project nào: operator phải dành head/GPU
+đó cho job này. Nếu đổi GPU subset trên head cũ, head phải có cùng CUDA visibility;
+có thể đổi port tạo head riêng khi cần, không kill head của job khác.
+
+Lỗi general_qa: teacher mới ở172.29.219.204:8001 nhưng QA vẫn hỏi172.29.85.69:8000.
+Template A-on-11 đã resolve URL thành literal; helper cũ chỉ đổi teacher.remote.
+Fork QA khởi tạo client và hỏi /v1/models kể cả should_use_judge=false. R12 cập nhật
+URL/model QA trong renderer, kiểm lại ở preflight và factory trước tạo actor.
+Không phải lỗi convert rl_qa/general_qa; không cần sửa server teacher.
+
+Xem `docs/guides/xtoken-gym-super.md` để đổi student/tokenizer/projection hoặc
+chọn raw dataset và gọi converter Super cũ từ chính YAML. Vẫn200 update, warmup20,
+save10, keep20, top20+OTHER, T1/CE0. Cần metadata A-on-11 làm template asset/budget.
+Không hứa mọi kiến trúc đều chạy được: vẫn phải qua runtime và tokenizer gates.
+
+Gemma vLLM0.30.0 được chấp nhận theo upstream raw_logprobs default có nguồn docs;
+receipt ghi assumption, không giả là đã kiểm args server. Dev/custom version như
+Qwen32B vẫn cần evidence khi exact-version policy không nhận diện. Điền path vào
+`arms.<arm>.server_mode_evidence`. Không tự đổi teacher để vượt gate.
+
+Xem qualification.json cho số test local; chưa có live full pipeline của launcher
+mới trên node công ty. Checkpoint A-on-11/step20 đã HF-load/finite-forward pass
+trong log user trước đó, không convert lại.
+
+## Ghi nhận r11 và wrapper từng bước (lưu để đối chiếu)
 
 User đã chốt ba run độc lập; không multi-teacher trong một run:
 
 | Arm CLI | Run mới | Teacher | Student node |
 | --- | --- | --- | --- |
-| cross | A-on-13 | Gemma-4-26B-A4B-it từ YAML A-on-11 | rl-test-opd-ultra-selfbuilt-trainllm-1-0-1 |
+| cross | A-on-13 | Gemma-4-26B-A4B-it; r12 cập nhật URL trong YAML | rl-test-opd-ultra-selfbuilt-trainllm-1-0-2 |
 | same | B-on-02 | Qwen3-32B ở172.29.191.69:8000 | anhhbt-eval-7-0-1 |
 | same235 | C-on-01 | Qwen3-235B-A22B-Instruct ở172.29.131.162:8000 | anhhbt-eval-7-0-1, sau B |
 

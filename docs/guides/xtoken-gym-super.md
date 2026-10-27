@@ -5,6 +5,70 @@ Gemma-4-26B-A4B-it chấm response bằng tokenizer riêng. Objective vẫn là
 `topk_tail_kl`, K=20 tại mỗi vị trí + OTHER, CE=0, T=1. Đây là adaptation;
 không gọi nó là P-KL nguyên bản, PPO hay sampled-token MOPD của GRPO.
 
+## Entry point đơn giản (r12)
+
+Từ source mới của gói, chạy `bash run_xtoken.sh cross`, `bash run_xtoken.sh same`
+hoặc `bash run_xtoken.sh same235` trên đúng student node, trong tmux.
+`bash run_xtoken.sh cross --check-only` kiểm setup, teacher và Ray rồi dừng.
+Chỉ có một file source mới là launcher shell; nó gọi setup Super-120B
+`custom_utils/utils_training/use_custom_opt.sh` và các helper cũ, không thay
+converter, Gym server hay vòng training.
+
+Chỉnh `tools/xtoken_all/pilot_200.yaml` trước chạy:
+
+| Mục | Ý nghĩa |
+| --- | --- |
+| `root`, `baseline_run` | Shared root và run template; chỉ lấy initial assets/budgets, không resume checkpoint |
+| `student.model_path`, `tokenizer_path` | null giữ original; thay model thì tokenizer mặc định theo model mới |
+| `student.chat_template_kwargs` | Áp vào tokenizer và cả hai Gym model proxy |
+| `arms.<arm>.teacher_url`, `teacher_model`, `teacher_vocab_size` | Base URL không có /v1, alias /v1/models, kích thước head teacher |
+| `teacher_tokenizer`, `projection_path` | Asset local phù hợp; cross null kế thừa map cũ, same luôn projection=null |
+| `data_path`, `expected_rows`, `data_sha256` | Dataset chọn rõ; đổi bộ thì đổi SHA/count hoặc đặt null để ghi nhận mới |
+| `dataset_conversion` | null cho general_qa JSONL đã chuẩn hóa; raw dùng converter cũ theo ví dụ dưới |
+| `runtime` | GPU indices, existing worker/Gym venv, source Gym; ray_host=null lấy IP pod hiện tại |
+| `arms.<arm>.gpu_uuids` | UUID allocation đã chốt; null chụp GPU local được chọn, vẫn kiểm occupancy/Ray |
+| `arms.<arm>.server_mode_evidence` | Path JSON evidence đã kiểm args server; null dùng exact-version policy khi được phép |
+
+Chuyển raw math bằng converter Super hiện có: thay data_path sang raw, khai đúng
+SHA/count và đặt ngay trong YAML này:
+
+```yaml
+dataset_conversion:
+  kind: math
+  options:
+    prompt_field: prompt
+    answer_field: reward_model.ground_truth
+    dataset: selected_math
+```
+
+Đổi field theo schema thực, không đoán schema theo ví dụ. Math yêu cầu expected_rows
+dương. Pool math_code dùng kind:math_code và mapping/count trong recipe hiện có
+`tools/xtoken_all/math_code_20k.yaml` làm options (bỏ input/output_dir). Cả hai gọi
+converter cũ, giữ mẫu/thứ tự, không resample. Cache theo hash input/recipe, xác minh
+receipt/hash trước reuse. Output nằm root/data; raw có thể được đọc ở path khác.
+QA reward của code không phải execution pass.
+
+Đổi tokenizer cross cần projection_path tương ứng; launcher từ chối kế thừa map
+khi thấy path tokenizer đổi. Shape gate không chứng minh map đúng ngữ nghĩa: phải
+build/review map với đúng hai tokenizer. Same phải qua identity + teacher probe.
+Hỗ trợ kiến trúc khác còn phụ thuộc runtime; launcher không tự cài dependency.
+
+Mỗi lần tạo run ID mới. Ray chỉ tự start local head khi cổng rảnh, reuse head thuộc
+user trên pod hiện tại, không stop/kill job. Operator phải dành head/GPU đó cho job;
+không dùng head chung project khác. Khi đổi GPU subset, head phải có cùng CUDA
+visibility; có thể đổi port để tạo head riêng, không kill head cũ. Cross và same ở
+hai node đã chỉ định; same235 chờ same kết thúc trên node anhhbt.
+
+Lỗi general_qa trong log mới là URL judge literal cũ còn sót sau khi teacher đổi
+IP, không phải lỗi convert dữ liệu. Renderer nay cập nhật QA URL/model từ teacher;
+preflight và runtime factory từ chối stale config trước spinup actor. Fork QA vẫn
+hỏi /v1/models khi khởi tạo dù tắt judge inference. Không cần restart teacher để
+sửa địa chỉ trong client YAML.
+
+vLLM0.30.0: default raw_logprobs đối chiếu [docs chính thức](https://docs.vllm.ai/en/v0.30.0/cli/serve/#--logprobs-mode).
+Receipt phân biệt upstream default assumption với bằng chứng deployment thực.
+Dev/custom version không tự được suy về release gần nhất.
+
 ## Nguồn và thư mục
 
 Mọi source mới, data dẫn xuất, assets và run output thuộc
