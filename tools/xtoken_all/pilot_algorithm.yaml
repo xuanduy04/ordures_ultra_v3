@@ -95,3 +95,7 @@ variant:
 variant_batch:
   global_batch_size: 12
   micro_batch_size: 1
+variant_parallelism:
+  2: sharded
+  3: hf_sharded
+  4: sharded

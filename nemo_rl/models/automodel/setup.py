@@ -25,7 +25,7 @@ from transformers import AutoConfig, AutoProcessor, AutoTokenizer, PreTrainedMod
 from transformers.models.gemma3.modeling_gemma3 import Gemma3ForCausalLM
 
 from nemo_rl.models.automodel.config import ModelAndOptimizerState, RuntimeConfig
-from nemo_rl.models.automodel.runtime_compat import create_fsdp2_manager, use_hf_meta_init, hf_model_from_config
+from nemo_rl.models.automodel.runtime_compat import create_fsdp2_manager, use_hf_meta_init, hf_model_from_config, validate_fsdp_mode
 from nemo_rl.models.policy import PolicyConfig
 from nemo_rl.models.policy.utils import configure_dynamo_cache, resolve_model_class
 
@@ -153,6 +153,7 @@ def validate_and_prepare_config(
         model_class = resolve_model_class(model_config.model_type)
 
     # Get parallelization sizes
+    validate_fsdp_mode(config["dtensor_cfg"])
     tp_size = config["dtensor_cfg"].get("tensor_parallel_size", 1)
     cp_size = config["dtensor_cfg"].get("context_parallel_size", 1)
     sequence_parallel_enabled = config["dtensor_cfg"]["sequence_parallel"]
@@ -392,7 +393,10 @@ def setup_model_and_optimizer(
         sdpa_method = None
 
     # Initialize empty model
-    hf_meta = use_hf_meta_init(model_config, ModelRegistry)
+    force_hf = "force_hf" in automodel_kwargs and automodel_kwargs["force_hf"]
+    hf_meta = use_hf_meta_init(model_config, ModelRegistry, force_hf=force_hf)
+    if "fsdp_mode" in config["dtensor_cfg"]:
+        print(f"NRL_FSDP_MODE={config['dtensor_cfg']['fsdp_mode']} force_hf={force_hf} dp_shard_size={distributed_manager.dp_shard_size}", flush=True)
     with init_empty_weights(include_buffers=False) if hf_meta else init_empty_weights():
         if hf_meta:
             model = hf_model_from_config(model_class, model_config, automodel_kwargs, attn_impl)
