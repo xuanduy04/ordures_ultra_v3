@@ -25,6 +25,17 @@ def reference(name):
     return namespace
 
 
+@pytest.mark.parametrize("mode", ["sharded", "hf_sharded"])
+def test_real_dtensor_schema_preserves_the_explicit_memory_mode(mode):
+    from pydantic import TypeAdapter
+    from nemo_rl.models.policy import DTensorConfig
+
+    cfg = {"enabled": True, "cpu_offload": False, "sequence_parallel": False,
+           "activation_checkpointing": False, "tensor_parallel_size": 1,
+           "context_parallel_size": 1, "custom_parallel_plan": None, "fsdp_mode": mode}
+    assert TypeAdapter(DTensorConfig).validate_python(cfg)["fsdp_mode"] == mode
+
+
 def test_dpca_matches_existing_author_port_values_and_gradients():
     ref = reference("dpca")
     teacher = torch.tensor([-2., -4.])
@@ -246,6 +257,7 @@ def test_actual_loss_adapter_backpropagates_and_masks_prompts(mode, score):
     assert torch.isfinite(total) and torch.isfinite(logits.grad).all()
     assert logits.grad[:, 0].abs().max() == 0
     assert metrics["variant_kept_segments"] == 6
+    assert metrics["num_valid_samples"] == 2
 
 
 def test_actual_dpca_adapter_refuses_missing_behavior_or_chosen_teacher_scores():

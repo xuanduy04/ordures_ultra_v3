@@ -159,7 +159,8 @@ class VariantLoss(LossFunction):
                 metrics["variant_kept_segments"] += kept
             total = total + sample_weight * value
         total = self.cfg["kl_loss_weight"] * self.cfg["teacher_weights"][0] * total / global_valid_toks.to(logits.device).clamp_min(1)
-        metrics.update(loss=float(total.detach()), kl_loss=float(total.detach()), ce_loss=0., kl_loss_scale=1.)
+        metrics.update(loss=float(total.detach()), kl_loss=float(total.detach()), ce_loss=0., kl_loss_scale=1.,
+                       num_valid_samples=int((data["sample_mask"] > 0).sum()))
         if not torch.isfinite(total):
             raise FloatingPointError("Nonfinite variant objective")
         return total, metrics

@@ -73,6 +73,9 @@ def main():
     }
     if "XTOKEN_VARIANT_MODES" in os.environ:
         config["train_global_batch_size"] = 12
+        config["dtensor_cfg"]["fsdp_mode"] = "hf_sharded" if world == 3 else "sharded"
+        if world == 3:
+            config["dtensor_cfg"]["automodel_kwargs"] = {"force_hf": True, "use_liger_kernel": False}
     tokenizer = AutoTokenizer.from_pretrained(root, local_files_only=True)
     worker_class = DTensorPolicyWorkerV2.__ray_metadata__.modified_class
     worker = worker_class(config, tokenizer, init_optimizer=True, init_reference_model=False)
@@ -84,8 +87,10 @@ def main():
     if "XTOKEN_VARIANT_MODES" in os.environ:
         from tools.xtoken_all.tests.variant_native_probe import exercise_native_variants
 
-        exercise_native_variants(worker, root, rank, world)
-        torch.distributed.destroy_process_group()
+        try:
+            exercise_native_variants(worker, root, rank, world)
+        finally:
+            torch.distributed.destroy_process_group()
         return
     exported = worker.get_full_logits_ipc(batch, micro_batch_size=1)
     storage = worker._teacher_ipc_storage

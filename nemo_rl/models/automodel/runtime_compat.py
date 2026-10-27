@@ -4,11 +4,25 @@ import inspect
 from copy import deepcopy
 
 
-def use_hf_meta_init(model_config, registry):
+def validate_fsdp_mode(config):
+    """HF sharding is opt-in; never silently replace the legacy model backend."""
+    if "fsdp_mode" not in config:
+        return
+    mode = config["fsdp_mode"]
+    if mode not in ("sharded", "hf_sharded"):
+        raise ValueError("Use explicit fsdp_mode: sharded or hf_sharded")
+    if mode == "sharded":
+        return
+    kwargs = config["automodel_kwargs"]
+    if kwargs["force_hf"] is not True or kwargs["use_liger_kernel"] is not False:
+        raise ValueError("hf_sharded requires explicit force_hf=true and use_liger_kernel=false")
+
+
+def use_hf_meta_init(model_config, registry, force_hf=False):
     """HF 5 from_pretrained cannot run inside Accelerate's empty-weight patch."""
     import transformers
 
-    return int(transformers.__version__.split(".")[0]) >= 5 and model_config.architectures[0] not in registry.model_arch_name_to_cls
+    return int(transformers.__version__.split(".")[0]) >= 5 and (force_hf or model_config.architectures[0] not in registry.model_arch_name_to_cls)
 
 
 def hf_model_from_config(model_class, model_config, automodel_kwargs, attn_impl):

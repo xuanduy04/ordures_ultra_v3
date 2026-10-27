@@ -73,6 +73,7 @@ class DTensorConfig(TypedDict):
     activation_checkpointing: bool
     tensor_parallel_size: int
     context_parallel_size: int
+    fsdp_mode: NotRequired[Literal["sharded", "hf_sharded"]]
     custom_parallel_plan: str | None
     clear_cache_every_n_steps: NotRequired[int | None]
     lora_cfg: NotRequired[LoRAConfig | LoRAConfigDisabled]
