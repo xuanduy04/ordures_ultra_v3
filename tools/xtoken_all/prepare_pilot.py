@@ -27,6 +27,44 @@ def rebase(value, old, new):
     return value
 
 
+def resolve_projection_reuse(baseline, spec, arm, load_tokenizer):
+    """Reuse baseline matrix rows only after comparing the actual local vocabularies."""
+    selected = spec["arms"][arm]
+    if selected["tokenizer_mode"] != "cross" or "reuse_baseline_projection" not in selected:
+        return spec, None
+    if type(selected["reuse_baseline_projection"]) is not bool:
+        raise ValueError("reuse_baseline_projection must be a boolean")
+    if not selected["reuse_baseline_projection"]:
+        return spec, None
+    if len(baseline["teachers"]) != 1:
+        raise ValueError("Projection reuse requires one baseline teacher")
+    previous = baseline["teachers"][0]
+    if selected["projection_path"] is not None or previous["projection_matrix_path"] is None:
+        raise ValueError("Choose an explicit projection_path or reuse a non-null baseline projection")
+    if selected["teacher_tokenizer"] is not None and selected["teacher_tokenizer"] != previous["tokenizer"]["name"]:
+        raise ValueError("Baseline projection reuse requires the unchanged teacher tokenizer")
+    tokenizer_config = deepcopy(baseline["policy"]["tokenizer"])
+    if spec["student"]["model_path"] is not None:
+        tokenizer_config["name"] = spec["student"]["model_path"]
+    if spec["student"]["tokenizer_path"] is not None:
+        tokenizer_config["name"] = spec["student"]["tokenizer_path"]
+    before = load_tokenizer(baseline["policy"]["tokenizer"])
+    after = load_tokenizer(tokenizer_config)
+    vocab = after.get_vocab()
+    if len(before) != len(after) or before.get_vocab() != vocab:
+        raise ValueError("Student token-to-ID mapping changed; provide a matching projection_path")
+    resolved = deepcopy(spec)
+    resolved["arms"][arm]["projection_path"] = previous["projection_matrix_path"]
+    receipt = {"student_tokenizer_before": baseline["policy"]["tokenizer"]["name"],
+        "student_tokenizer_after": tokenizer_config["name"], "identical_token_to_id": True,
+        "student_tokenizer_len": len(after),
+        "student_vocab_sha256": hashlib.sha256(json.dumps(vocab, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+        "teacher_tokenizer": previous["tokenizer"]["name"],
+        "projection_path": previous["projection_matrix_path"],
+        "projection_sha256": sha256(previous["projection_matrix_path"])}
+    return resolved, receipt
+
+
 def pilot_config(baseline, spec, arm, old_run, run, old_source, source, ray_address):
     cfg = rebase(deepcopy(baseline), str(old_run), str(run))
     cfg = rebase(cfg, str(old_source), str(source))
@@ -233,6 +271,11 @@ def main():
     baseline_path = old_run / "effective.yaml"
     baseline = yaml.safe_load(baseline_path.read_text())
     metadata = json.loads((old_run / "provenance.json").read_text())
+    projection_reuse = None
+    if spec["arms"][args.arm]["tokenizer_mode"] == "cross" and "reuse_baseline_projection" in spec["arms"][args.arm]:
+        from nemo_rl.algorithms.utils import get_tokenizer
+
+        spec, projection_reuse = resolve_projection_reuse(baseline, spec, args.arm, get_tokenizer)
     data = prepare_dataset(root, spec)
     with data.open(encoding="utf-8") as stream:
         rows = sum(1 for line in stream if line.strip())
@@ -254,6 +297,8 @@ def main():
     if args.teacher_tokenizer is not None:
         cfg["teachers"][0]["tokenizer"]["name"] = str(args.teacher_tokenizer.resolve())
         cfg["teachers"][0]["model_name"] = str(args.teacher_tokenizer.resolve())
+    if projection_reuse is not None and cfg["teachers"][0]["tokenizer"] != baseline["teachers"][0]["tokenizer"]:
+        raise ValueError("Cannot override the teacher tokenizer after validating baseline projection reuse")
     gym = cfg["on_policy"]["nemo_gym"]
     for name, override in (("actor_python", args.gym_actor_python), ("source_root", args.gym_source), ("venv_dir", args.gym_venvs)):
         if override is not None:
@@ -291,6 +336,9 @@ def main():
         "keep_top_k": spec["checkpointing"]["keep_top_k"],
         "teacher_url": teacher["remote"]["url"], "teacher_model": teacher["remote"]["model"],
         "teacher_tokenizer": teacher["tokenizer"]["name"],
+        "student_model": cfg["policy"]["model_name"], "student_tokenizer": cfg["policy"]["tokenizer"]["name"],
+        "student_chat_template_kwargs": cfg["policy"]["tokenizer"]["chat_template_kwargs"],
+        "projection_reuse": projection_reuse,
         "tokenizer_mode": spec["arms"][args.arm]["tokenizer_mode"],
         "baseline_schedule_preserved": False, "baseline_run_modified": False}
     (run / "pilot-plan.json").write_text(json.dumps(receipt, indent=2) + "\n")

@@ -242,6 +242,77 @@ def test_changed_cross_tokenizer_does_not_silently_reuse_the_old_map():
             PurePosixPath("/source/old"), PurePosixPath("/source/new"), "host:6379")
 
 
+@pytest.mark.parametrize("arm", ["cross", "same"])
+def test_4b_recipe_resolves_fresh_weights_without_mutating_1p7b_baseline(tmp_path, arm):
+    settings = yaml.safe_load((TOOLS / "pilot_200_4b.yaml").read_text())
+    old = baseline()
+    matrix = tmp_path / "projection.pt"
+    matrix.write_bytes(b"existing projection fixture")
+    old["teachers"][0]["projection_matrix_path"] = str(matrix)
+    original, original_settings = deepcopy(old), deepcopy(settings)
+    class Tokenizer:
+        def get_vocab(self):
+            return {"a": 0, "b": 1}
+
+        def __len__(self):
+            return 2
+    loads = []
+    def load_tokenizer(cfg):
+        loads.append(cfg["name"])
+        return Tokenizer()
+    resolved, reuse = pilot.resolve_projection_reuse(old, settings, arm, load_tokenizer)
+    cfg = pilot.pilot_config(old, resolved, arm, PurePosixPath("/root/runs/A-on-11"),
+        PurePosixPath("/root/runs/new-4b"), PurePosixPath("/source/old"), PurePosixPath("/source/new"), "local:6379")
+    assert old == original and settings == original_settings
+    assert set(settings["arms"]) == {"cross", "same"}
+    assert settings["arms"][arm]["run_id"] not in {item["run_id"] for item in spec()["arms"].values()}
+    assert cfg["policy"]["model_name"] == cfg["policy"]["tokenizer"]["name"] == "/workspace/storage-shared/models/Qwen3-4B"
+    assert cfg["policy"]["tokenizer"]["chat_template_kwargs"] == {"enable_thinking": False}
+    for name in ("policy_model", "policy_model_reasoning_off"):
+        assert cfg["on_policy"]["nemo_gym"]["global_config"][name]["responses_api_models"]["vllm_model"]["chat_template_kwargs"] == {"enable_thinking": False}
+    assert cfg["distillation"]["max_num_steps"] == 200
+    assert cfg["policy"]["scheduler"][0]["kwargs"]["total_iters"] == 20
+    assert cfg["checkpointing"]["save_period"] == 10 and cfg["checkpointing"]["keep_top_k"] == 20
+    assert cfg["checkpointing"]["checkpoint_dir"] == "/root/runs/new-4b/checkpoints"
+    if arm == "cross":
+        assert loads == [old["policy"]["tokenizer"]["name"], settings["student"]["tokenizer_path"]]
+        assert cfg["teachers"][0]["projection_matrix_path"] == str(matrix)
+        assert reuse["identical_token_to_id"] is True
+        assert reuse["projection_sha256"] == pilot.sha256(matrix)
+    else:
+        assert not loads and reuse is None
+        assert cfg["teachers"][0]["projection_matrix_path"] is None
+        assert cfg["teachers"][0]["tokenizer"]["chat_template_kwargs"] == {"enable_thinking": False}
+
+
+@pytest.mark.parametrize("failure", ["ids", "length", "teacher", "explicit-path", "missing-matrix", "non-bool"])
+def test_baseline_projection_reuse_rejects_unverified_changes(tmp_path, failure):
+    settings = yaml.safe_load((TOOLS / "pilot_200_4b.yaml").read_text())
+    old = baseline()
+    matrix = tmp_path / "projection.pt"
+    matrix.write_bytes(b"fixture")
+    old["teachers"][0]["projection_matrix_path"] = str(matrix)
+    class Tokenizer:
+        def __init__(self, changed):
+            self.changed = changed
+
+        def get_vocab(self):
+            return {"a": 1, "b": 0} if self.changed and failure == "ids" else {"a": 0, "b": 1}
+
+        def __len__(self):
+            return 3 if self.changed and failure == "length" else 2
+    if failure == "teacher":
+        settings["arms"]["cross"]["teacher_tokenizer"] = "/new-teacher"
+    elif failure == "explicit-path":
+        settings["arms"]["cross"]["projection_path"] = "/new-map.pt"
+    elif failure == "missing-matrix":
+        old["teachers"][0]["projection_matrix_path"] = None
+    elif failure == "non-bool":
+        settings["arms"]["cross"]["reuse_baseline_projection"] = "yes"
+    with pytest.raises(ValueError):
+        pilot.resolve_projection_reuse(old, settings, "cross", lambda cfg: Tokenizer(cfg["name"] != old["policy"]["tokenizer"]["name"]))
+
+
 def test_actual_super_retention_keeps_every_pilot_checkpoint():
     tree = ast.parse((ROOT / "nemo_rl/utils/checkpoint.py").read_text())
     method = next(node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "remove_old_checkpoints")

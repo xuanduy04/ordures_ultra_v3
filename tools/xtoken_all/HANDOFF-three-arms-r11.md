@@ -1,4 +1,51 @@
-# DSH — r15: sửa TeacherConfig, cross Gemma và same Qwen32 trên eval-6
+# DSH — r16: Qwen3-4B gốc, non-thinking, cross Gemma / same Qwen32
+
+## Plan hiện hành r16; các mục r15 trở xuống để đối chiếu lịch sử
+
+Gói r16 mặc định dùng tools/xtoken_all/pilot_200_4b.yaml, chỉ2 arm4B. File
+pilot_200.yaml 1.7B giữ nguyên từ r15. Không chỉnh source/config/receipt/checkpoint
+hoặc resume các run 1.7B cũ; giải nén source r16 vào thư mục mới dưới xtoken_all.
+run_xtoken.sh mặc định chọn4B; không dùng wrapper pilot_200.sh cũ cho4B vì wrapper
+đó vẫn đọc recipe1.7B. Cần recipe1.7B cho run mới thì đặt XTOKEN_PILOT_CONFIG
+đến file pilot_200.yaml rõ ràng; không copy đè spec để đổi model.
+
+Student là Qwen/Qwen3-4B bản gốc, cả weights/tokenizer tại
+/workspace/storage-shared/models/Qwen3-4B. Đây là path dự kiến stage, chưa có
+receipt assets4B trên node. DSH xác nhận đủ checkpoint và tokenizer; nếu path
+khác thì sửa student.model_path và student.tokenizer_path trong YAML4B trước
+render. Không dùng checkpoint Base/Instruct-2507/Thinking-2507 hoặc weights1.7B.
+
+| Arm | Student node | Teacher | Prefix mới |
+| --- | --- | --- | --- |
+| cross | rl-test-opd-ultra-selfbuilt-trainllm-1-0-2 | Gemma-4-26B-A4B-it / http://172.29.93.105:8000 | A4-on-01 |
+| same | anhhbt-eval-6-0-1 | Qwen3-32B / http://172.29.93.105:8001 | B4-on-01 |
+
+DSH từ source/ trong gói mới: bash run_xtoken.sh cross --check-only trên node
+cross; bash run_xtoken.sh same --check-only trên eval-6. Sau khi gate đạt, cùng
+lệnh bỏ --check-only để train trong tmux. Suffix unique bảo vệ các run khác;
+GPU/UUID/Ray phải kiểm live, không kill run1.7B để lấy4GPU. Nếu node còn bận thì
+dừng/chờ hoặc operator đổi allocation; không tự chạy235B trong đợt4B này.
+
+Giữ enable_thinking:false cho policy tokenizer và cả2 model HTTP Gym. Cùng data
+16367 mẫu/hash của A-on-11,200 update,warmup20,cosine180,save10,keep20,
+save_optimizer=true,is_async=false. Giữ context/response/batch/LR/refit4GiB
+baseline. Hai arm độc lập cùng initial4B; baselineA-on-11 chỉ cấp asset/budget,
+không cấp weights/optimizer. Chưa đo peak VRAM/full training4B trên node này.
+
+Cross: YAML bật reuse_baseline_projection:true, projection_path:null. Launcher
+so toàn bộ vocab token→ID và len của tokenizerA-on-11 với4B, giữ teacher tokenizer
+cũ. Chỉ khi khớp mới dùng matrix baseline; pilot-plan.json ghi mapping hash và
+SHA matrix đã dùng. Nếu mismatch, không skip gate: đặt reuse=false, cung cấp
+projection_path mới đúng cặp tokenizer. Không ghi đè projection1.7B. Same giữ
+projection=null; preflight kiểm tokenID/template/kwargs, probe server kiểm parity.
+
+Teacher/evidence kế thừa r15 (vLLM0.32.0,raw_logprobs operator evidence tại
+tmp/server-mode-gemma-032.json và tmp/server-mode-qwen32-032.json); probe mới vẫn
+bắt buộc. Không restart/đổi teacher. ensure_runtime và script Super được tái dùng,
+không rebuild/install. qualification.json ghi đúng test đã chạy; packet không
+chứa weights4B hoặc runtime13GB, và chưa có kết quả GPU4B để gọi là pass pilot.
+
+## Ghi nhận r15: sửa TeacherConfig và chuyển Qwen32 sang eval-6
 
 ## Đọc phần này trước; các mục r14 trở xuống là lịch sử đối chiếu
 

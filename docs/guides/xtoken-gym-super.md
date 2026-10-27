@@ -5,6 +5,49 @@ Gemma-4-26B-A4B-it chấm response bằng tokenizer riêng. Objective vẫn là
 `topk_tail_kl`, K=20 tại mỗi vị trí + OTHER, CE=0, T=1. Đây là adaptation;
 không gọi nó là P-KL nguyên bản, PPO hay sampled-token MOPD của GRPO.
 
+## Bản r16: student Qwen3-4B gốc, tắt thinking
+
+Launcher `run_xtoken.sh` nay mặc định đọc `tools/xtoken_all/pilot_200_4b.yaml`.
+Recipe 1.7B `pilot_200.yaml` giữ nguyên từng byte từ r15; source, run directories,
+effective config, optimizer và checkpoint 1.7B cũ không được sửa hoặc resume.
+Muốn tạo run 1.7B mới thì chọn file cũ bằng `XTOKEN_PILOT_CONFIG`; wrapper từng
+bước `pilot_200.sh` cũng vẫn thuộc recipe 1.7B cũ, không dùng nó cho run 4B.
+
+Student weights và tokenizer đều trỏ `/workspace/storage-shared/models/Qwen3-4B`,
+là checkpoint chính thức `Qwen/Qwen3-4B`, không phải Base/Instruct-2507/Thinking-2507.
+Đây là staging target dự kiến, chưa được kiểm tra tồn tại trên node. DSH xác nhận
+đủ weights/tokenizer trước launch; nếu stage ở nơi khác thì chỉnh cả hai path
+trong YAML. Giữ `enable_thinking:false` ở tokenizer policy và cả hai model Gym.
+
+| Arm 4B | Run prefix unique | Student node | Teacher |
+| --- | --- | --- | --- |
+| cross | A4-on-01 | rl-test-opd-ultra-selfbuilt-trainllm-1-0-2 | Gemma-4-26B-A4B-it tại172.29.93.105:8000 |
+| same | B4-on-01 | anhhbt-eval-6-0-1 | Qwen3-32B tại172.29.93.105:8001 |
+
+Mỗi lần launcher sinh suffix mới. Giữ nguyên data/hash16367 mẫu của A-on-11,
+context/response/batch/LR baseline;200 update,warmup20,cosine180,save10,keep20,
+save_optimizer=true. Cả hai arm khởi tạo từ cùng initial Qwen3-4B, không từ
+checkpoint 1.7B hay weights đã distill ở arm khác. Refit buffer vẫn4GiB như r15.
+Chưa có phép đo VRAM/full pilot4B; không tự tăng context hoặc batch vì đổi model.
+
+Cross bật `reuse_baseline_projection:true` với `projection_path:null`: launcher
+load hai tokenizer local baseline/4B và so toàn bộ token→ID cùng len. Chỉ khi
+giống hệt và teacher tokenizer giữ nguyên mới dùng path projection A-on-11;
+ghi mapping hash, path và SHA matrix vào `pilot-plan.json.projection_reuse`.
+Nếu khác, dừng; chọn `reuse_baseline_projection:false` và điền projection_path
+đã tạo/kiểm cho cặp tokenizer mới. Không sửa matrix cũ. Đây là kiểm tương thích
+mapping, không phải bằng chứng chất lượng distillation.
+
+Same giữ projection=null, kiểm vocab/template/kwargs với tokenizer Qwen32 local
+và parity/scoring trên server như r15. Chưa thêm arm 4B→235B. Node/UUID/evidence
+được kế thừa từ snapshot r15; mỗi run phải qua allocation/Ray/teacher gate mới.
+Không chiếm GPU của run 1.7B đang chạy; chờ GPU rảnh hoặc operator cấp node khác.
+
+Từ source r16 mới trên đúng node: `bash run_xtoken.sh cross --check-only` hoặc
+`bash run_xtoken.sh same --check-only`, rồi bỏ `--check-only` để train sau khi
+các gate đạt. Không chép spec 1.7B đè lên file4B. Các mục r15 trở xuống mô tả
+lịch sử; dùng bảng r16 và handoff r16 ở đầu file HANDOFF-three-arms-r11.md.
+
 ## Bản r15: typed config và phân bổ mới
 
 Lỗi A-on-13-20261027-200300-6dac53 xảy ra trước khi tạo actor Gym:

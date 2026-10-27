@@ -3,7 +3,7 @@ set -euo pipefail
 SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Edit these two paths if the deployed driver or run configuration changes.
 PYTHON="${NRL_PYTHON:-/opt/nemo_rl_venv/bin/python}"
-CONFIG="$SOURCE/tools/xtoken_all/pilot_200.yaml"
+CONFIG="${XTOKEN_PILOT_CONFIG:-$SOURCE/tools/xtoken_all/pilot_200_4b.yaml}"
 ARM="${1:-cross}"
 if [ "$#" -gt 0 ]; then shift; fi
 source "$SOURCE/ensure_runtime.sh" --
