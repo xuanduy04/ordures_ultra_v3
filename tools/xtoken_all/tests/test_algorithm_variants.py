@@ -25,7 +25,7 @@ def reference(name):
     return namespace
 
 
-@pytest.mark.parametrize("mode", ["sharded", "replicated"])
+@pytest.mark.parametrize("mode", ["sharded", "hf_sharded"])
 def test_real_dtensor_schema_preserves_the_explicit_memory_mode(mode):
     from pydantic import TypeAdapter
     from nemo_rl.models.policy import DTensorConfig

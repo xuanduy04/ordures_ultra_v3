@@ -596,8 +596,8 @@ class TestSetupDistributed:
             is_reward_model=False,
         )
 
-    @pytest.mark.parametrize("mode,expected", [(None, 1), ("sharded", 1), ("replicated", 3)])
-    def test_explicit_replication_uses_initialized_world(self, mock_config, mock_runtime_config, mode, expected):
+    @pytest.mark.parametrize("mode,expected", [(None, 1), ("sharded", 1), ("hf_sharded", 1)])
+    def test_explicit_fsdp_mode_preserves_sharding(self, mock_config, mock_runtime_config, mode, expected):
         if mode is not None:
             mock_config["dtensor_cfg"]["fsdp_mode"] = mode
         with patch("nemo_rl.models.automodel.setup.torch.distributed") as distributed, patch(

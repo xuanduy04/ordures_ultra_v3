@@ -5,6 +5,7 @@ import math
 import os
 
 import torch
+from safetensors import safe_open
 from torch.distributed.tensor import DTensor
 
 from nemo_rl.algorithms.x_token.variant_loss import VariantLoss
@@ -74,6 +75,14 @@ def exercise_native_variants(worker, root, rank, world):
             raise AssertionError("Native variant optimizer did not produce a finite parameter update")
         report["modes"].append({"mode": mode, "parameters_changed": changed, "finite_parameters": True, "grad_norm": gradient_norm})
         print("ALGO_NATIVE_STEP=" + json.dumps({"rank": rank, "world_size": world, "mode": mode, "parameters_changed": changed}), flush=True)
+    metadata = worker.prepare_refit_info()
+    with safe_open(root / "model.safetensors", framework="pt", device="cpu") as weights:
+        expected = {key: tuple(weights.get_slice(key).get_shape()) for key in weights.keys()}
+    observed = {key: tuple(value[0]) for key, value in metadata.items()}
+    if observed != expected:
+        raise AssertionError("Native HF refit names/shapes differ from the original model checkpoint")
+    report["refit_metadata_parity"] = True
+    report["refit_tensor_count"] = len(observed)
     report["success"] = True
     (root / ("native-variants-rank-" + str(rank) + ".json")).write_text(json.dumps(report, indent=2) + "\n")
     print("ALGO_NATIVE=" + json.dumps(report), flush=True)

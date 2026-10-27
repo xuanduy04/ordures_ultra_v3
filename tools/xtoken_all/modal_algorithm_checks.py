@@ -115,7 +115,7 @@ def cpu_checks():
     worker_pytest = "import sys;sys.path.extend(" + repr(driver_sites) + ");import pytest;raise SystemExit(pytest.main(sys.argv[1:]))"
     automodel = execute([POLICY_PYTHON, "-B", "-c", worker_pytest, "--noconftest", "-o", "addopts=", "-p", "no:cacheprovider",
                         "tests/unit/models/automodel/test_automodel_train.py", "tests/unit/models/automodel/test_automodel_setup.py",
-                        "-k", "TestForwardWithPostProcessingFn or test_explicit_replication_uses_initialized_world",
+                        "-k", "TestForwardWithPostProcessingFn or test_explicit_fsdp_mode_preserves_sharding",
                         "-q", "-rs", "--tb=short"], dict(env, PYTEST_DISABLE_PLUGIN_AUTOLOAD="1"), 90)
     return {**source_fingerprint(), "light": light, "unit": unit, "automodel": automodel,
             "success": light["exit_code"] == unit["exit_code"] == 0 and automodel["exit_code"] in (0, 5)}

@@ -4,27 +4,25 @@ import inspect
 from copy import deepcopy
 
 
-def fsdp_replication_size(config, world_size, tp_size, cp_size, ep_size):
-    """Opt-in replicated mesh; an absent key preserves the legacy shard setup."""
+def validate_fsdp_mode(config):
+    """HF sharding is opt-in; never silently replace the legacy model backend."""
     if "fsdp_mode" not in config:
-        return 1
+        return
     mode = config["fsdp_mode"]
-    if mode not in ("sharded", "replicated"):
-        raise ValueError("Use explicit fsdp_mode: sharded or replicated")
+    if mode not in ("sharded", "hf_sharded"):
+        raise ValueError("Use explicit fsdp_mode: sharded or hf_sharded")
     if mode == "sharded":
-        return 1
-    if tp_size != 1 or cp_size != 1 or ep_size != 1:
-        raise ValueError("Replicated FSDP mode is qualified only for TP=CP=EP=1")
-    if type(world_size) is not int or world_size < 1:
-        raise ValueError("Expected a positive distributed world size")
-    return world_size
+        return
+    kwargs = config["automodel_kwargs"]
+    if kwargs["force_hf"] is not True or kwargs["use_liger_kernel"] is not False:
+        raise ValueError("hf_sharded requires explicit force_hf=true and use_liger_kernel=false")
 
 
-def use_hf_meta_init(model_config, registry):
+def use_hf_meta_init(model_config, registry, force_hf=False):
     """HF 5 from_pretrained cannot run inside Accelerate's empty-weight patch."""
     import transformers
 
-    return int(transformers.__version__.split(".")[0]) >= 5 and model_config.architectures[0] not in registry.model_arch_name_to_cls
+    return int(transformers.__version__.split(".")[0]) >= 5 and (force_hf or model_config.architectures[0] not in registry.model_arch_name_to_cls)
 
 
 def hf_model_from_config(model_class, model_config, automodel_kwargs, attn_impl):

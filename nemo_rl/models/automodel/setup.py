@@ -25,7 +25,7 @@ from transformers import AutoConfig, AutoProcessor, AutoTokenizer, PreTrainedMod
 from transformers.models.gemma3.modeling_gemma3 import Gemma3ForCausalLM
 
 from nemo_rl.models.automodel.config import ModelAndOptimizerState, RuntimeConfig
-from nemo_rl.models.automodel.runtime_compat import create_fsdp2_manager, use_hf_meta_init, hf_model_from_config, fsdp_replication_size
+from nemo_rl.models.automodel.runtime_compat import create_fsdp2_manager, use_hf_meta_init, hf_model_from_config, validate_fsdp_mode
 from nemo_rl.models.policy import PolicyConfig
 from nemo_rl.models.policy.utils import configure_dynamo_cache, resolve_model_class
 
@@ -153,6 +153,7 @@ def validate_and_prepare_config(
         model_class = resolve_model_class(model_config.model_type)
 
     # Get parallelization sizes
+    validate_fsdp_mode(config["dtensor_cfg"])
     tp_size = config["dtensor_cfg"].get("tensor_parallel_size", 1)
     cp_size = config["dtensor_cfg"].get("context_parallel_size", 1)
     sequence_parallel_enabled = config["dtensor_cfg"]["sequence_parallel"]
@@ -246,13 +247,12 @@ def setup_distributed(
     ep_size = config["dtensor_cfg"].get("expert_parallel_size", 1)
     dp_size = config["dtensor_cfg"].get("data_parallel_size", None)
     sequence_parallel_enabled = config["dtensor_cfg"]["sequence_parallel"]
-    dp_replicate_size = fsdp_replication_size(config["dtensor_cfg"], world_size, tp_size, cp_size, ep_size)
 
     # Create FSDP2 manager
     manager = create_fsdp2_manager(
         FSDP2Manager,
         dp_size=dp_size,
-        dp_replicate_size=dp_replicate_size,
+        dp_replicate_size=1,
         tp_size=tp_size,
         cp_size=cp_size,
         ep_size=ep_size,
@@ -271,10 +271,6 @@ def setup_distributed(
         custom_tp_plan=config["dtensor_cfg"].get("custom_parallel_plan", None),
         defer_fsdp_grad_sync=config["dtensor_cfg"].get("defer_fsdp_grad_sync", True),
     )
-    if dp_replicate_size > 1:
-        if manager.dp_shard_size != 1 or manager.dp_replicate_size != dp_replicate_size:
-            raise RuntimeError("Installed Automodel did not honor explicit replicated FSDP mesh")
-        print(f"NRL_FSDP_MODE=replicated dp_replicate_size={dp_replicate_size} dp_shard_size=1; weights/gradients/optimizer are replicated", flush=True)
 
     # Force setup distributed for world size 1 as FSDP2Manager skips it
     if world_size == 1:
@@ -397,7 +393,10 @@ def setup_model_and_optimizer(
         sdpa_method = None
 
     # Initialize empty model
-    hf_meta = use_hf_meta_init(model_config, ModelRegistry)
+    force_hf = "force_hf" in automodel_kwargs and automodel_kwargs["force_hf"]
+    hf_meta = use_hf_meta_init(model_config, ModelRegistry, force_hf=force_hf)
+    if "fsdp_mode" in config["dtensor_cfg"]:
+        print(f"NRL_FSDP_MODE={config['dtensor_cfg']['fsdp_mode']} force_hf={force_hf} dp_shard_size={distributed_manager.dp_shard_size}", flush=True)
     with init_empty_weights(include_buffers=False) if hf_meta else init_empty_weights():
         if hf_meta:
             model = hf_model_from_config(model_class, model_config, automodel_kwargs, attn_impl)

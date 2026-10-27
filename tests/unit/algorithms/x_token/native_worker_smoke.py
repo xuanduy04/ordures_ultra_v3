@@ -73,7 +73,9 @@ def main():
     }
     if "XTOKEN_VARIANT_MODES" in os.environ:
         config["train_global_batch_size"] = 12
-        config["dtensor_cfg"]["fsdp_mode"] = "replicated" if world == 3 else "sharded"
+        config["dtensor_cfg"]["fsdp_mode"] = "hf_sharded" if world == 3 else "sharded"
+        if world == 3:
+            config["dtensor_cfg"]["automodel_kwargs"] = {"force_hf": True, "use_liger_kernel": False}
     tokenizer = AutoTokenizer.from_pretrained(root, local_files_only=True)
     worker_class = DTensorPolicyWorkerV2.__ray_metadata__.modified_class
     worker = worker_class(config, tokenizer, init_optimizer=True, init_reference_model=False)

@@ -73,15 +73,16 @@ Loss mới chia theo tổng số student response tokens hợp lệ trên global
 kể cả khi CTOPD loại các span không phải1:1. Khác mẫu số kept-segments của một
 số author implementations; cần khớp normalization/LR trước so sánh paper.
 
-`variant_parallelism` trong recipe chọn `sharded` cho 2/4 GPU và `replicated`
-cho 3 GPU. Probe thật đã phát hiện FSDP của Automodel hiện tại không hỗ trợ
-uneven sharding theo dim 1 (ví dụ weight [192,64] trên 3 rank). Mode mới tạo
-mesh dp_replicate=3, dp_shard=1, đồng bộ qua cả 3 GPU. Trọng số, gradient và
-optimizer state không được chia: phần VRAM đó có thể gần gấp 3 lần sharding
-trên 3 GPU; activation/KV cache vẫn phụ thuộc batch/context. Cần kiểm VRAM cho
-model/config thật. Không đổi kích thước model, vocab hay bỏ GPU để qua probe.
-Nếu không khai fsdp_mode thì code giữ dp_replicate=1 như trước. Không tự động
-fallback khi native worker lỗi; lựa chọn replicated nằm rõ trong YAML.
+`variant_parallelism` trong recipe chọn `sharded` cho 2/4 GPU và `hf_sharded`
+cho 3 GPU. Probe thật đã phát hiện Automodel chia combined projections theo
+dim 1, không hỗ trợ uneven sharding (ví dụ weight [192,64] trên 3 rank).
+Runtime này cũng chủ động từ chối full replication, nên không dùng DDP giả để
+qua gate. `hf_sharded` chọn implementation Hugging Face qua force_hf=true,
+use_liger_kernel=false, dùng các projection riêng và FSDP sharding thông thường.
+Trade-off là bỏ combined/fused projection optimizations của Automodel; throughput
+có thể thấp hơn và phải đo trên model thật. Vẫn chia model/optimizer state.
+Không đổi kích thước model, vocab hay bỏ GPU. Nếu không khai fsdp_mode thì
+backend cũ giữ nguyên. Đây là lựa chọn trong YAML, không tự fallback khi lỗi.
 
 Trên source suite, đặt XTOKEN_PILOT_CONFIG tới pilot_algorithm.yaml rồi dùng
 run_xtoken.sh cross hoặc same, thêm --gpu-indices 0 1 / 0 1 2 / 0 1 2 3.

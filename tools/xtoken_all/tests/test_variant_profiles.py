@@ -28,8 +28,11 @@ def test_variant_recipe_has_integral_per_rank_microbatches_and_preserves_old_pil
     assert old == original
     assert cfg["policy"]["train_global_batch_size"] == cfg["distillation"]["num_prompts_per_step"] == 12
     assert 12 % gpus == 0 and cfg["policy"]["train_micro_batch_size"] == 1
-    assert cfg["policy"]["dtensor_cfg"] == {"tensor_parallel_size": 1, "context_parallel_size": 1,
-                                           "fsdp_mode": "replicated" if gpus == 3 else "sharded"}
+    parallel = cfg["policy"]["dtensor_cfg"]
+    assert parallel["tensor_parallel_size"] == parallel["context_parallel_size"] == 1
+    assert parallel["fsdp_mode"] == ("hf_sharded" if gpus == 3 else "sharded")
+    if gpus == 3:
+        assert parallel["automodel_kwargs"] == {"force_hf": True, "use_liger_kernel": False}
     assert cfg["teachers"][0]["train_global_batch_size"] == 12
     assert cfg["loss_fn"]["variant"]["mode"] == settings["variant"]["mode"]
     assert cfg["loss_fn"]["teacher_distribution_mode"] == "topk_tail_kl"
@@ -82,14 +85,14 @@ for _ in range(20):
     assert not ledger.with_name(ledger.name + ".lock").exists()
 
 
-def test_replication_mode_preserves_legacy_and_rejects_unqualified_parallelism():
+def test_hf_mode_preserves_legacy_and_requires_explicit_backend_options():
     spec = importlib.util.spec_from_file_location("real_fsdp_modes", ROOT / "nemo_rl/models/automodel/runtime_compat.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert module.fsdp_replication_size({}, 3, 1, 1, 1) == 1
-    assert module.fsdp_replication_size({"fsdp_mode": "sharded"}, 3, 1, 1, 1) == 1
-    assert module.fsdp_replication_size({"fsdp_mode": "replicated"}, 3, 1, 1, 1) == 3
-    with pytest.raises(ValueError, match="TP=CP=EP"):
-        module.fsdp_replication_size({"fsdp_mode": "replicated"}, 3, 2, 1, 1)
+    module.validate_fsdp_mode({})
+    module.validate_fsdp_mode({"fsdp_mode": "sharded"})
+    module.validate_fsdp_mode({"fsdp_mode": "hf_sharded", "automodel_kwargs": {"force_hf": True, "use_liger_kernel": False}})
+    with pytest.raises(ValueError, match="force_hf"):
+        module.validate_fsdp_mode({"fsdp_mode": "hf_sharded", "automodel_kwargs": {"force_hf": False, "use_liger_kernel": False}})
     with pytest.raises(ValueError, match="explicit fsdp_mode"):
-        module.fsdp_replication_size({"fsdp_mode": "automatic"}, 3, 1, 1, 1)
+        module.validate_fsdp_mode({"fsdp_mode": "automatic"})
