@@ -4,6 +4,22 @@ import inspect
 from copy import deepcopy
 
 
+def fsdp_replication_size(config, world_size, tp_size, cp_size, ep_size):
+    """Opt-in replicated mesh; an absent key preserves the legacy shard setup."""
+    if "fsdp_mode" not in config:
+        return 1
+    mode = config["fsdp_mode"]
+    if mode not in ("sharded", "replicated"):
+        raise ValueError("Use explicit fsdp_mode: sharded or replicated")
+    if mode == "sharded":
+        return 1
+    if tp_size != 1 or cp_size != 1 or ep_size != 1:
+        raise ValueError("Replicated FSDP mode is qualified only for TP=CP=EP=1")
+    if type(world_size) is not int or world_size < 1:
+        raise ValueError("Expected a positive distributed world size")
+    return world_size
+
+
 def use_hf_meta_init(model_config, registry):
     """HF 5 from_pretrained cannot run inside Accelerate's empty-weight patch."""
     import transformers

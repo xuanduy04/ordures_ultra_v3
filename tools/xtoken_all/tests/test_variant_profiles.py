@@ -80,3 +80,16 @@ for _ in range(20):
         assert child.returncode == 0, stdout + stderr
     assert ledger.read_text() == "40"
     assert not ledger.with_name(ledger.name + ".lock").exists()
+
+
+def test_replication_mode_preserves_legacy_and_rejects_unqualified_parallelism():
+    spec = importlib.util.spec_from_file_location("real_fsdp_modes", ROOT / "nemo_rl/models/automodel/runtime_compat.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.fsdp_replication_size({}, 3, 1, 1, 1) == 1
+    assert module.fsdp_replication_size({"fsdp_mode": "sharded"}, 3, 1, 1, 1) == 1
+    assert module.fsdp_replication_size({"fsdp_mode": "replicated"}, 3, 1, 1, 1) == 3
+    with pytest.raises(ValueError, match="TP=CP=EP"):
+        module.fsdp_replication_size({"fsdp_mode": "replicated"}, 3, 2, 1, 1)
+    with pytest.raises(ValueError, match="explicit fsdp_mode"):
+        module.fsdp_replication_size({"fsdp_mode": "automatic"}, 3, 1, 1, 1)

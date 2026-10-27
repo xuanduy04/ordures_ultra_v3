@@ -25,7 +25,7 @@ from transformers import AutoConfig, AutoProcessor, AutoTokenizer, PreTrainedMod
 from transformers.models.gemma3.modeling_gemma3 import Gemma3ForCausalLM
 
 from nemo_rl.models.automodel.config import ModelAndOptimizerState, RuntimeConfig
-from nemo_rl.models.automodel.runtime_compat import create_fsdp2_manager, use_hf_meta_init, hf_model_from_config
+from nemo_rl.models.automodel.runtime_compat import create_fsdp2_manager, use_hf_meta_init, hf_model_from_config, fsdp_replication_size
 from nemo_rl.models.policy import PolicyConfig
 from nemo_rl.models.policy.utils import configure_dynamo_cache, resolve_model_class
 
@@ -156,15 +156,6 @@ def validate_and_prepare_config(
     tp_size = config["dtensor_cfg"].get("tensor_parallel_size", 1)
     cp_size = config["dtensor_cfg"].get("context_parallel_size", 1)
     sequence_parallel_enabled = config["dtensor_cfg"]["sequence_parallel"]
-    dp_replicate_size = 1
-    if "fsdp_mode" in config["dtensor_cfg"]:
-        mode = config["dtensor_cfg"]["fsdp_mode"]
-        if mode not in ("sharded", "replicated"):
-            raise ValueError("Use explicit fsdp_mode: sharded or replicated")
-        if mode == "replicated":
-            if tp_size != 1 or cp_size != 1 or ep_size != 1:
-                raise ValueError("Replicated FSDP mode is qualified only for TP=CP=EP=1")
-            dp_replicate_size = world_size
 
     # Validate parallelization configuration
     if cp_size > 1 and enable_seq_packing:
@@ -255,6 +246,7 @@ def setup_distributed(
     ep_size = config["dtensor_cfg"].get("expert_parallel_size", 1)
     dp_size = config["dtensor_cfg"].get("data_parallel_size", None)
     sequence_parallel_enabled = config["dtensor_cfg"]["sequence_parallel"]
+    dp_replicate_size = fsdp_replication_size(config["dtensor_cfg"], world_size, tp_size, cp_size, ep_size)
 
     # Create FSDP2 manager
     manager = create_fsdp2_manager(
