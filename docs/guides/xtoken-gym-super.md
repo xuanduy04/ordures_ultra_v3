@@ -122,7 +122,7 @@ Smoke256 vẫn là profile mặc định; renderer không tự chuyển sang tra
 Pilot khẩn cấp lấy budget thực từ A-on-11 qua `prepare_pilot.py`, recipe
 `pilot_200.yaml`, thay vì tự ép profile8k. Dùng nguyên pool toán16.367 dòng,
 kiểm path/row count/hash với provenance A-on-11, không đổi sang math/code20k.
-B-on-01 chạy same-tokenizer Qwen3-32B ở node anhhbt-eval-7-0-1; A-on-12 là
+B-on-02 chạy same-tokenizer Qwen3-32B ở node anhhbt-eval-7-0-1; A-on-13 là
 preset cross mới warmup20 để chạy khi node A rảnh. A-on-11 đang chạy được giữ
 nguyên; lịch warmup250 đã thực thi không thể trở thành warmup20 hồi tố.
 
@@ -141,6 +141,15 @@ Save mỗi10, giữ20 checkpoint: đủ các mốc10..200 của pilot. Không t�
 checkpoint hoặc dọn để tiết kiệm disk. Run đang chạy không tự đổi retention khi
 sửa YAML trên đĩa; checkpoint đã xóa không được phục hồi bằng đổi config.
 Chưa bật held-out evaluation tự động trong Gym.
+
+R11 thêm arm `same235`/C-on-01, độc lập với cross/A-on-13 và same/B-on-02:
+teacher Qwen3-235B-A22B-Instruct, cùng student init Qwen3-1.7B và toàn bộ data,
+budget, loss top20+OTHER. Profile riêng
+`xtoken_gym_qwen3_235b_same_tokenizer_train.yaml` kế thừa lịch200/warmup20/save10,
+keep20. Tokenizer local mặc định là bản Qwen student đã stage; probe server
+phải kiểm parity. Endpoint235B từ thông tin cũ cần probe lại, không coi là live
+qualification. C xếp sau B trên anhhbt; chưa có node student thứ ba để chạy cả3
+song song. Handoff hiện hành: `tools/xtoken_all/HANDOFF-three-arms-r11.md`.
 
 `render.py` nhận `--gym-actor-python`, `--gym-venvs`, `--gym-source` trỏ các thành phần
 đã provision. Gym import phải đúng source đã khai; config paths dùng đường dẫn

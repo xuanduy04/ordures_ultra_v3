@@ -50,7 +50,7 @@ def baseline():
                 "source_contract": "/old-source/tools/xtoken_all/super-source-contract.json", "global_config": {"nemo_gym_log_dir": "/root/runs/A-on-11/gym-logs"}}}}
 
 
-@pytest.mark.parametrize("arm", ["same", "cross"])
+@pytest.mark.parametrize("arm", ["same", "cross", "same235"])
 def test_both_arms_preserve_actual_pilot_data_and_budgets(arm):
     old = baseline()
     original = deepcopy(old)
@@ -67,11 +67,13 @@ def test_both_arms_preserve_actual_pilot_data_and_budgets(arm):
     assert cfg["policy"]["max_total_sequence_length"] == old["policy"]["max_total_sequence_length"]
     assert cfg["on_policy"]["nemo_gym"]["ray_address"] == "new-head:6379"
     assert cfg["on_policy"]["nemo_gym"]["source_contract"].startswith("/new-source/")
-    if arm == "same":
+    if spec()["arms"][arm]["tokenizer_mode"] == "same":
         assert cfg["teachers"][0]["projection_matrix_path"] is None
         assert "from_pretrained_kwargs" not in cfg["teachers"][0]["tokenizer"]
         assert cfg["teachers"][0]["remote"]["model_vocab_size"] == 151936
-        assert cfg["teachers"][0]["remote"]["model"] == "Qwen3-32B"
+        assert cfg["teachers"][0]["remote"]["model"] == spec()["arms"][arm]["teacher_model"]
+        if arm == "same235":
+            assert cfg["teachers"][0]["tokenizer"]["name"] == old["policy"]["tokenizer"]["name"]
     else:
         assert cfg["teachers"] == old["teachers"]
 
@@ -85,6 +87,19 @@ def test_yaml_profiles_share_the_approved_budget():
     assert train["policy"]["scheduler"] == spec()["scheduler"]
     assert train["checkpointing"]["save_period"] == 10
     assert train["checkpointing"]["keep_top_k"] == spec()["checkpointing"]["keep_top_k"] == 20
+    largest = yaml.safe_load((ROOT / "examples/configs/xtoken_gym_qwen3_235b_same_tokenizer_train.yaml").read_text())
+    assert largest["defaults"] == "xtoken_gym_qwen3_same_tokenizer_train.yaml"
+    assert len(largest["teachers"]) == 1
+    assert largest["teachers"][0]["projection_matrix_path"] is None
+    assert largest["teachers"][0]["remote"]["model"] == spec()["arms"]["same235"]["teacher_model"]
+
+
+def test_independent_arms_reject_a_multi_teacher_baseline():
+    old = baseline()
+    old["teachers"].append(deepcopy(old["teachers"][0]))
+    with pytest.raises(ValueError, match="one teacher per independent run"):
+        pilot.pilot_config(old, spec(), "same235", PurePosixPath("/root/runs/old"), PurePosixPath("/root/runs/new"),
+                           PurePosixPath("/old-source"), PurePosixPath("/new-source"), "host:6379")
 
 
 def test_actual_super_retention_keeps_every_pilot_checkpoint():

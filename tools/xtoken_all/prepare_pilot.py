@@ -27,6 +27,8 @@ def rebase(value, old, new):
 def pilot_config(baseline, spec, arm, old_run, run, old_source, source, ray_address):
     cfg = rebase(deepcopy(baseline), str(old_run), str(run))
     cfg = rebase(cfg, str(old_source), str(source))
+    if len(cfg["teachers"]) != 1:
+        raise ValueError("This plan requires one teacher per independent run")
     cfg["distillation"].update(spec["distillation"])
     cfg["policy"]["scheduler"] = deepcopy(spec["scheduler"])
     cfg["checkpointing"].update(spec["checkpointing"])
@@ -36,11 +38,14 @@ def pilot_config(baseline, spec, arm, old_run, run, old_source, source, ray_addr
     cfg["logger"]["log_dir"] = str(run / "train-logs")
     cfg["on_policy"]["nemo_gym"]["global_config"]["nemo_gym_log_dir"] = str(run / "gym-logs")
     cfg["on_policy"]["nemo_gym"]["source_contract"] = str(source / "tools/xtoken_all/super-source-contract.json")
-    if arm == "same":
+    if spec["arms"][arm]["tokenizer_mode"] == "same":
         teacher = cfg["teachers"][0]
         teacher["tokenizer"] = deepcopy(cfg["policy"]["tokenizer"])
-        teacher["tokenizer"]["name"] = spec["arms"][arm]["teacher_tokenizer"]
-        teacher["model_name"] = spec["arms"][arm]["teacher_tokenizer"]
+        tokenizer_path = spec["arms"][arm]["teacher_tokenizer"]
+        if tokenizer_path is None:
+            tokenizer_path = cfg["policy"]["tokenizer"]["name"]
+        teacher["tokenizer"]["name"] = tokenizer_path
+        teacher["model_name"] = tokenizer_path
         teacher["projection_matrix_path"] = None
         teacher["remote"].update(url=spec["arms"][arm]["teacher_url"],
             model=spec["arms"][arm]["teacher_model"], model_vocab_size=spec["arms"][arm]["teacher_vocab_size"],
@@ -50,13 +55,15 @@ def pilot_config(baseline, spec, arm, old_run, run, old_source, source, ray_addr
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--arm", choices=("same", "cross"), required=True)
+    parser.add_argument("--arm", choices=("same", "cross", "same235"), required=True)
     parser.add_argument("--ray-address", required=True)
     parser.add_argument("--run-id")
     parser.add_argument("--gym-actor-python", type=Path)
     parser.add_argument("--gym-source", type=Path)
     parser.add_argument("--gym-venvs", type=Path)
     parser.add_argument("--teacher-model")
+    parser.add_argument("--teacher-url")
+    parser.add_argument("--teacher-tokenizer", type=Path)
     parser.add_argument("--teacher-api-key-env")
     args = parser.parse_args()
     source = Path(__file__).resolve().parents[2]
@@ -89,6 +96,11 @@ def main():
                        Path(metadata["source_root"]), source, args.ray_address)
     if args.teacher_model is not None:
         cfg["teachers"][0]["remote"]["model"] = args.teacher_model
+    if args.teacher_url is not None:
+        cfg["teachers"][0]["remote"]["url"] = args.teacher_url
+    if args.teacher_tokenizer is not None:
+        cfg["teachers"][0]["tokenizer"]["name"] = str(args.teacher_tokenizer.resolve())
+        cfg["teachers"][0]["model_name"] = str(args.teacher_tokenizer.resolve())
     gym = cfg["on_policy"]["nemo_gym"]
     for name, override in (("actor_python", args.gym_actor_python), ("source_root", args.gym_source), ("venv_dir", args.gym_venvs)):
         if override is not None:
@@ -109,7 +121,7 @@ def main():
         "--teacher-url", teacher["remote"]["url"], "--teacher-model", teacher["remote"]["model"],
         "--gym-actor-python", gym["actor_python"], "--gym-source", gym["source_root"],
         "--gym-venvs", gym["venv_dir"], "--ray-address", args.ray_address]
-    if args.arm == "same":
+    if spec["arms"][args.arm]["tokenizer_mode"] == "same":
         command.extend(["--same-tokenizer", "--teacher-vocab-size", str(teacher["remote"]["model_vocab_size"])])
     else:
         command.extend(["--projection", teacher["projection_matrix_path"]])
@@ -122,6 +134,10 @@ def main():
         "data_sha256": sha256(data), "rows": rows, "run_dir": str(run), "fresh_initialization": True,
         "steps": spec["distillation"]["max_num_steps"], "warmup": spec["scheduler"][0]["kwargs"]["total_iters"],
         "save_period": spec["checkpointing"]["save_period"], "ray_address": args.ray_address,
+        "keep_top_k": spec["checkpointing"]["keep_top_k"],
+        "teacher_url": teacher["remote"]["url"], "teacher_model": teacher["remote"]["model"],
+        "teacher_tokenizer": teacher["tokenizer"]["name"],
+        "tokenizer_mode": spec["arms"][args.arm]["tokenizer_mode"],
         "baseline_schedule_preserved": False, "baseline_run_modified": False}
     (run / "pilot-plan.json").write_text(json.dumps(receipt, indent=2) + "\n")
     print(json.dumps(receipt, indent=2))

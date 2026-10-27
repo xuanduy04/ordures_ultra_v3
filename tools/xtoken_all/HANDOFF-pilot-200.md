@@ -11,12 +11,12 @@ path; không tạo provenance mới từ suy đoán và không copy checkpoint A
 1. Giữ nguyên artifact/source A-on-11. Log mới cho thấy nó hoàn tất step66 rồi
    dừng ở step67 vì student decode có replacement character. Không sửa
    scheduler trong artifact cũ. Đã chạy warmup250 thì không thể đổi lịch sử
-   thành warmup20. A-on-11 là baseline lịch cũ; preset chuẩn A-on-12 là run mới.
+   thành warmup20. A-on-11 là baseline lịch cũ; preset chuẩn A-on-13 là run mới.
 2. B chạy trên `anhhbt-eval-7-0-1`, 4 GPU 0–3. Teacher Qwen3-32B ở
    `http://172.29.191.69:8000`; xác nhận alias bằng probe /v1/models. Không host
    hoặc restart teacher. Không dùng GPU trên node A để chạy B.
 3. Bung packet vào thư mục staging mới. Đặt `source/` thành checkout/overlay mới
-   `/workspace/storage-shared/nlp/tungks/xtoken_all/ordures_ultra_v3_pilot200_r10`.
+   `/workspace/storage-shared/nlp/tungks/xtoken_all/ordures_ultra_v3_pilot200_r11`.
    Đây phải là source tree hoàn chỉnh từ packet; không đổi tên/ghi đè checkout A hoặc B đang chạy.
    Tái dùng 3rdparty/PYTHONPATH đã provision như r8, không cài dependency.
 4. Source metadata pyproject/uv.lock/default_runtime_env/.python-version dùng
@@ -48,12 +48,12 @@ Teacher tokenizer dùng `/workspace/storage-shared/models/Qwen3-32B`, kwargs gi�
 - B dùng cùng loss coarse KL top20+OTHER với A, không đổi sang native OPD cũ,
   P-KL hoặc H-KL. Teacher Gemma/Qwen vẫn là biến khác nhau của hai recipe.
 - A-on-11 lịch cũ không phải đối chứng scheduler hoàn toàn khớp với B mới.
-  A-on-12 là preset cross chuẩn để chạy sau khi node A được giải phóng.
+  A-on-13 là preset cross chuẩn để chạy sau khi node A được giải phóng.
 - Không auto-resume: mỗi run directory mới, initial weights từ path model gốc.
 
 ## B — render và kiểm tra
 
-Block P200-B01 — chạy trên node anhhbt-eval-7-0-1 — render B từ pool/budget A-on-11 rồi kiểm runtime và teacher
+Block P200-B03 — chạy trên node anhhbt-eval-7-0-1 — render B từ pool/budget A-on-11 rồi kiểm runtime và teacher
 
 ```bash
 (
@@ -61,7 +61,7 @@ export XTOKEN_ALL_ROOT=/workspace/storage-shared/nlp/tungks/xtoken_all
 export NRL_PYTHON=/opt/nemo_rl_venv/bin/python
 export NEMO_RL_VENV_DIR=/opt/ray_venvs
 export NRL_IGNORE_VERSION_MISMATCH=1
-SOURCE="$XTOKEN_ALL_ROOT/ordures_ultra_v3_pilot200_r10"
+SOURCE="$XTOKEN_ALL_ROOT/ordures_ultra_v3_pilot200_r11"
 export XTOKEN_RAY_ADDRESS="$(hostname -I | awk '{print $1}'):6379"
 if [ "$(hostname -s)" = anhhbt-eval-7-0-1 ] && [ -f "$SOURCE/tools/xtoken_all/pilot_200.sh" ]; then
   cd "$SOURCE" && bash tools/xtoken_all/pilot_200.sh same render &&
@@ -71,8 +71,8 @@ else
   printf '%s\n' 'STOP: sai node hoặc thiếu source pilot200'
   STATUS=1
 fi
-echo "P200_B01_EXIT_STATUS=$STATUS"
-echo "--- het Block P200-B01, shell con song ---"
+echo "P200_B03_EXIT_STATUS=$STATUS"
+echo "--- het Block P200-B03, shell con song ---"
 exit "$STATUS"
 )
 ```
@@ -96,16 +96,16 @@ cho phép chạy lại input plan nếu nội dung giống hệt; run đã tồn
 Sau khi check pass, DSH xác minh PID/cmdline Ray head là của job này và 4 GPU rảnh.
 Chỉ sau xác minh ấy mới dùng flag operator-owned-ray-verified dưới đây.
 
-Block P200-B02 — chạy trên node anhhbt-eval-7-0-1 — ghi allocation mới, kiểm stream và launch B trong foreground
+Block P200-B04 — chạy trên node anhhbt-eval-7-0-1 — ghi allocation mới, kiểm stream và launch B trong foreground
 
 ```bash
 (
 export XTOKEN_ALL_ROOT=/workspace/storage-shared/nlp/tungks/xtoken_all
 export NRL_PYTHON=/opt/nemo_rl_venv/bin/python NEMO_RL_VENV_DIR=/opt/ray_venvs
 export NRL_IGNORE_VERSION_MISMATCH=1
-SOURCE="$XTOKEN_ALL_ROOT/ordures_ultra_v3_pilot200_r10"
+SOURCE="$XTOKEN_ALL_ROOT/ordures_ultra_v3_pilot200_r11"
 export PYTHONPATH="$SOURCE${PYTHONPATH:+:$PYTHONPATH}"
-export XTOKEN_RUN_DIR="$XTOKEN_ALL_ROOT/runs/B-on-01"
+export XTOKEN_RUN_DIR="$XTOKEN_ALL_ROOT/runs/B-on-02"
 export XTOKEN_ALLOCATION_RECEIPT="$XTOKEN_RUN_DIR/allocation-$(date +%s).json"
 export XTOKEN_RAY_ADDRESS="$(hostname -I | awk '{print $1}'):6379"
 cd "$SOURCE" && (
@@ -118,8 +118,8 @@ cd "$SOURCE" && (
   bash tools/xtoken_all/pilot_200.sh same launch
 )
 STATUS=$?
-echo "P200_B02_EXIT_STATUS=$STATUS"
-echo "--- het Block P200-B02, shell con song ---"
+echo "P200_B04_EXIT_STATUS=$STATUS"
+echo "--- het Block P200-B04, shell con song ---"
 exit "$STATUS"
 )
 ```
@@ -131,7 +131,7 @@ không render lại khi effective config/source không đổi. Không chạy B02
 Khi hoàn tất: từ source mới và cùng env, dùng
 `bash tools/xtoken_all/pilot_200.sh same assess`. Checker mới đòi200 update,
 policy versions0..199, scores top20, exit0 và finalized checkpoint200. Không dùng
-check_result.py hai-step cho pilot200. Theo dõi driver.log ở run B-on-01;
+check_result.py hai-step cho pilot200. Theo dõi driver.log ở run B-on-02;
 report riêng quality eval held-out, chưa có eval tích hợp tự chạy.
 
 ## Cross chuẩn — chỉ sau khi node A rảnh
@@ -139,8 +139,8 @@ report riêng quality eval held-out, chưa có eval tích hợp tự chạy.
 Từ source mới trên `rl-test-opd-ultra-selfbuilt-trainllm-1-0-1`, dùng cùng env
 và Ray head local đã xác minh:
 `bash tools/xtoken_all/pilot_200.sh cross render`, rồi `cross check`.
-Nó tạo A-on-12, giữ teacher Gemma/projection/data/budgets của A-on-11, scheduler
-200/20/save10. Allocation/stream/launch dùng chuỗi helper cũ với run A-on-12,
+Nó tạo A-on-13, giữ teacher Gemma/projection/data/budgets của A-on-11, scheduler
+200/20/save10. Allocation/stream/launch dùng chuỗi helper cũ với run A-on-13,
 sau cùng `cross assess`. Không chạy cross launch khi A-on-11 còn giữ GPU.
 
 ## Phạm vi bằng chứng

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-ARM="${1:?Specify same or cross}"
+ARM="${1:?Specify same, same235 or cross}"
 ACTION="${2:?Specify render, check, launch or assess}"
 : "${XTOKEN_ALL_ROOT:?Set persistent xtoken_all root}"
 : "${NRL_PYTHON:?Use the existing driver interpreter}"
@@ -9,7 +9,7 @@ SOURCE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$SOURCE_ROOT"
 export PYTHONPATH="${SOURCE_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 export PYTHONDONTWRITEBYTECODE=1 UV_OFFLINE=1 HF_HUB_OFFLINE=1
-case "$ARM" in same|cross) ;; *) echo 'Invalid arm' >&2; exit 2 ;; esac
+case "$ARM" in same|same235|cross) ;; *) echo 'Invalid arm' >&2; exit 2 ;; esac
 RUN_ID="$("$NRL_PYTHON" -B -c 'import sys,yaml; print(yaml.safe_load(open("tools/xtoken_all/pilot_200.yaml"))["arms"][sys.argv[1]]["run_id"])' "$ARM")"
 export XTOKEN_RUN_DIR="$XTOKEN_ALL_ROOT/runs/$RUN_ID"
 case "$ACTION" in

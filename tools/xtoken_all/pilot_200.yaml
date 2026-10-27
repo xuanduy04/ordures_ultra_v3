@@ -20,12 +20,22 @@ checkpointing:
   keep_top_k: 20
 arms:
   same:
-    run_id: B-on-01
+    run_id: B-on-02
+    tokenizer_mode: same
     node: anhhbt-eval-7-0-1
     teacher_url: http://172.29.191.69:8000
     teacher_model: Qwen3-32B
     teacher_tokenizer: /workspace/storage-shared/models/Qwen3-32B
     teacher_vocab_size: 151936
   cross:
-    run_id: A-on-12
+    run_id: A-on-13
+    tokenizer_mode: cross
     node: rl-test-opd-ultra-selfbuilt-trainllm-1-0-1
+  same235:
+    run_id: C-on-01
+    tokenizer_mode: same
+    node: anhhbt-eval-7-0-1
+    teacher_url: http://172.29.131.162:8000
+    teacher_model: Qwen3-235B-A22B-Instruct
+    teacher_tokenizer: null
+    teacher_vocab_size: 151936
