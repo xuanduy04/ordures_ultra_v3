@@ -53,7 +53,7 @@ checkpointing:
   is_async: false
 arms:
   same:
-    run_id: DPCA4B-01
+    run_id: GRASS4B-01
     tokenizer_mode: same
     gpu_uuids:
     - GPU-ba111adc-3819-f7e3-a762-812e64975d65
@@ -67,7 +67,7 @@ arms:
     teacher_tokenizer: /workspace/storage-shared/models/Qwen3-32B
     teacher_vocab_size: 151936
   cross:
-    run_id: DPCA4A-01
+    run_id: GRASS4A-01
     tokenizer_mode: cross
     node: rl-test-opd-ultra-selfbuilt-trainllm-1-0-2
     gpu_uuids:
@@ -83,7 +83,7 @@ arms:
     server_mode_evidence: /workspace/storage-shared/nlp/tungks/xtoken_all/tmp/server-mode-gemma-032.json
     reuse_baseline_projection: true
 variant:
-  mode: dpca
+  mode: grass_chunk_fixed_sigma
   score_mode: topk
   adv_clamp: 10.0
   clip_ratio_low: 0.2
