@@ -5,7 +5,21 @@ Gemma-4-26B-A4B-it chấm response bằng tokenizer riêng. Objective vẫn là
 `topk_tail_kl`, K=20 tại mỗi vị trí + OTHER, CE=0, T=1. Đây là adaptation;
 không gọi nó là P-KL nguyên bản, PPO hay sampled-token MOPD của GRPO.
 
-## Entry point đơn giản (r12)
+## Sửa nhận diện Ray và đóng gói Linux (r13)
+
+GCS của Ray2.55.1 dùng --gcs_server_port, dù CLI ray start nhận --port. R13 nhận
+cả hai tên ở dạng =value hoặc cặp tách; vẫn kiểm cùng UID, executable, port và
+topology. Không dùng socket mở làm bằng chứng ownership. Regression trên head
+Ray2.55.1 thật ở Modal CPU đã tái hiện r12 từ chối, r13 auto-start/reuse đúng cùng
+PID và chạy CPU task. Không thay thế kiểm tra nvidia-smi/allocation hay train GPU.
+
+Packet r13 xuất source với core.autocrlf=false, kiểm script shell LF và bash -n
+sau trích xuất. ZIP r12 từng bị Git archive chuyển sang CRLF dù blob trong commit
+là LF. Dùng full source r13 ở thư mục mới, không convert mù source đang chạy.
+Head T9 của công ty được giữ nguyên; check-only mới phải reuse, không yêu cầu
+ray stop/restart để vượt detector.
+
+## Entry point đơn giản (r12, được giữ trong r13)
 
 Từ source mới của gói, chạy `bash run_xtoken.sh cross`, `bash run_xtoken.sh same`
 hoặc `bash run_xtoken.sh same235` trên đúng student node, trong tmux.

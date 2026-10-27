@@ -214,10 +214,17 @@ def test_allocation_refuses_changed_uuid_before_any_ray_action(monkeypatch):
         pilot.allocation_command(ROOT, settings, "cross", "host:6379", Path("receipt.json"))
 
 
-def test_owned_gcs_scan_checks_real_executable_and_exact_port(tmp_path, monkeypatch):
+@pytest.mark.parametrize("port_args", [["--gcs_server_port=6379"], ["--gcs_server_port", "6379"],
+                                      ["--port=6379"], ["--port", "6379"]])
+def test_owned_gcs_scan_checks_real_executable_and_exact_port(tmp_path, monkeypatch, port_args):
     allocation = load("pilot_gcs_scan_test", TOOLS / "check_allocation.py")
-    for pid, arguments in ((10, ["/ray/gcs_server", "--port=6379"]), (11, ["/ray/gcs_server", "--port", "6380"]),
-                           (12, ["/bin/echo", "gcs_server", "--port=6379"])):
+    for pid, arguments in ((10, ["/ray/gcs_server", "--node-ip-address=172.29.167.231", *port_args]),
+                           (11, ["/ray/gcs_server", "--gcs_server_port", "6380"]),
+                           (12, ["/bin/echo", "gcs_server", *port_args]),
+                           (13, ["/ray/gcs_server", "--gcs_server_port=6379", "--port=6381"]),
+                           (14, ["/ray/gcs_server", "--gcs_server_port=63790"]),
+                           (15, ["/ray/gcs_server", "--gcs_server_port"]),
+                           (16, ["/ray/gcs_server", "--metrics-agent-port=6379"])):
         folder = tmp_path / str(pid)
         folder.mkdir()
         (folder / "cmdline").write_bytes(("\0".join(arguments) + "\0").encode())

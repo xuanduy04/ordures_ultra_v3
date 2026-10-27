@@ -1,6 +1,33 @@
-# DSH — r12: một lệnh, tái dùng setup Super-120B
+# DSH — r13: sửa nhận diện head Ray thật, giữ launcher Super-120B
 
-R12 là cách chạy hiện hành, thay quy trình nhiều block bên dưới. Source chỉ có
+R13 chỉ sửa detector GCS trong helper cũ và regression test, không thêm file source.
+Ray 2.55.1 nhận --port ở CLI nhưng truyền --gcs_server_port vào tiến trình con.
+R12 chỉ tìm --port nên từ chối cả head có sẵn lẫn head tự start. Detector nay nhận
+cả hai tên, dạng =value hoặc cặp tách, vẫn kiểm executable/UID/port chính xác;
+port mâu thuẫn hoặc khác giá trị vẫn bị từ chối.
+
+Đã test trên head Ray 2.55.1 thật trong Modal CPU: r12 từ chối cùng head; r13 auto
+start thành công, reuse cả khi tắt/bật start, PID không đổi; ray.init và CPU task
+thành công. Xem evidence/r13-real-ray-result.json trong packet. Không có GPU,
+không gọi teacher hoặc node công ty; đây không phải kết quả full training.
+
+Giữ nguyên head T9 tại172.29.167.231:6379 và run A-on-13 trên node
+rl-test-opd-ultra-selfbuilt-trainllm-1-0-2. Không ray stop, không kill PID848,
+không sửa effective.yaml/receipts cũ để giả là pass.
+Giải nén source r13 vào thư mục mới dưới xtoken_all, không đè r12. R13 đóng gói
+script shell bằng LF và kiểm bash -n từ chính payload; không cần tự convert .sh.
+Nếu dùng patch thay full source, preimage manifest là Git blob LF; không áp mù
+lên Python CRLF trích từ ZIP r12. Ưu tiên full source r13, giữ source cũ làm bằng chứng.
+
+Trong source r13, giữ nguyên các giá trị node-specific đã xác minh trong YAML
+(kể cả server_mode_evidence nếu có); không copy receipt pass từ run trước.
+Chạy lại một lệnh check-only bên dưới. Detector sẽ reuse head T9 khi đúng UID/IP,
+topology và GPU rảnh. Sau khi check pass, lệnh train tạo run ID mới và kiểm lại,
+không ghi đè A-on-13. Schedule/student/data/loss không đổi so với r12.
+
+## Launcher r12 được giữ nguyên trong r13
+
+Launcher r12 thay quy trình nhiều block bên dưới. So với r11, source chỉ có
 một file mới: `run_xtoken.sh`. Không thêm controller hoặc viết lại QA/converter.
 
 Giải nén packet vào thư mục mới dưới `/workspace/storage-shared/nlp/tungks/xtoken_all/`,

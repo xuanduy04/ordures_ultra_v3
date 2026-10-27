@@ -21,10 +21,15 @@ def owned_gcs_processes(port):
             args = (directory / "cmdline").read_bytes().decode(errors="replace").split("\0")
             if Path(args[0]).name != "gcs_server":
                 continue
-            matches = "--port=" + str(port) in args or any(
-                value == "--port" and index + 1 < len(args) and args[index + 1] == str(port)
-                for index, value in enumerate(args))
-            if matches:
+            # ray start's --port becomes --gcs_server_port on the GCS child.
+            ports = []
+            for index, value in enumerate(args):
+                for flag in ("--gcs_server_port", "--port"):
+                    if value.startswith(flag + "="):
+                        ports.append(value.split("=", 1)[1])
+                    elif value == flag:
+                        ports.append(args[index + 1] if index + 1 < len(args) else "")
+            if ports and set(ports) == {str(port)}:
                 owned.append(int(directory.name))
         except (OSError, ProcessLookupError):
             continue
