@@ -5,6 +5,7 @@ Each GPU call has a 480-second execution ceiling and a separate startup bound.
 """
 
 from datetime import datetime, timezone
+from contextlib import contextmanager
 from decimal import Decimal, ROUND_CEILING
 import hashlib
 import json
@@ -15,6 +16,7 @@ import signal
 import subprocess
 import tempfile
 import time
+import uuid
 
 import modal
 
@@ -33,6 +35,25 @@ app = modal.App("nemo-algorithm-qualification-20261028")
 PYTHON = "/opt/nemo_rl_venv/bin/python"
 POLICY_PYTHON = "/opt/ray_venvs/nemo_rl.models.policy.workers.dtensor_policy_worker_v2.DTensorPolicyWorkerV2/bin/python"
 MODES = "dpca,ctopd_full,ctopd_topk,simct_full,simct_topk,grass_chunk_fixed_sigma"
+
+
+@contextmanager
+def locked_ledger(ledger):
+    """Cross-process lock; an abandoned lock fails closed rather than overspends."""
+    lock = ledger.with_name(ledger.name + ".lock")
+    deadline = time.monotonic() + 10
+    while True:
+        try:
+            lock.mkdir()
+            break
+        except FileExistsError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Budget ledger is locked; inspect its owner before retry")
+            time.sleep(.05)
+    try:
+        yield
+    finally:
+        lock.rmdir()
 
 
 def safe_log(value):
@@ -165,25 +186,27 @@ def main(phase: str, count: int, output_dir: str, accelerator: str = "B200"):
     rows = json.loads(billed.stdout)
     reported = sum((Decimal(row["cost"]) for row in rows), Decimal(0))
     ledger = output / (profile + "-reservations.json")
-    previous = json.loads(ledger.read_text()) if ledger.is_file() else []
-    reserved = sum((Decimal(row["upper_bound_usd"]) for row in previous), Decimal(0))
     # Rates verified at https://modal.com/pricing on 2026-10-28. Reserve startup,
     # 480s execution and 2s idle, CPU8/RAM16GiB, plus conservative rounding.
     gpu_bounds = {"B200": {2: "3", 3: "4", 4: "5"}, "H100": {2: "2", 3: "3", 4: "4"}}
     bound = Decimal(gpu_bounds[accelerator][count]) if phase == "gpu" else Decimal("0.15")
-    allowed = max(reported, reserved) + bound + Decimal("2") <= Decimal("20")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-    label = profile + "-" + phase + "-" + str(count) + "-" + stamp
-    guard = {"profile": profile, "reported_month_usage_usd": str(reported), "local_reserved_upper_usd": str(reserved),
+    label = profile + "-" + phase + "-" + str(count) + "-" + accelerator + "-" + stamp + "-" + uuid.uuid4().hex[:8]
+    with locked_ledger(ledger):
+        previous = json.loads(ledger.read_text()) if ledger.is_file() else []
+        reserved = sum((Decimal(row["upper_bound_usd"]) for row in previous), Decimal(0))
+        allowed = max(reported, reserved) + bound + Decimal("2") <= Decimal("20")
+        guard = {"profile": profile, "reported_month_usage_usd": str(reported), "local_reserved_upper_usd": str(reserved),
              "call_bound_usd": str(bound), "reserve_usd": "2", "authorized_budget_usd": "20", "allowed": allowed,
              "accelerator": accelerator, "startup_timeout_s": 120, "scaledown_window_s": 2,
              "note": "Task began at reported usage zero on both profiles; CLI usage can lag and is not remaining credits"}
-    (output / (label + "-guard.json")).write_text(json.dumps(guard, indent=2))
+        (output / (label + "-guard.json")).write_text(json.dumps(guard, indent=2))
+        if allowed:
+            previous.append({"id": label, "upper_bound_usd": str(bound), "state": "reserved"})
+            ledger.write_text(json.dumps(previous, indent=2))
     print("ALGO_BUDGET=" + json.dumps(guard), flush=True)
     if not allowed:
         raise RuntimeError("Budget guard rejected this call")
-    previous.append({"id": label, "upper_bound_usd": str(bound), "state": "reserved"})
-    ledger.write_text(json.dumps(previous, indent=2))
     # Windows managed-worktree .git paths are not always understood by WSL Git.
     # The remote payload hash remains authoritative; metadata must not discard results.
     try:
@@ -198,14 +221,17 @@ def main(phase: str, count: int, output_dir: str, accelerator: str = "B200"):
     if phase == "gpu":
         rate = {"B200": Decimal("0.001736"), "H100": Decimal("0.001097")}[accelerator]
         # Submission-to-result includes queue and all application load. Allow a
-        # further30s for the2s idle window/teardown and CPU32/RAM64GiB (above
+        # further 30s for the 2s idle window/teardown and CPU32/RAM64GiB (above
         # this tiny fixture's request). This is an upper estimate, never a bill.
         settled = ((Decimal(str(elapsed + 30)) * (count * rate + Decimal("0.0000131") * 32 + Decimal("0.00000222") * 64))
                    + Decimal("0.05")).quantize(Decimal("0.01"), rounding=ROUND_CEILING)
-        previous[-1].update(initial_upper_bound_usd=str(bound), upper_bound_usd=str(min(bound, settled)),
+        with locked_ledger(ledger):
+            current = json.loads(ledger.read_text())
+            record = next(row for row in current if row["id"] == label)
+            record.update(initial_upper_bound_usd=str(bound), upper_bound_usd=str(min(bound, settled)),
                             state="completed" if result["success"] else "failed", submit_to_result_seconds=elapsed,
                             bound_basis="observed submission-to-result plus30s, GPU rate and CPU32/RAM64; not billed actual")
-        ledger.write_text(json.dumps(previous, indent=2))
+            ledger.write_text(json.dumps(current, indent=2))
     result["source_commit_at_dispatch"] = source_commit
     result["source_dirty_at_dispatch"] = source_dirty
     (output / (label + "-result.json")).write_text(json.dumps(result, indent=2))

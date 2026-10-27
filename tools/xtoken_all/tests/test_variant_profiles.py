@@ -50,3 +50,32 @@ def test_full_score_variant_does_not_silently_keep_top20_transport():
     assert cfg["teachers"][0]["remote"]["score_mode"] == "full"
     assert cfg["loss_fn"]["teacher_distribution_mode"] == "full_logprobs"
     assert cfg["loss_fn"]["vocab_topk"] == 151936
+
+
+def test_budget_ledger_serializes_two_independent_writers(tmp_path):
+    import subprocess
+    import sys
+
+    ledger = tmp_path / "budget.json"
+    ledger.write_text("0")
+    script = """
+import ast,sys,time
+from contextlib import contextmanager
+from pathlib import Path
+tree=ast.parse(Path(sys.argv[1]).read_text(encoding='utf-8'))
+node=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='locked_ledger')
+exec(compile(ast.Module(body=[node],type_ignores=[]),'<actual-ledger-lock>','exec'))
+ledger=Path(sys.argv[2])
+for _ in range(20):
+    with locked_ledger(ledger):
+        count=int(ledger.read_text())
+        time.sleep(.005)
+        ledger.write_text(str(count+1))
+"""
+    command = [sys.executable, "-B", "-c", script, str(ROOT / "tools/xtoken_all/modal_algorithm_checks.py"), str(ledger)]
+    children = [subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(2)]
+    for child in children:
+        stdout, stderr = child.communicate(timeout=15)
+        assert child.returncode == 0, stdout + stderr
+    assert ledger.read_text() == "40"
+    assert not ledger.with_name(ledger.name + ".lock").exists()
