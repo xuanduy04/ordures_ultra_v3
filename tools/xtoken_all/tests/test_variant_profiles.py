@@ -85,7 +85,10 @@ for _ in range(20):
     assert not ledger.with_name(ledger.name + ".lock").exists()
 
 
-def test_hf_mode_preserves_legacy_and_requires_explicit_backend_options():
+def test_hf_mode_preserves_legacy_and_requires_explicit_backend_options(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
     spec = importlib.util.spec_from_file_location("real_fsdp_modes", ROOT / "nemo_rl/models/automodel/runtime_compat.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -96,3 +99,8 @@ def test_hf_mode_preserves_legacy_and_requires_explicit_backend_options():
         module.validate_fsdp_mode({"fsdp_mode": "hf_sharded", "automodel_kwargs": {"force_hf": False, "use_liger_kernel": False}})
     with pytest.raises(ValueError, match="explicit fsdp_mode"):
         module.validate_fsdp_mode({"fsdp_mode": "automatic"})
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(__version__="5.3.0"))
+    model = SimpleNamespace(architectures=["RegisteredModel"])
+    registry = SimpleNamespace(model_arch_name_to_cls={"RegisteredModel": object()})
+    assert module.use_hf_meta_init(model, registry) is False
+    assert module.use_hf_meta_init(model, registry, force_hf=True) is True
