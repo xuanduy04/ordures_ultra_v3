@@ -5,6 +5,50 @@ Gemma-4-26B-A4B-it chấm response bằng tokenizer riêng. Objective vẫn là
 `topk_tail_kl`, K=20 tại mỗi vị trí + OTHER, CE=0, T=1. Đây là adaptation;
 không gọi nó là P-KL nguyên bản, PPO hay sampled-token MOPD của GRPO.
 
+## Setup runtime trên node mới (r14)
+
+`bash ensure_runtime.sh` kiểm tra runtime thực tế; runtime phù hợp thì không đọc
+hay giải nén archive. Không dùng file marker để quyết định bỏ qua. `run_xtoken.sh`
+gọi bước này tự động trước setup Super và các gate chạy train cũ.
+
+Chỉnh các path ở đầu ensure_runtime.sh hoặc dùng biến môi trường tương ứng:
+
+| Biến | Nội dung |
+| --- | --- |
+| XTOKEN_RUNTIME_ARCHIVE | Archive đã stage trên shared storage; mặc định xtoken_all/runtime/runtime-opt-20261027.tar.gz |
+| XTOKEN_SUPER_SOURCE | Source nemo-rl đầy đủ trong ZIP Super cũ, có3rdparty; mặc định đường dẫn shared custom_opt_ultra_selfbuilt_nano/nemo-rl đã dùng |
+| CUSTOM_NLTK_DATA_DIR | NLTK punkt_tab từ ZIP cũ; mặc định thư mục nltk_data cạnh Super source |
+
+Archive được nhận bằng size/SHA256 cố định của bản đã audit, không theo filename.
+File trên shared storage có thể đổi tên; không tự tải lại trên từng node, không
+install pip/uv/apt, không sửa driver/image. Bootstrap chỉ cần Linux x86_64,
+Python>=3.9 chuẩn và GNU tar; không cần PyYAML ở Python bootstrap.
+
+Khi thiếu môi trường, script kiểm tra các phần hiện có trước, kiểm SHA archive,
+giải nén vào staging riêng (cần45GiB trống), rồi chỉ publish các venv còn thiếu.
+Giữ Python tại prefix /root gốc và các venv ở /opt. Bảo toàn hardlinks. Không merge
+vào venv có sẵn, không ghi đè môi trường khác phiên bản. Phần đã tồn tại nhưng
+không phù hợp sẽ dừng và giữ nguyên; helper không tự sửa ABI hay libc của image.
+
+Nếu /opt/nemo-rl chưa có, helper có thể tạo symlink tới đúng Super source trên
+shared storage. Binding đã tồn tại được giữ nguyên, kiểm chứng cuối dùng import/API
+thật; không tự thay source của image. Gym source phải qua contract đã review,
+và NLTK English punkt_tab phải có. Nếu đổi XTOKEN_SUPER_SOURCE, cũng đặt
+runtime.gym_source trong pilot_200.yaml tới source Gym tương ứng.
+
+Script không kill/start Ray, không chọn GPU, không load model. Trước khi publish
+prefix hay tạo binding, kiểm process đang dùng runtime; giữ nguyên nếu có process.
+Readiness gồm driver version/import,3 worker API và3 app Gym, không khởi động
+HTTP service. Receipt nằm /tmp theo UID/node, không đặt marker chung trên shared
+storage; mọi lần đều probe lại, không copy trạng thái ready giữa hai container.
+
+`bash ensure_runtime.sh --check-only` là kiểm tra chỉ đọc, không tạo source alias,
+không restore, không ghi receipt. Khác với run_xtoken.sh cross --check-only:
+lệnh launcher vẫn có thể setup runtime/Ray trước khi dừng ở preflight.
+
+READY ở đây là đủ để vào preflight; không chứng minh GPU, NCCL, refit, full train
+hay Ubuntu22/24 đều tương thích. Image mới vẫn phải qua các kiểm chứng tương ứng.
+
 ## Sửa nhận diện Ray và đóng gói Linux (r13)
 
 GCS của Ray2.55.1 dùng --gcs_server_port, dù CLI ray start nhận --port. R13 nhận

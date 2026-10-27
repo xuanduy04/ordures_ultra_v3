@@ -1,4 +1,25 @@
-# DSH — r13: sửa nhận diện head Ray thật, giữ launcher Super-120B
+# DSH — r14: ensure runtime trên node mới, giữ launcher Super-120B
+
+Thêm ensure_runtime.sh và test fixture, không thêm môi trường/dependency mới.
+run_xtoken.sh gọi ensure trước bước setup Super. Cách chạy cross/same/same235 cũ
+không đổi. Runtime đúng và import/API pass thì bỏ qua giải nén; không dựa marker.
+
+Stage archive runtime đã audit một lần trên shared storage, mặc định:
+xtoken_all/runtime/runtime-opt-20261027.tar.gz. Đổi XTOKEN_RUNTIME_ARCHIVE nếu khác.
+Đặt XTOKEN_SUPER_SOURCE tới source nemo-rl đầy đủ đã bung từ custom_opt ZIP cũ;
+đặt CUSTOM_NLTK_DATA_DIR tới nltk_data cạnh nó. Đây là source/assets có sẵn,
+không cần lấy lại hoặc tải model teacher về node student. Chi tiết trong guide.
+
+Một lệnh riêng: bash ensure_runtime.sh. Kiểm tra chỉ đọc: bash ensure_runtime.sh
+--check-only. Không tự download/install hoặc ghi đè venv có sẵn. Nếu version,
+source, ABI hay prefix không phù hợp thì dừng và giữ nguyên. Không kill/start Ray
+hoặc sử dụng GPU để setup. Readiness không phải bằng chứng full training.
+
+Kiểm chứng r14 là fixtures Linux nhỏ: cold install, reuse không cần archive,
+hardlink, checksum, process guard, source binding và failed receipt. Không coi
+fixtures là đã restore lại gói13GB trên image công ty hay đã test GPU.
+
+## Ghi nhận r13
 
 R13 chỉ sửa detector GCS trong helper cũ và regression test, không thêm file source.
 Ray 2.55.1 nhận --port ở CLI nhưng truyền --gcs_server_port vào tiến trình con.

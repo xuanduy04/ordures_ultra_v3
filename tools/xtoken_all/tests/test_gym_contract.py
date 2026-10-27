@@ -188,6 +188,10 @@ def test_source_fingerprint_detects_code_edits(tmp_path):
     launcher = integrity.source_snapshot(tmp_path)
     assert launcher["sha256"] != after["sha256"]
     assert "run_xtoken.sh" in launcher["files"]
+    (tmp_path / "ensure_runtime.sh").write_text("exit 0\n")
+    setup = integrity.source_snapshot(tmp_path)
+    assert setup["sha256"] != launcher["sha256"]
+    assert "ensure_runtime.sh" in setup["files"]
 
 
 @pytest.mark.parametrize("retain,has_ids", [(False, True), (True, True), (True, False)])

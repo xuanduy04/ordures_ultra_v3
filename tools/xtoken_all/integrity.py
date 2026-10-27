@@ -20,7 +20,7 @@ def source_snapshot(root):
         for path in sorted((root / directory).rglob("*")):
             if path.is_file() and path.suffix in {".py", ".sh", ".yaml", ".yml", ".json"} and "__pycache__" not in path.parts:
                 files[path.relative_to(root).as_posix()] = sha256(path)
-    for name in ("pyproject.toml", "uv.lock", "default_runtime_env.yaml", ".python-version", "run_xtoken.sh"):
+    for name in ("pyproject.toml", "uv.lock", "default_runtime_env.yaml", ".python-version", "run_xtoken.sh", "ensure_runtime.sh"):
         path = root / name
         if path.is_file():
             files[name] = sha256(path)

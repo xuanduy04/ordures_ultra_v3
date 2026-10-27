@@ -6,6 +6,8 @@ PYTHON="${NRL_PYTHON:-/opt/nemo_rl_venv/bin/python}"
 CONFIG="$SOURCE/tools/xtoken_all/pilot_200.yaml"
 ARM="${1:-cross}"
 if [ "$#" -gt 0 ]; then shift; fi
+source "$SOURCE/ensure_runtime.sh" --
+PYTHON="$NRL_PYTHON"
 test -x "$PYTHON"
 source "$SOURCE/custom_utils/utils_training/use_custom_opt.sh" "$SOURCE" "${CUSTOM_NLTK_DATA_DIR:-/workspace/storage-shared/nlp/vai-1.4-30b/nemo-rl/custom_opt_ultra_selfbuilt_nano/nltk_data}"
 export PYTHONPATH="$SOURCE/tools/xtoken_all:$SOURCE${PYTHONPATH:+:$PYTHONPATH}"
