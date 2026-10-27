@@ -73,6 +73,17 @@ Loss mới chia theo tổng số student response tokens hợp lệ trên global
 kể cả khi CTOPD loại các span không phải1:1. Khác mẫu số kept-segments của một
 số author implementations; cần khớp normalization/LR trước so sánh paper.
 
+`variant_parallelism` trong recipe chọn `sharded` cho 2/4 GPU và `hf_sharded`
+cho 3 GPU. Probe thật đã phát hiện Automodel chia combined projections theo
+dim 1, không hỗ trợ uneven sharding (ví dụ weight [192,64] trên 3 rank).
+Runtime này cũng chủ động từ chối full replication. `hf_sharded` chọn
+implementation Hugging Face qua force_hf=true,
+use_liger_kernel=false, dùng các projection riêng và FSDP sharding thông thường.
+Trade-off là bỏ combined/fused projection optimizations của Automodel; throughput
+có thể thấp hơn và phải đo trên model thật. Vẫn chia model/optimizer state.
+Không đổi kích thước model, vocab hay bỏ GPU. Nếu không khai fsdp_mode thì
+backend cũ giữ nguyên. Đây là lựa chọn trong YAML, không tự fallback khi lỗi.
+
 Trên source suite, đặt XTOKEN_PILOT_CONFIG tới pilot_algorithm.yaml rồi dùng
 run_xtoken.sh cross hoặc same, thêm --gpu-indices 0 1 / 0 1 2 / 0 1 2 3.
 Subset phải thuộc allocation UUID đã khai; không dò/chiếm GPU khác. Launcher
@@ -111,6 +122,12 @@ với reference global-batch12. Numeric cross-tokenizer fixtures bao gồm1:n/n:
 padding và sample weights; đây không phải bằng chứng Gym/vLLM/FSDP2 end-to-end.
 Kết quả remote và source snapshot của mỗi lần chạy phải được đọc cùng report.
 
+Runner mặc định yêu cầu đúng B200. Có thể chọn --accelerator H100 riêng để
+kiểm logic CUDA khi B200 chờ capacity; report phải giữ tên GPU thực và không
+coi H100 là kiểm chứng runtime Blackwell. Native FSDP2/IPC chạy bằng interpreter
+của DTensorPolicyWorkerV2; numeric DDP dùng Python driver. Không ghép hai Torch
+site-packages để làm cho import thành công.
+
 Không gọi canary một vài update là hiệu quả khoa học hoặc replicate paper.
 Server Gemma/Qwen công ty không truy cập được từ Modal; built /opt/nemo-rl18GiB
 trên shared chưa được cung cấp qua HF. NGC image có digest + source overlay là
@@ -128,3 +145,46 @@ Không lấy CTOPD/DPCA runtime khác thay vào NeMo chỉ vì cùng B200/CUDA.
   mean_logprob. Fixture provenance ghi hash source thực tế, không chỉ tên repo.
 - GRASS-Chunk: source _mp_opd_grass_chunk.py/_mp_opd_grass_span.py trong SimCT;
   fixed chunks và local output-head risk model, không phải GRASS-DP/global optimum.
+
+## Kết quả và bàn giao DSH — 2026-10-28
+
+[Report máy đọc được](algorithm-qualification.json) giữ image digest, hash
+payload source và tên artifact của từng lượt kiểm tra. Kết quả cuối:
+
+- CPU: 466 test pass, 20 skip; gồm 283 test công cụ/thuật toán, 174 test X-Token,
+  9 test Automodel trong đúng policy venv. Các test skip chưa được coi là pass.
+- Mỗi cấu hình bên dưới chạy cả sáu mode: đối chiếu loss/gradient/update bằng
+  NCCL, rồi train optimizer qua DTensorPolicyWorkerV2 thật. Native batches dùng
+  model Llama nhỏ tạo offline và teacher scores tổng hợp, không sinh từ Gym.
+
+| GPU thực | Backend student | NCCL parity | FSDP optimizer cả 6 mode | Refit tên/shape |
+| --- | --- | --- | --- | --- |
+| 2 H100 | sharded / Automodel | pass | pass, gradient khác 0 | pass |
+| 3 H100 | hf_sharded / HF | pass | pass, gradient khác 0 | pass |
+| 4 H100 | sharded / Automodel | pass | pass, gradient khác 0 | pass |
+
+IPC teacher legacy trên 2 GPU cũng pass, gồm reuse và release buffer. Refit
+ở bảng chỉ chứng minh metadata khớp checkpoint HF; chưa phải streaming sang
+vLLM và sinh response sau refit. Các yêu cầu B200 không tới bước thực thi và
+đã hủy; chưa có chứng cứ Blackwell. Chưa chạy 200 step hay đánh giá chất lượng.
+
+Các nhánh chọn mặc định trong cùng một file pilot_algorithm.yaml:
+
+| Nhánh | Mode mặc định |
+| --- | --- |
+| [tung/algo/dpca](https://github.com/xuanduy04/ordures_ultra_v3/tree/tung/algo/dpca) | dpca |
+| [tung/algo/ctopd](https://github.com/xuanduy04/ordures_ultra_v3/tree/tung/algo/ctopd) | ctopd_topk, xấp xỉ |
+| [tung/algo/simct](https://github.com/xuanduy04/ordures_ultra_v3/tree/tung/algo/simct) | simct_topk, xấp xỉ |
+| [tung/algo/grass-chunk](https://github.com/xuanduy04/ordures_ultra_v3/tree/tung/algo/grass-chunk) | grass_chunk_fixed_sigma |
+
+DSH dùng checkout mới dưới root của recipe; giữ source/run cũ và runtime
+`/opt` hiện có. Sửa đường dẫn student, teacher/tokenizer, dataset/hash và
+allocation UUID trong YAML. Không coi đường dẫn mẫu Qwen3-4B là đã có trên node.
+Chạy cùng lệnh ở trên với --check-only để đóng các gate, sau đó bỏ --check-only
+để tạo run mới. Kiểm tra tokenizer/projection, teacher scoring và Gym trên node
+vẫn bắt buộc; server công ty không truy cập được từ Modal. Các gate giữ nguyên
+việc từ chối asset/source/runtime không khớp, không tự cài hoặc rebuild venv.
+
+Recipe vẫn 200 step, warmup 20, save mỗi 10, keep 20, GBS12/MBS1. Trước campaign
+cần canary với model/context thật và xác minh generation sau refit. Các run 1.7B
+và YAML 4B cũ giữ nguyên; đổi thuật toán/backend thì tạo run mới, không resume chéo.

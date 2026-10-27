@@ -1,0 +1,385 @@
+{
+  "verified_at_utc": "2026-10-27T23:14:19.325469+00:00",
+  "base_revision": "b9aab07076735698c549970617a3791faeefa649",
+  "implementation_revision": "f146baf82c1473297a0968d09a15b958e0aa25af",
+  "runtime_image": "nvcr.io/nvidia/nemo-rl@sha256:060a3337d167e66230ce8b3dac9e9b733ad25bc997f8a0121eebccf81cbf1b23",
+  "driver_torch": "2.10.0+cu129",
+  "driver_cuda": "12.9",
+  "scope": "Numeric cross-tokenizer fixtures and real NCCL; real DTensorPolicyWorkerV2/FSDP2 with a tiny offline Llama, synthetic behavior and teacher scores. No real Gym HTTP rollout or real Qwen/Gemma training.",
+  "cpu_tests": {
+    "light": {
+      "passed": 283,
+      "skipped": 6
+    },
+    "unit": {
+      "passed": 174,
+      "skipped": 14
+    },
+    "automodel": {
+      "passed": 9,
+      "skipped": 0
+    }
+  },
+  "cpu_result_artifact": "nguyenepti-cpu-3-B200-20261027T230100-98aa45a2-result.json",
+  "cpu_source_payload_sha256": "7420520906f8a531118bb0aa52350989a855e62622778d83ea1962aa384bfe03",
+  "gpu_checks": [
+    {
+      "gpu_count": 2,
+      "gpu_names": [
+        "NVIDIA H100 80GB HBM3",
+        "NVIDIA H100 80GB HBM3"
+      ],
+      "fsdp_mode": "sharded",
+      "source_payload_sha256": "7420520906f8a531118bb0aa52350989a855e62622778d83ea1962aa384bfe03",
+      "result_artifact": "nguyenepti-gpu-2-H100-20261027T230232-2f169af4-result.json",
+      "ddp_modes": [
+        {
+          "mode": "dpca",
+          "loss": 0.34738171100616455,
+          "max_gradient_error": 5.551115123125783e-17,
+          "global_batch_size": 12,
+          "local_batch_size": 6,
+          "gradient_and_update_parity": true
+        },
+        {
+          "mode": "ctopd_full",
+          "loss": 0.1478244662284851,
+          "max_gradient_error": 1.3877787807814457e-17,
+          "global_batch_size": 12,
+          "local_batch_size": 6,
+          "gradient_and_update_parity": true
+        },
+        {
+          "mode": "ctopd_topk",
+          "loss": 0.1478244662284851,
+          "max_gradient_error": 8.673617379884035e-19,
+          "global_batch_size": 12,
+          "local_batch_size": 6,
+          "gradient_and_update_parity": true
+        },
+        {
+          "mode": "simct_full",
+          "loss": 0.454261839389801,
+          "max_gradient_error": 2.7755575615628914e-17,
+          "global_batch_size": 12,
+          "local_batch_size": 6,
+          "gradient_and_update_parity": true
+        },
+        {
+          "mode": "simct_topk",
+          "loss": 0.454261839389801,
+          "max_gradient_error": 4.163336342344337e-17,
+          "global_batch_size": 12,
+          "local_batch_size": 6,
+          "gradient_and_update_parity": true
+        },
+        {
+          "mode": "grass_chunk_fixed_sigma",
+          "loss": -0.11552548408508301,
+          "max_gradient_error": 1.1102230246251565e-16,
+          "global_batch_size": 12,
+          "local_batch_size": 6,
+          "gradient_and_update_parity": true
+        }
+      ],
+      "native_modes_rank0": [
+        {
+          "mode": "dpca",
+          "parameters_changed": true,
+          "finite_parameters": true,
+          "grad_norm": 1.5014281272888184
+        },
+        {
+          "mode": "ctopd_full",
+          "parameters_changed": true,
+          "finite_parameters": true,
+          "grad_norm": 0.28056374192237854
+        },
+        {
+          "mode": "ctopd_topk",
+          "parameters_changed": true,
+          "finite_parameters": true,
+          "grad_norm": 0.5647579431533813
+        },
+        {
+          "mode": "simct_full",
+          "parameters_changed": true,
+          "finite_parameters": true,
+          "grad_norm": 0.25807589292526245
+        },
+        {
+          "mode": "simct_topk",
+          "parameters_changed": true,
+          "finite_parameters": true,
+          "grad_norm": 0.4553982615470886
+        },
+        {
+          "mode": "grass_chunk_fixed_sigma",
+          "parameters_changed": true,
+          "finite_parameters": true,
+          "grad_norm": 0.9430491328239441
+        }
+      ],
+      "native_successful_ranks": 2,
+      "refit_names_shapes_match_hf_checkpoint": true,
+      "refit_tensor_count": 12,
+      "legacy_teacher_ipc_passed": true
+    },
+    {
+      "gpu_count": 3,
+      "gpu_names": [
+        "NVIDIA H100 80GB HBM3",
+        "NVIDIA H100 80GB HBM3",
+        "NVIDIA H100 80GB HBM3"
+      ],
+      "fsdp_mode": "hf_sharded",
+      "source_payload_sha256": "24e62984a988a661c9a401b6919565e8136035d8fa59b70bb5174ee946e817fd",
+      "result_artifact": "nguyenepti-gpu-3-H100-20261027T230000-1d78afbc-result.json",
+      "ddp_modes": [
+        {
+          "mode": "dpca",
+          "loss": 0.34738168120384216,
+          "max_gradient_error": 1.7334686575054548e-08,
+          "global_batch_size": 12,
+          "local_batch_size": 4,
+          "gradient_and_update_parity": true
+        },
+        {
+          "mode": "ctopd_full",
+          "loss": 0.1478244662284851,
+          "max_gradient_error": 6.573306728790973e-09,
+          "global_batch_size": 12,
+          "local_batch_size": 4,
+          "gradient_and_update_parity": true
+        },
+        {
+          "mode": "ctopd_topk",
+          "loss": 0.1478244662284851,
+          "max_gradient_error": 4.244730919186757e-09,
+          "global_batch_size": 12,
+          "local_batch_size": 4,
+          "gradient_and_update_parity": true
+        },
+        {
+          "mode": "simct_full",
+          "loss": 0.45426177978515625,
+          "max_gradient_error": 7.536153638632026e-09,
+          "global_batch_size": 12,
+          "local_batch_size": 4,
+          "gradient_and_update_parity": true
+        },
+        {
+          "mode": "simct_topk",
+          "loss": 0.454261839389801,
+          "max_gradient_error": 7.585685926625452e-09,
+          "global_batch_size": 12,
+          "local_batch_size": 4,
+          "gradient_and_update_parity": true
+        },
+        {
+          "mode": "grass_chunk_fixed_sigma",
+          "loss": -0.11552548408508301,
+          "max_gradient_error": 1.7379804428951928e-08,
+          "global_batch_size": 12,
+          "local_batch_size": 4,
+          "gradient_and_update_parity": true
+        }
+      ],
+      "native_modes_rank0": [
+        {
+          "mode": "dpca",
+          "parameters_changed": true,
+          "finite_parameters": true,
+          "grad_norm": 1.691322922706604
+        },
+        {
+          "mode": "ctopd_full",
+          "parameters_changed": true,
+          "finite_parameters": true,
+          "grad_norm": 0.26956331729888916
+        },
+        {
+          "mode": "ctopd_topk",
+          "parameters_changed": true,
+          "finite_parameters": true,
+          "grad_norm": 0.5846899151802063
+        },
+        {
+          "mode": "simct_full",
+          "parameters_changed": true,
+          "finite_parameters": true,
+          "grad_norm": 0.25191259384155273
+        },
+        {
+          "mode": "simct_topk",
+          "parameters_changed": true,
+          "finite_parameters": true,
+          "grad_norm": 0.47841688990592957
+        },
+        {
+          "mode": "grass_chunk_fixed_sigma",
+          "parameters_changed": true,
+          "finite_parameters": true,
+          "grad_norm": 0.8735394477844238
+        }
+      ],
+      "native_successful_ranks": 3,
+      "refit_names_shapes_match_hf_checkpoint": true,
+      "refit_tensor_count": 12,
+      "legacy_teacher_ipc_passed": null
+    },
+    {
+      "gpu_count": 4,
+      "gpu_names": [
+        "NVIDIA H100 80GB HBM3",
+        "NVIDIA H100 80GB HBM3",
+        "NVIDIA H100 80GB HBM3",
+        "NVIDIA H100 80GB HBM3"
+      ],
+      "fsdp_mode": "sharded",
+      "source_payload_sha256": "7420520906f8a531118bb0aa52350989a855e62622778d83ea1962aa384bfe03",
+      "result_artifact": "nguyenepti-gpu-4-H100-20261027T230243-74c85837-result.json",
+      "ddp_modes": [
+        {
+          "mode": "dpca",
+          "loss": 0.34738171100616455,
+          "max_gradient_error": 1.1102230246251565e-16,
+          "global_batch_size": 12,
+          "local_batch_size": 3,
+          "gradient_and_update_parity": true
+        },
+        {
+          "mode": "ctopd_full",
+          "loss": 0.1478244811296463,
+          "max_gradient_error": 3.469446951953614e-18,
+          "global_batch_size": 12,
+          "local_batch_size": 3,
+          "gradient_and_update_parity": true
+        },
+        {
+          "mode": "ctopd_topk",
+          "loss": 0.1478244811296463,
+          "max_gradient_error": 3.469446951953614e-18,
+          "global_batch_size": 12,
+          "local_batch_size": 3,
+          "gradient_and_update_parity": true
+        },
+        {
+          "mode": "simct_full",
+          "loss": 0.45426177978515625,
+          "max_gradient_error": 2.7755575615628914e-17,
+          "global_batch_size": 12,
+          "local_batch_size": 3,
+          "gradient_and_update_parity": true
+        },
+        {
+          "mode": "simct_topk",
+          "loss": 0.45426180958747864,
+          "max_gradient_error": 1.3877787807814457e-17,
+          "global_batch_size": 12,
+          "local_batch_size": 3,
+          "gradient_and_update_parity": true
+        },
+        {
+          "mode": "grass_chunk_fixed_sigma",
+          "loss": -0.11552548408508301,
+          "max_gradient_error": 5.551115123125783e-17,
+          "global_batch_size": 12,
+          "local_batch_size": 3,
+          "gradient_and_update_parity": true
+        }
+      ],
+      "native_modes_rank0": [
+        {
+          "mode": "dpca",
+          "parameters_changed": true,
+          "finite_parameters": true,
+          "grad_norm": 1.5050456523895264
+        },
+        {
+          "mode": "ctopd_full",
+          "parameters_changed": true,
+          "finite_parameters": true,
+          "grad_norm": 0.28382059931755066
+        },
+        {
+          "mode": "ctopd_topk",
+          "parameters_changed": true,
+          "finite_parameters": true,
+          "grad_norm": 0.5564980506896973
+        },
+        {
+          "mode": "simct_full",
+          "parameters_changed": true,
+          "finite_parameters": true,
+          "grad_norm": 0.2579391598701477
+        },
+        {
+          "mode": "simct_topk",
+          "parameters_changed": true,
+          "finite_parameters": true,
+          "grad_norm": 0.4392528831958771
+        },
+        {
+          "mode": "grass_chunk_fixed_sigma",
+          "parameters_changed": true,
+          "finite_parameters": true,
+          "grad_norm": 0.7538923621177673
+        }
+      ],
+      "native_successful_ranks": 4,
+      "refit_names_shapes_match_hf_checkpoint": true,
+      "refit_tensor_count": 12,
+      "legacy_teacher_ipc_passed": null
+    }
+  ],
+  "billing_observed": {
+    "ngocminh": {
+      "authorized_ceiling_usd": "20",
+      "provider_reported_calendar_month_usage_usd": "0.04594621",
+      "note": "Initial reported usage was zero; billing can lag. This is provider-reported usage, not remaining credit or a final invoice."
+    },
+    "nguyenepti": {
+      "authorized_ceiling_usd": "20",
+      "provider_reported_calendar_month_usage_usd": "3.32707534",
+      "note": "Initial reported usage was zero; billing can lag. This is provider-reported usage, not remaining credit or a final invoice."
+    }
+  },
+  "preservation": {
+    "legacy_entrypoint_and_yaml_files_unchanged": [
+      "run_xtoken.sh",
+      "ensure_runtime.sh",
+      "tools/xtoken_all/pilot_200.yaml",
+      "tools/xtoken_all/pilot_200_4b.yaml"
+    ],
+    "retained_modes": [
+      "off-policy X-Token",
+      "on-policy X-Token",
+      "P-KL",
+      "Gold",
+      "H-KL",
+      "topk_tail_kl",
+      "local teacher IPC",
+      "legacy multi-teacher and TP/CP paths"
+    ],
+    "original_branch_not_modified": "tungks/feat/xtoken"
+  },
+  "new_recipe": {
+    "steps": 200,
+    "warmup_steps": 20,
+    "checkpoint_every": 10,
+    "keep_checkpoints": 20,
+    "global_batch": 12,
+    "micro_batch": 1,
+    "three_gpu_backend": "hf_sharded; explicit force_hf=true and use_liger_kernel=false; standard sharding retained; optimized combined projections forgone"
+  },
+  "limitations": [
+    "B200 requests did not reach test execution and were cancelled; Blackwell qualification remains open.",
+    "No bitwise recreation of the company custom runtime. Pinned NGC image with source overlay only.",
+    "No live company teacher access or server modifications. Full-score modes were exercised using synthetic dense scores.",
+    "CTOPD/SimCT top-k variants are explicit approximations. SimCT full adapter uses mean native log-probability scores, not unknown raw-logit offsets.",
+    "GRASS fixed-sigma mode has no running-noise EMA/checkpoint state; geometry is the output-head path with detached hidden states, not full-model gradients.",
+    "Actual Qwen3-4B/Gemma tokenizer assets, Gym services, refit streaming and a two-step company-model canary still require the existing node gates.",
+    "No 200-step campaign, held-out quality result, checkpoint resume parity or paper reproduction is claimed."
+  ]
+}

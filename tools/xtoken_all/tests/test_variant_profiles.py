@@ -28,7 +28,11 @@ def test_variant_recipe_has_integral_per_rank_microbatches_and_preserves_old_pil
     assert old == original
     assert cfg["policy"]["train_global_batch_size"] == cfg["distillation"]["num_prompts_per_step"] == 12
     assert 12 % gpus == 0 and cfg["policy"]["train_micro_batch_size"] == 1
-    assert cfg["policy"]["dtensor_cfg"] == {"tensor_parallel_size": 1, "context_parallel_size": 1}
+    parallel = cfg["policy"]["dtensor_cfg"]
+    assert parallel["tensor_parallel_size"] == parallel["context_parallel_size"] == 1
+    assert parallel["fsdp_mode"] == ("hf_sharded" if gpus == 3 else "sharded")
+    if gpus == 3:
+        assert parallel["automodel_kwargs"] == {"force_hf": True, "use_liger_kernel": False}
     assert cfg["teachers"][0]["train_global_batch_size"] == 12
     assert cfg["loss_fn"]["variant"]["mode"] == settings["variant"]["mode"]
     assert cfg["loss_fn"]["teacher_distribution_mode"] == "topk_tail_kl"
@@ -50,3 +54,53 @@ def test_full_score_variant_does_not_silently_keep_top20_transport():
     assert cfg["teachers"][0]["remote"]["score_mode"] == "full"
     assert cfg["loss_fn"]["teacher_distribution_mode"] == "full_logprobs"
     assert cfg["loss_fn"]["vocab_topk"] == 151936
+
+
+def test_budget_ledger_serializes_two_independent_writers(tmp_path):
+    import subprocess
+    import sys
+
+    ledger = tmp_path / "budget.json"
+    ledger.write_text("0")
+    script = """
+import ast,sys,time
+from contextlib import contextmanager
+from pathlib import Path
+tree=ast.parse(Path(sys.argv[1]).read_text(encoding='utf-8'))
+node=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='locked_ledger')
+exec(compile(ast.Module(body=[node],type_ignores=[]),'<actual-ledger-lock>','exec'))
+ledger=Path(sys.argv[2])
+for _ in range(20):
+    with locked_ledger(ledger):
+        count=int(ledger.read_text())
+        time.sleep(.005)
+        ledger.write_text(str(count+1))
+"""
+    command = [sys.executable, "-B", "-c", script, str(ROOT / "tools/xtoken_all/modal_algorithm_checks.py"), str(ledger)]
+    children = [subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) for _ in range(2)]
+    for child in children:
+        stdout, stderr = child.communicate(timeout=15)
+        assert child.returncode == 0, stdout + stderr
+    assert ledger.read_text() == "40"
+    assert not ledger.with_name(ledger.name + ".lock").exists()
+
+
+def test_hf_mode_preserves_legacy_and_requires_explicit_backend_options(monkeypatch):
+    import sys
+    from types import SimpleNamespace
+
+    spec = importlib.util.spec_from_file_location("real_fsdp_modes", ROOT / "nemo_rl/models/automodel/runtime_compat.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.validate_fsdp_mode({})
+    module.validate_fsdp_mode({"fsdp_mode": "sharded"})
+    module.validate_fsdp_mode({"fsdp_mode": "hf_sharded", "automodel_kwargs": {"force_hf": True, "use_liger_kernel": False}})
+    with pytest.raises(ValueError, match="force_hf"):
+        module.validate_fsdp_mode({"fsdp_mode": "hf_sharded", "automodel_kwargs": {"force_hf": False, "use_liger_kernel": False}})
+    with pytest.raises(ValueError, match="explicit fsdp_mode"):
+        module.validate_fsdp_mode({"fsdp_mode": "automatic"})
+    monkeypatch.setitem(sys.modules, "transformers", SimpleNamespace(__version__="5.3.0"))
+    model = SimpleNamespace(architectures=["RegisteredModel"])
+    registry = SimpleNamespace(model_arch_name_to_cls={"RegisteredModel": object()})
+    assert module.use_hf_meta_init(model, registry) is False
+    assert module.use_hf_meta_init(model, registry, force_hf=True) is True
