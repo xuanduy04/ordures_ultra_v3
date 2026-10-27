@@ -54,6 +54,11 @@ backprop qua current token NLL. Fixed sigma2 là mode mới để tránh giả v
 running EMA cùng checkpoint state; muốn dùng EMA cần thêm mode/state contract
 riêng. Native singleton chunks không có shrinkage; đây là hành vi dự kiến.
 
+Gram này là gradient theo nhánh output head khi giữ hidden cố định, không phải
+Gram gradient của toàn Transformer. Nếu Qwen buộc chung embedding/head weight,
+nó không cộng đường gradient qua input embedding. Đây là mô hình hình học cục bộ
+được chọn cho mode này; không gọi nó là full-model gradient Gram.
+
 Các adapter mới ban đầu giới hạn một remote teacher, TP=CP=1, fixed microbatch,
 không sequence packing. Các khả năng legacy rộng hơn vẫn đi qua loss cũ khi
 không có loss_fn.variant. Không âm thầm chuyển local IPC teacher sang remote.
@@ -64,6 +69,9 @@ Recipe tools/xtoken_all/pilot_algorithm.yaml giữ GBS12/MBS1 để chia hết c
 DP2/3/4, TP=CP=1. Đây là budget riêng của algorithm suite; không đổi GBS của
 pilot1.7B/4B cũ. Giữ200 update,warmup20,save10,keep20 trong recipe.
 So sánh với GBS4 cần baseline tương ứng;200 step GBS12 tiêu thụ nhiều mẫu hơn.
+Loss mới chia theo tổng số student response tokens hợp lệ trên global batch,
+kể cả khi CTOPD loại các span không phải1:1. Khác mẫu số kept-segments của một
+số author implementations; cần khớp normalization/LR trước so sánh paper.
 
 Trên source suite, đặt XTOKEN_PILOT_CONFIG tới pilot_algorithm.yaml rồi dùng
 run_xtoken.sh cross hoặc same, thêm --gpu-indices 0 1 / 0 1 2 / 0 1 2 3.

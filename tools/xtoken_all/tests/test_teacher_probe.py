@@ -110,6 +110,25 @@ def test_operator_can_disable_default_assumptions():
         contract.validate_teacher_probe(receipt(), policy)
 
 
+def test_full_probe_is_opt_in_and_requires_all_scores_and_unit_mass():
+    cfg = {"loss_fn": {"variant": {"score_mode": "full"}},
+           "teachers": [{"remote": {"score_mode": "full", "top_k": 20, "model_vocab_size": 32}}]}
+    full = {**receipt(), "representation": "full_logprobs", "top_k": None,
+            "returned_count": 32, "returned_probability_mass": 1.}
+    contract.validate_teacher_probe(full, POLICY, cfg)
+    with pytest.raises(ValueError):
+        contract.validate_teacher_probe(full, POLICY)
+    for field, value in (("returned_count", 20), ("returned_probability_mass", .9), ("top_k", 20)):
+        with pytest.raises(ValueError):
+            contract.validate_teacher_probe({**full, field: value}, POLICY, cfg)
+    assert contract.score_events_match([{"representation": "full_logprobs", "model_vocab_size": 32}], cfg)
+    assert not contract.score_events_match([{"representation": "topk_logprobs", "top_k": 20}], cfg)
+    assert not contract.score_events_match([{"representation": "full_logprobs", "model_vocab_size": 31}], cfg)
+    cfg["teachers"][0]["remote"]["score_mode"] = "topk"
+    with pytest.raises(ValueError, match="differs"):
+        contract.score_contract(cfg)
+
+
 def test_failed_probe_invalidates_old_success_before_runtime_import(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(TOOLS))
     probe_spec = importlib.util.spec_from_file_location("teacher_probe_entry", TOOLS / "probe_teacher.py")

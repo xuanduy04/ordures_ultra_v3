@@ -33,21 +33,46 @@ def mode_basis(remote, version, evidence, policy):
             "mode_reference_url": None}
 
 
-def validate_teacher_probe(receipt, policy):
+def score_contract(config=None):
+    """Legacy helpers remain top20; variant transport is selected in the YAML."""
+    if config is None or "loss_fn" not in config or "variant" not in config["loss_fn"]:
+        return "topk", 20, None
+    remote = config["teachers"][0]["remote"]
+    mode = config["loss_fn"]["variant"]["score_mode"]
+    if mode not in ("topk", "full") or remote["score_mode"] != mode:
+        raise ValueError("Variant score mode differs from remote transport")
+    return mode, remote["top_k"], remote["model_vocab_size"]
+
+
+def score_events_match(events, config):
+    mode, k, vocab = score_contract(config)
+    if mode == "full":
+        return bool(events) and all(item["representation"] == "full_logprobs" and item["model_vocab_size"] == vocab for item in events)
+    return bool(events) and all(item["representation"] == "topk_logprobs" and item["top_k"] == k for item in events)
+
+
+def validate_teacher_probe(receipt, policy, config=None):
     """Operational pass needs real scores/parity; a default is never labeled verified."""
     if receipt["success"] is not True or receipt["teacher_score_contract_satisfied"] is not True:
         raise ValueError("Teacher score contract has not passed")
     if receipt["score_request_completed"] is not True or receipt["tokenizer_parity_probes"] != 3:
         raise ValueError("Missing real scoring request or tokenizer parity")
-    if receipt["top_k"] != 20 or not 20 <= receipt["returned_count"] <= 21:
-        raise ValueError("Expected top20, possibly plus the observed token")
-    if receipt["representation"] != "topk_logprobs":
-        raise ValueError("Wrong teacher score representation")
+    mode, k, vocab = score_contract(config)
+    if mode == "full":
+        if receipt["representation"] != "full_logprobs" or receipt["top_k"] is not None or receipt["returned_count"] != vocab:
+            raise ValueError("Expected the entire configured teacher vocabulary")
+    else:
+        if receipt["top_k"] != k or not k <= receipt["returned_count"] <= k + 1:
+            raise ValueError("Expected configured top-k, possibly plus the observed token")
+        if receipt["representation"] != "topk_logprobs":
+            raise ValueError("Wrong teacher score representation")
     tolerance = receipt["normalization_atol"]
     if not math.isfinite(tolerance) or tolerance <= 0:
         raise ValueError("Invalid normalization tolerance")
     if not math.isfinite(receipt["returned_probability_mass"]) or not 0 < receipt["returned_probability_mass"] <= 1 + tolerance:
         raise ValueError("Invalid retained probability mass")
+    if mode == "full" and abs(receipt["returned_probability_mass"] - 1) > tolerance:
+        raise ValueError("Full teacher distribution must have unit probability mass")
     if receipt["effective_logprobs_mode"] != "raw_logprobs":
         raise ValueError("Teacher mode is incompatible with this recipe")
     if receipt["mode_basis"] == "deployment_config":

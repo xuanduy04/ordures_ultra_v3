@@ -30,7 +30,7 @@ def test_variant_recipe_has_integral_per_rank_microbatches_and_preserves_old_pil
     assert 12 % gpus == 0 and cfg["policy"]["train_micro_batch_size"] == 1
     assert cfg["policy"]["dtensor_cfg"] == {"tensor_parallel_size": 1, "context_parallel_size": 1}
     assert cfg["teachers"][0]["train_global_batch_size"] == 12
-    assert cfg["loss_fn"]["variant"]["mode"] == "dpca"
+    assert cfg["loss_fn"]["variant"]["mode"] == settings["variant"]["mode"]
     assert cfg["loss_fn"]["teacher_distribution_mode"] == "topk_tail_kl"
     assert cfg["distillation"]["max_num_steps"] == 200
     assert cfg["policy"]["scheduler"][0]["kwargs"]["total_iters"] == 20

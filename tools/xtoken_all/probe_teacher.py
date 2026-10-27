@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 
 from integrity import sha256
-from teacher_probe_contract import mode_basis, validate_teacher_probe
+from teacher_probe_contract import mode_basis, score_contract, validate_teacher_probe
 
 
 def main():
@@ -26,14 +26,17 @@ def main():
     import torch
     from omegaconf import OmegaConf
     from nemo_rl.algorithms.utils import get_tokenizer
-    from nemo_rl.algorithms.x_token.remote_teacher import XTokenTopKLogprobClient
+    from nemo_rl.algorithms.x_token.remote_teacher import XTokenFullLogprobClient, XTokenTopKLogprobClient
 
     cfg = OmegaConf.to_container(OmegaConf.load(args.config), resolve=True)
     policy_path = Path(__file__).with_name('teacher_probe_policy.yaml')
     policy = OmegaConf.to_container(OmegaConf.load(policy_path), resolve=True)
     remote = dict(cfg['teachers'][0]['remote'])
     evidence = json.loads(args.server_mode_evidence.read_text()) if args.server_mode_evidence else None
-    assert remote['score_mode'] == 'topk' and remote['top_k'] == 20
+    score_mode, expected_k, _ = score_contract(cfg)
+    assert remote['score_mode'] == score_mode
+    if score_mode == 'topk':
+        assert remote['top_k'] == expected_k
     key_name = remote['api_key_env']
     headers = {'Authorization': 'Bearer ' + (os.environ[key_name] if key_name else 'EMPTY')}
     base_url = remote['url'].rstrip('/')
@@ -71,18 +74,23 @@ def main():
     assert len(ids) == 2
     assert max(ids) < remote['model_vocab_size']
     remote['max_attempts'] = 1
-    client = XTokenTopKLogprobClient(remote)
+    client = XTokenTopKLogprobClient(remote) if score_mode == 'topk' else XTokenFullLogprobClient(remote)
     try:
         scores = asyncio.run(client.score_group(
             {'url': remote['url'], 'model': remote['model']},
             torch.tensor([ids], dtype=torch.long), torch.tensor([2], dtype=torch.long)))
-        valid = scores['topk_valid'][0, 0]
-        retained = float(scores['topk_logprobs'][0, 0][valid].exp().sum())
-        assert remote['top_k'] <= int(valid.sum()) <= remote['top_k'] + 1
+        if score_mode == 'topk':
+            valid = scores['topk_valid'][0, 0]
+            retained = float(scores['topk_logprobs'][0, 0][valid].exp().sum())
+            count, k, representation = int(valid.sum()), remote['top_k'], 'topk_logprobs'
+            assert k <= count <= k + 1
+        else:
+            count, k, representation = scores.shape[-1], None, 'full_logprobs'
+            retained = float(scores[0, 0].exp().sum())
         result = {'success': basis['accepted'], 'teacher_score_contract_satisfied': basis['accepted'],
-                  'score_request_completed': True, 'representation': 'topk_logprobs',
+                  'score_request_completed': True, 'representation': representation,
                   'vllm_version_observed': version, 'served_model': remote['model'],
-                  'top_k': remote['top_k'], 'returned_count': int(valid.sum()),
+                  'top_k': k, 'returned_count': count,
                   'returned_probability_mass': retained, 'tokenizer_parity_probes': 3,
                   'normalization_atol': remote['normalization_atol'],
                   **{key: value for key, value in basis.items() if key != 'accepted'},
@@ -92,7 +100,7 @@ def main():
                   'checked_at_utc': datetime.now(timezone.utc).isoformat(),
                   'note': 'Scores/parity measured. Upstream defaults, when used, are an accepted assumption, not observed server configuration.'}
         if result['success']:
-            validate_teacher_probe(result, policy)
+            validate_teacher_probe(result, policy, cfg)
         path.write_text(json.dumps(result, indent=2) + '\n')
         print('XTK_TEACHER_PROBE=' + json.dumps(result))
         if not result['success']:

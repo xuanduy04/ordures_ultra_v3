@@ -46,7 +46,7 @@ for name in ('teacher-probe', 'assets-check', 'source-check', 'gym-preflight', '
         policy_path = Path.cwd() / 'tools/xtoken_all/teacher_probe_policy.yaml'
         policy = OmegaConf.to_container(OmegaConf.load(policy_path), resolve=True)
         assert receipt['teacher_probe_policy_sha256'] == sha256(policy_path)
-        validate_teacher_probe(receipt, policy)
+        validate_teacher_probe(receipt, policy, cfg)
     if name in ('gym-preflight', 'ray-stream-check'):
         validate_gym_actor_report(receipt['actor_runtime'], actor_runtime)
     if name == 'gym-preflight':

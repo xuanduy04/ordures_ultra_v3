@@ -8,6 +8,7 @@ from pathlib import Path
 import yaml
 
 from check_result import inspect_checkpoint
+from teacher_probe_contract import score_events_match
 
 
 def assess(run):
@@ -30,7 +31,7 @@ def assess(run):
         reasons.append("Rollouts are missing, stale or duplicated")
     if not all(item["backend"] == "nemo_gym" and item["response_tokens"] > 0 and item["reward_used_in_loss"] is False for item in training):
         reasons.append("Invalid Gym rollout contract")
-    if not scores or not all(item["representation"] == "topk_logprobs" and item["top_k"] == 20 for item in scores):
+    if not score_events_match(scores, cfg):
         reasons.append("Wrong/missing teacher representation")
     if not any("Max steps reached, stopping training." in line for line in lines):
         reasons.append("Missing normal stop marker")

@@ -4,6 +4,7 @@ import ast
 import importlib.util
 import json
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import NotRequired, TypedDict
@@ -15,6 +16,7 @@ from pydantic import TypeAdapter
 
 
 ROOT = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(ROOT / "tools/xtoken_all"))
 spec = importlib.util.spec_from_file_location("checkpoint_smoke_checker", ROOT / "tools/xtoken_all/check_result.py")
 checker = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(checker)

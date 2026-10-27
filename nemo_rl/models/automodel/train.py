@@ -272,7 +272,7 @@ def forward_with_post_processing_fn(
 
     # Model forward pass
     capture_head = isinstance(post_processing_fn, LossPostProcessor) and getattr(
-        post_processing_fn.loss_fn, "requires_head_inputs", False)
+        post_processing_fn.loss_fn, "requires_head_inputs", False) is True
     captured, head_hook = [], None
     if capture_head:
         head = model.get_output_embeddings()

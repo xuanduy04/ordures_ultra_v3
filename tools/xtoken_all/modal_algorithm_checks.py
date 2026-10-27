@@ -22,6 +22,8 @@ ROOT = Path(__file__).resolve().parents[2] if modal.is_local() else Path("/work/
 IMAGE_DIGEST = "nvcr.io/nvidia/nemo-rl@sha256:060a3337d167e66230ce8b3dac9e9b733ad25bc997f8a0121eebccf81cbf1b23"
 IMAGE = modal.Image.from_registry(IMAGE_DIGEST)
 for local, remote in (("nemo_rl", "nemo_rl"), ("tools/xtoken_all", "tools/xtoken_all"),
+                      ("examples", "examples"), ("custom_utils", "custom_utils"),
+                      ("tests/unit/models/automodel", "tests/unit/models/automodel"),
                       ("tests/unit/algorithms/x_token", "tests/unit/algorithms/x_token")):
     IMAGE = IMAGE.add_local_dir(str(ROOT / local), "/work/source/" + remote, ignore=["**/__pycache__/**"])
 for name in ("pyproject.toml", "uv.lock", "default_runtime_env.yaml", ".python-version", "run_xtoken.sh", "ensure_runtime.sh"):
@@ -46,6 +48,16 @@ def child_env():
                HF_HUB_OFFLINE="1", UV_OFFLINE="1", OMP_NUM_THREADS="2",
                VLLM_USE_DEEP_GEMM="0", VLLM_MOE_USE_DEEP_GEMM="0")
     return env
+
+
+def source_fingerprint():
+    digest = hashlib.sha256()
+    count = 0
+    for path in sorted(Path("/work/source").rglob("*")):
+        if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc":
+            digest.update(path.relative_to("/work/source").as_posix().encode() + b"\0" + path.read_bytes())
+            count += 1
+    return {"source_payload_sha256": digest.hexdigest(), "source_payload_files": count}
 
 
 def execute(command, env, timeout):
@@ -73,7 +85,11 @@ def cpu_checks():
                      "tools/xtoken_all/tests", "-q", "--tb=short"], env, 180)
     unit = execute([PYTHON, "-B", "-m", "pytest", "--confcutdir=tests/unit/algorithms/x_token", "-o", "addopts=",
                     "-p", "no:cacheprovider", "tests/unit/algorithms/x_token", "-q", "--tb=short"], env, 180)
-    return {"light": light, "unit": unit, "success": light["exit_code"] == unit["exit_code"] == 0}
+    automodel = execute([PYTHON, "-B", "-m", "pytest", "--noconftest", "-o", "addopts=", "-p", "no:cacheprovider",
+                        "tests/unit/models/automodel/test_automodel_train.py", "-k", "TestForwardWithPostProcessingFn",
+                        "-q", "-rs", "--tb=short"], env, 90)
+    return {**source_fingerprint(), "light": light, "unit": unit, "automodel": automodel,
+            "success": light["exit_code"] == unit["exit_code"] == 0 and automodel["exit_code"] in (0, 5)}
 
 
 @app.function(image=IMAGE, cpu=8, memory=16384, timeout=480, retries=0)
@@ -88,20 +104,26 @@ def gpu_checks(count):
     metadata = json.loads(metadata_run["stdout"].splitlines()[-1])
     if metadata["gpu_count"] != count:
         raise ValueError("Physical CUDA allocation differs from requested GPU count")
+    print("ALGO_PHASE=" + json.dumps({"phase": "nccl", **metadata}), flush=True)
     launcher = [PYTHON, "-B", "-m", "torch.distributed.run", "--standalone", "--nproc-per-node=" + str(count)]
     ddp = execute(launcher + ["tools/xtoken_all/tests/variant_ddp_probe.py", "--output", str(root / "ddp.json")], env, 150)
-    result = {**metadata, "image_digest": IMAGE_DIGEST, "ddp": ddp}
+    result = {**metadata, **source_fingerprint(), "image_digest": IMAGE_DIGEST, "ddp": ddp}
     if ddp["exit_code"]:
+        print("ALGO_FAILURE=" + json.dumps(ddp)[-6000:], flush=True)
         result["success"] = False
         return result
     result["ddp_report"] = json.loads((root / "ddp.json").read_text())
     native_env = dict(env, XTOKEN_FIXTURE_PATH=str(root / "native"), XTOKEN_VARIANT_MODES=MODES)
+    print("ALGO_PHASE=native", flush=True)
     result["native"] = execute(launcher + ["tests/unit/algorithms/x_token/native_worker_smoke.py"], native_env, 210)
+    if result["native"]["exit_code"]:
+        print("ALGO_FAILURE=" + json.dumps(result["native"])[-6000:], flush=True)
     if result["native"]["exit_code"] == 0:
         result["native_reports"] = [json.loads(path.read_text()) for path in sorted((root / "native").glob("native-variants-rank-*.json"))]
         if len(result["native_reports"]) != count:
             raise ValueError("Missing native worker result for one or more ranks")
     if count == 2 and result["native"]["exit_code"] == 0:
+        print("ALGO_PHASE=legacy_ipc", flush=True)
         legacy_env = dict(env, XTOKEN_FIXTURE_PATH=str(root / "legacy"))
         result["legacy_ipc"] = execute(launcher + ["tests/unit/algorithms/x_token/native_worker_smoke.py"], legacy_env, 90)
     result["success"] = result["native"]["exit_code"] == 0 and ("legacy_ipc" not in result or result["legacy_ipc"]["exit_code"] == 0)
@@ -135,7 +157,16 @@ def main(phase: str, count: int, output_dir: str):
         raise RuntimeError("Budget guard rejected this call")
     previous.append({"id": label, "upper_bound_usd": str(bound), "state": "reserved"})
     ledger.write_text(json.dumps(previous, indent=2))
+    # Windows managed-worktree .git paths are not always understood by WSL Git.
+    # The remote payload hash remains authoritative; metadata must not discard results.
+    try:
+        source_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, stderr=subprocess.PIPE).strip()
+        source_dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True, stderr=subprocess.PIPE).strip())
+    except subprocess.CalledProcessError:
+        source_commit, source_dirty = None, None
     result = cpu_checks.remote() if phase == "cpu" else gpu_checks.with_options(gpu="B200:" + str(count)).remote(count)
+    result["source_commit_at_dispatch"] = source_commit
+    result["source_dirty_at_dispatch"] = source_dirty
     (output / (label + "-result.json")).write_text(json.dumps(result, indent=2))
     print("ALGO_RESULT=" + json.dumps({"id": label, "success": result["success"], "result_file": str(output / (label + "-result.json"))}), flush=True)
     if not result["success"]:

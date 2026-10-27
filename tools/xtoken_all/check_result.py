@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 
 import yaml
+from teacher_probe_contract import score_events_match
 
 
 def inspect_checkpoint(root, step):
@@ -34,6 +35,7 @@ def inspect_checkpoint(root, step):
 
 
 def assess(run, mode):
+    cfg = yaml.safe_load((run / 'effective.yaml').read_text())
     lines = (run / 'driver.log').read_text(errors='replace').splitlines()
     def events(prefix):
         return [json.loads(line[len(prefix):]) for line in lines if line.startswith(prefix)]
@@ -48,7 +50,7 @@ def assess(run, mode):
         reasons.append('expected exactly two updates')
     if not all(math.isfinite(item['loss']) and math.isfinite(item['grad_norm']) and item['grad_norm'] > 0 for item in steps):
         reasons.append('non-finite loss/gradient or zero gradient')
-    if not scores or not all(item['representation'] == 'topk_logprobs' and item['top_k'] == 20 for item in scores):
+    if not score_events_match(scores, cfg):
         reasons.append('missing or mismatched teacher-score representation')
     if mode == 'on' and [item['policy_version'] for item in rollouts if item['training']] != [0, 1]:
         reasons.append('rollout versions must be exactly 0 then 1')
@@ -60,7 +62,6 @@ def assess(run, mode):
     if not any('Max steps reached, stopping training.' in line for line in lines):
         reasons.append('missing normal completion marker')
     checkpoint_reports = []
-    cfg = yaml.safe_load((run / 'effective.yaml').read_text())
     if cfg['checkpointing']['enabled']:
         root = Path(cfg['checkpointing']['checkpoint_dir']).resolve()
         root.relative_to(run.resolve())
