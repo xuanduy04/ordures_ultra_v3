@@ -246,6 +246,7 @@ def test_actual_loss_adapter_backpropagates_and_masks_prompts(mode, score):
     assert torch.isfinite(total) and torch.isfinite(logits.grad).all()
     assert logits.grad[:, 0].abs().max() == 0
     assert metrics["variant_kept_segments"] == 6
+    assert metrics["num_valid_samples"] == 2
 
 
 def test_actual_dpca_adapter_refuses_missing_behavior_or_chosen_teacher_scores():

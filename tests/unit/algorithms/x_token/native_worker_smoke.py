@@ -84,8 +84,10 @@ def main():
     if "XTOKEN_VARIANT_MODES" in os.environ:
         from tools.xtoken_all.tests.variant_native_probe import exercise_native_variants
 
-        exercise_native_variants(worker, root, rank, world)
-        torch.distributed.destroy_process_group()
+        try:
+            exercise_native_variants(worker, root, rank, world)
+        finally:
+            torch.distributed.destroy_process_group()
         return
     exported = worker.get_full_logits_ipc(batch, micro_batch_size=1)
     storage = worker._teacher_ipc_storage

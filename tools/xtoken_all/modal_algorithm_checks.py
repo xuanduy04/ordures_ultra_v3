@@ -5,7 +5,7 @@ Each GPU call has a 480-second execution ceiling and a separate startup bound.
 """
 
 from datetime import datetime, timezone
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING
 import hashlib
 import json
 import os
@@ -14,6 +14,7 @@ import re
 import signal
 import subprocess
 import tempfile
+import time
 
 import modal
 
@@ -190,7 +191,21 @@ def main(phase: str, count: int, output_dir: str, accelerator: str = "B200"):
         source_dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True, stderr=subprocess.PIPE).strip())
     except subprocess.CalledProcessError:
         source_commit, source_dirty = None, None
+    submitted = time.monotonic()
     result = runtime_inventory.remote() if phase == "inspect" else cpu_checks.remote() if phase == "cpu" else gpu_checks.with_options(gpu=accelerator + ":" + str(count)).remote(count, accelerator)
+    elapsed = time.monotonic() - submitted
+    result["submit_to_result_seconds"] = elapsed
+    if phase == "gpu":
+        rate = {"B200": Decimal("0.001736"), "H100": Decimal("0.001097")}[accelerator]
+        # Submission-to-result includes queue and all application load. Allow a
+        # further30s for the2s idle window/teardown and CPU32/RAM64GiB (above
+        # this tiny fixture's request). This is an upper estimate, never a bill.
+        settled = ((Decimal(str(elapsed + 30)) * (count * rate + Decimal("0.0000131") * 32 + Decimal("0.00000222") * 64))
+                   + Decimal("0.05")).quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+        previous[-1].update(initial_upper_bound_usd=str(bound), upper_bound_usd=str(min(bound, settled)),
+                            state="completed" if result["success"] else "failed", submit_to_result_seconds=elapsed,
+                            bound_basis="observed submission-to-result plus30s, GPU rate and CPU32/RAM64; not billed actual")
+        ledger.write_text(json.dumps(previous, indent=2))
     result["source_commit_at_dispatch"] = source_commit
     result["source_dirty_at_dispatch"] = source_dirty
     (output / (label + "-result.json")).write_text(json.dumps(result, indent=2))
