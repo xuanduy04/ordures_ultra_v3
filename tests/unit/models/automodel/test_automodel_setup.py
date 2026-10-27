@@ -596,6 +596,21 @@ class TestSetupDistributed:
             is_reward_model=False,
         )
 
+    @pytest.mark.parametrize("mode,expected", [(None, 1), ("sharded", 1), ("replicated", 3)])
+    def test_explicit_replication_uses_initialized_world(self, mock_config, mock_runtime_config, mode, expected):
+        if mode is not None:
+            mock_config["dtensor_cfg"]["fsdp_mode"] = mode
+        with patch("nemo_rl.models.automodel.setup.torch.distributed") as distributed, patch(
+            "nemo_rl.models.automodel.setup.create_fsdp2_manager"
+        ) as factory:
+            distributed.get_world_size.return_value = 3
+            factory.return_value.dp_replicate_size = expected
+            factory.return_value.dp_shard_size = 1
+            assert setup_distributed(mock_config, mock_runtime_config) is factory.return_value
+            assert factory.call_args.kwargs["dp_replicate_size"] == expected
+            assert factory.call_args.kwargs["world_size"] == 3
+            distributed.init_process_group.assert_called_once_with(backend="nccl")
+
     @patch("nemo_rl.models.automodel.setup.FSDP2Manager")
     @patch("nemo_rl.models.automodel.setup.torch.distributed")
     def test_setup_distributed_basic(
