@@ -124,6 +124,16 @@ class RolloutCrossTokenizerCollator:
             behavior_version=torch.full((len(rows),), policy_version, dtype=torch.long),
             rollout_id=torch.full((len(rows),), rollout_id, dtype=torch.long),
         )
+        if "behavior_logprobs" in generation:
+            behavior = torch.zeros_like(student_ids, dtype=torch.float32)
+            source = generation["behavior_logprobs"].cpu()
+            if source.ndim != 2 or len(source) != len(student_ids) or source.shape[1] < max(map(len, rows)):
+                raise ValueError("Rollout behavior-logprob grid differs from sampled IDs")
+            width = min(source.shape[1], student_ids.shape[1])
+            behavior[:, :width] = source[:, :width]
+            if not torch.isfinite(behavior[token_mask.bool()]).all():
+                raise ValueError("Nonfinite sampled-token behavior logprob")
+            out["behavior_logprobs"] = behavior
         student_response_ids = _pad_ids(
             responses, self.student_tokenizer, self.student_limit, 1,
         )
@@ -166,6 +176,8 @@ class RolloutCrossTokenizerCollator:
                 student_attention_mask=student_response_mask,
                 teacher_attention_mask=teacher_response_mask,
             )
+            if hasattr(aligner, "native_groups"):
+                out[f"alignment_{teacher_index}_native_group_id"] = aligner.native_groups
             # Only byte-equivalent response chunks survive; prefixes never enter alignment.
             alignment.pair_valid &= alignment.pair_is_correct
             alignment.pair_valid &= (sample_mask > 0).unsqueeze(-1)

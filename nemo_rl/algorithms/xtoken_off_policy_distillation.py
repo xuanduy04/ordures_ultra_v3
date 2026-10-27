@@ -100,6 +100,8 @@ def xtoken_non_student_seq_keys(
             keys.add(f"alignment_{i}_pair_is_correct")
             keys.add(f"alignment_{i}_teacher_exact_partition_mask")
             keys.add(f"alignment_{i}_teacher_chunk_id")
+            if hasattr(loss_fn, "variant"):
+                keys.add(f"alignment_{i}_native_group_id")
     return frozenset(keys)
 
 
@@ -242,6 +244,15 @@ def setup(
         f"expected one tokenizer per teacher; got {len(teacher_tokenizers)} "
         f"tokenizers for {len(teachers)} teachers."
     )
+    if "variant" in loss_config:
+        from nemo_rl.algorithms.x_token.variant_loss import configure_variant
+
+        configure_variant(loss_config, teachers, student_tokenizer, teacher_tokenizers)
+        if master_config.on_policy is None:
+            raise ValueError("New variant adapters require fresh on-policy rollouts")
+        master_config.on_policy["requires_behavior_logprobs"] = loss_config["variant"]["mode"] == "dpca"
+        if policy_config["dtensor_cfg"]["tensor_parallel_size"] != 1 or policy_config["dtensor_cfg"]["context_parallel_size"] != 1:
+            raise ValueError("Variant adapters support DP with TP=CP=1; legacy X-Token TP/CP paths remain available")
 
     # Backend gate: DTensor V2 only, for the student and every teacher. Unlike
     # the TP=CP=1 multi-teacher prototype, this path supports TP/CP/diff-DP
@@ -348,6 +359,10 @@ def setup(
         for i, teacher in enumerate(teachers)
     ]
 
+    if "variant" in loss_config:
+        from nemo_rl.algorithms.x_token.variant_alignment import wrap_aligners
+
+        aligners = wrap_aligners(aligners, student_tokenizer, teacher_tokenizers)
     collator = CrossTokenizerCollator(
         student_tokenizer=student_tokenizer,
         teacher_tokenizers=list(teacher_tokenizers),
@@ -545,7 +560,11 @@ def setup(
         "teacher_gold_loss": [t.gold_loss for t in teachers],
         "teacher_xtoken_loss": [t.xtoken_loss for t in teachers],
     }
-    if approximate:
+    if "variant" in loss_config:
+        from nemo_rl.algorithms.x_token.variant_loss import VariantLoss
+
+        loss_fn = VariantLoss(loss_config)
+    elif approximate:
         from nemo_rl.algorithms.x_token.topk_tail import ProjectedTopKTailLoss
 
         loss_fn = ProjectedTopKTailLoss(loss_config)
@@ -604,6 +623,8 @@ def export_teacher_logits_and_pack(
     for key in ("behavior_version", "rollout_id"):
         if key in batch:
             train_data[key] = batch[key]
+    if "behavior_logprobs" in batch:
+        train_data["behavior_logprobs"] = batch["behavior_logprobs"]
     for i, teacher_policy in enumerate(teacher_policies):
         same_vocab = loss_fn.projection_matrix_paths[i] is None
         if same_vocab:
@@ -635,6 +656,8 @@ def export_teacher_logits_and_pack(
                 "num_chunks",
             ):
                 train_data[f"alignment_{i}_{field}"] = batch[f"alignment_{i}_{field}"]
+            if f"alignment_{i}_native_group_id" in batch:
+                train_data[f"alignment_{i}_native_group_id"] = batch[f"alignment_{i}_native_group_id"]
 
         try:
             teacher_policy.prepare_for_lp_inference()

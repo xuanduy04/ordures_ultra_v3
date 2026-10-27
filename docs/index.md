@@ -242,6 +242,7 @@ fp8.md
 guides/use-custom-vllm.md
 guides/xtoken-distillation.md
 guides/xtoken-gym-super.md
+guides/algorithm-ports.md
 ```
 
 ```{toctree}

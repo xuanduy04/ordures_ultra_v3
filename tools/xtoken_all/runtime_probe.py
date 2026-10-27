@@ -61,6 +61,9 @@ def probe(role, gym_root):
         return result
     if role == "generation":
         result["vllm"] = importlib.metadata.version("vllm")
+        native = importlib.import_module("vllm._C")
+        result["vllm_native_extension"] = module_path(native)
+        result["native_extension_import_completed"] = True
         cls = module.VllmAsyncGenerationWorker
         if hasattr(cls, "__ray_metadata__"):
             cls = cls.__ray_metadata__.modified_class

@@ -271,12 +271,29 @@ def forward_with_post_processing_fn(
     processed_inputs = processed_mb.processed_inputs
 
     # Model forward pass
-    outputs = model_forward(
-        model,
-        processed_inputs,
-        is_reward_model=is_reward_model,
-        allow_flash_attn_args=allow_flash_attn_args,
-    )
+    capture_head = isinstance(post_processing_fn, LossPostProcessor) and getattr(
+        post_processing_fn.loss_fn, "requires_head_inputs", False)
+    captured, head_hook = [], None
+    if capture_head:
+        head = model.get_output_embeddings()
+        head_hook = head.register_forward_pre_hook(lambda _module, args: captured.append(args[0].detach()))
+    try:
+        outputs = model_forward(
+            model,
+            processed_inputs,
+            is_reward_model=is_reward_model,
+            allow_flash_attn_args=allow_flash_attn_args,
+        )
+    finally:
+        if head_hook is not None:
+            head_hook.remove()
+    if capture_head:
+        if len(captured) != 1:
+            raise ValueError("GRASS requires exactly one observable output-head forward per microbatch")
+        hidden = to_local_if_dtensor(captured[0])
+        if head.bias is not None:
+            hidden = torch.cat((hidden, torch.ones_like(hidden[..., :1])), dim=-1)
+        data_dict["student_head_inputs"] = hidden
 
     # Extract logits from model outputs
     logits = extract_logits(model, outputs)

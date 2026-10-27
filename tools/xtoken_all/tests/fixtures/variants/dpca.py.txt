@@ -1,0 +1,120 @@
+class DPCAConfig:
+    """Paper hyper-parameters (``dpca_paper8b.json``); override only deliberately."""
+
+    clip_ratio_low: float = 0.2
+    clip_ratio_high: float = 0.28
+    clip_ratio_c: float = 10.0
+    adv_clamp: float = 10.0
+    kl_clamp: float = 20.0
+
+def dpca_atom_advantages(
+    teacher_log_score: torch.Tensor,
+    counts: torch.Tensor,
+    prior_log_probs: torch.Tensor,
+    adv_clamp: float | None,
+) -> torch.Tensor:
+    """Semantic-prior advantage per student token, from per-atom chunk totals.
+
+    Reproduces ``compute_policy_loss_opd``: inside each synchronized chunk the
+    teacher and prior log-probabilities are summed (``L_T``, ``L_S``), every token
+    inherits the chunk's ratio via ``log q_i = (L_T / L_S) * log p_i``, and the
+    advantage is ``A_i = (L_T / L_S - 1) * log p_i``.
+
+    The ratio is formed from **per-atom** totals and only then expanded to token
+    resolution. Computing ``L_T / log p_i`` token by token instead would divide a
+    whole chunk's teacher mass by a single token's log-probability, which is a
+    different objective that happens to look plausible.
+
+    ``L_S == 0`` is the degenerate chunk upstream handles by spreading the teacher
+    budget uniformly across it; it is reproduced rather than clamped, because a
+    clamped denominator turns a real signal into a spurious one.
+    """
+    counts = counts.long()
+    n_atoms = int(counts.numel())
+    if teacher_log_score.shape != (n_atoms,):
+        raise ValueError("teacher_log_score must be one total per atom")
+    if int(counts.sum().item()) != prior_log_probs.numel():
+        raise ValueError(
+            f"atom token counts total {int(counts.sum().item())} but the prior covers "
+            f"{prior_log_probs.numel()} tokens"
+        )
+
+    teacher_chunk = teacher_log_score.float()
+    # Upstream sums ``prior_log_probs`` for L_S and uses the *same array* for the
+    # per-token log p_i. Deriving the chunk total from a different quantity would
+    # silently mix two conventions inside one formula.
+    atom_index = torch.repeat_interleave(
+        torch.arange(n_atoms, device=prior_log_probs.device), counts
+    )
+    prior_chunk = torch.zeros(n_atoms, dtype=torch.float32, device=prior_log_probs.device)
+    prior_chunk = prior_chunk.index_add(0, atom_index, prior_log_probs.float())
+    degenerate = prior_chunk.abs() < 1e-8
+    safe_prior_chunk = torch.where(degenerate, torch.ones_like(prior_chunk), prior_chunk)
+    ratio = teacher_chunk / safe_prior_chunk
+
+    # The ratio must be expanded to token resolution BEFORE it is combined with
+    # prior_log_probs. Multiplying a per-atom vector by a per-token vector
+    # broadcasts instead of failing: it errors when the atom count differs from
+    # the token count, and silently produces an atom-count-times-too-long tensor
+    # when there is exactly one atom.
+    per_token_ratio = torch.repeat_interleave(ratio, counts)
+    uniform_share = torch.repeat_interleave(teacher_chunk / counts.clamp_min(1).float(), counts)
+    target = torch.where(
+        torch.repeat_interleave(degenerate, counts), uniform_share, per_token_ratio * prior_log_probs
+    )
+
+    advantages = target - prior_log_probs
+    if adv_clamp is not None:
+        advantages = torch.clamp(advantages, min=-adv_clamp, max=adv_clamp)
+    return advantages
+
+def dpca_policy_loss(
+    prior_log_probs: torch.Tensor,
+    log_probs: torch.Tensor,
+    advantages: torch.Tensor,
+    response_mask: torch.Tensor,
+    config: DPCAConfig,
+) -> tuple[torch.Tensor, dict[str, float]]:
+    """Clipped policy objective, matching ``compute_policy_loss`` term by term.
+
+    The dual clip uses upstream's form literally: ``pg_losses3 = -A * c`` is a
+    constant, so the lower branch is selected whenever it is strictly smaller,
+    which is equivalent to clamping the ratio at ``c`` only for negative
+    advantages. Rewriting it as an explicit ratio clamp would silently change
+    the objective.
+    """
+    negative_approx_kl = log_probs - prior_log_probs
+    negative_approx_kl = torch.clamp(
+        negative_approx_kl, min=-config.kl_clamp, max=config.kl_clamp
+    )
+    ratio = torch.exp(negative_approx_kl)
+    # Upstream reports ``masked_mean(-negative_approx_kl)``. This is the mean of a
+    # log-ratio, not a divergence, so it is only a readable divergence estimate
+    # once the two policies agree; upstream still negates it, and matching that
+    # sign is what makes the reported number comparable with the reference runs.
+    ppo_kl = -(negative_approx_kl * response_mask).sum() / response_mask.sum().clamp_min(1.0)
+
+    pg_losses1 = -advantages * ratio
+    pg_losses2 = -advantages * torch.clamp(
+        ratio, 1 - config.clip_ratio_low, 1 + config.clip_ratio_high
+    )
+    clip_pg_losses1 = torch.maximum(pg_losses1, pg_losses2)
+    clip_mask = (pg_losses2 > pg_losses1).float()
+    pg_clipfrac = (clip_mask * response_mask).sum() / response_mask.sum().clamp_min(1.0)
+
+    pg_losses3 = -advantages * config.clip_ratio_c
+    clip_pg_losses2 = torch.min(pg_losses3, clip_pg_losses1)
+    lower_mask = ((clip_pg_losses1 > pg_losses3) & (advantages < 0)).float()
+    pg_clipfrac_lower = (lower_mask * response_mask).sum() / response_mask.sum().clamp_min(1.0)
+
+    pg_losses = torch.where(advantages < 0, clip_pg_losses2, clip_pg_losses1)
+    denom = response_mask.sum().clamp_min(1.0)
+    pg_loss = (pg_losses * response_mask).sum() / denom
+
+    metrics = {
+        "mp_opd_dpca_ppo_kl": float(ppo_kl.detach().item()),
+        "mp_opd_dpca_clipfrac": float(pg_clipfrac.detach().item()),
+        "mp_opd_dpca_clipfrac_lower": float(pg_clipfrac_lower.detach().item()),
+        "mp_opd_dpca_ratio_mean": float(ratio.detach().mean().item()),
+    }
+    return pg_loss, metrics

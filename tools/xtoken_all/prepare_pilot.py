@@ -79,6 +79,20 @@ def pilot_config(baseline, spec, arm, old_run, run, old_source, source, ray_addr
     cfg["logger"]["log_dir"] = str(run / "train-logs")
     cfg["on_policy"]["nemo_gym"]["global_config"]["nemo_gym_log_dir"] = str(run / "gym-logs")
     cfg["on_policy"]["nemo_gym"]["source_contract"] = str(source / "tools/xtoken_all/super-source-contract.json")
+    if "variant" in spec:
+        cfg["loss_fn"]["variant"] = deepcopy(spec["variant"])
+        batch = spec["variant_batch"]
+        cfg["policy"]["train_global_batch_size"] = batch["global_batch_size"]
+        cfg["policy"]["train_micro_batch_size"] = batch["micro_batch_size"]
+        cfg["distillation"]["num_prompts_per_step"] = batch["global_batch_size"]
+        cfg["policy"]["dtensor_cfg"]["tensor_parallel_size"] = 1
+        cfg["policy"]["dtensor_cfg"]["context_parallel_size"] = 1
+        cfg["teachers"][0]["train_global_batch_size"] = batch["global_batch_size"]
+        cfg["teachers"][0]["train_micro_batch_size"] = batch["micro_batch_size"]
+        cfg["teachers"][0]["remote"]["score_mode"] = spec["variant"]["score_mode"]
+        cfg["loss_fn"]["teacher_distribution_mode"] = "topk_tail_kl" if spec["variant"]["score_mode"] == "topk" else "full_logprobs"
+        if spec["variant"]["score_mode"] == "full":
+            cfg["loss_fn"]["vocab_topk"] = spec["arms"][arm]["teacher_vocab_size"]
     student = spec["student"]
     if student["model_path"] is not None:
         cfg["policy"]["model_name"] = student["model_path"]
@@ -242,6 +256,7 @@ def main():
     parser.add_argument("--teacher-url")
     parser.add_argument("--teacher-tokenizer", type=Path)
     parser.add_argument("--teacher-api-key-env")
+    parser.add_argument("--gpu-indices", type=int, nargs="+")
     args = parser.parse_args()
     if args.check_only and not args.run:
         parser.error("--check-only requires --run")
@@ -250,6 +265,22 @@ def main():
     spec = yaml.safe_load(spec_path.read_text())
     if args.arm not in spec["arms"]:
         parser.error("Unknown arm in the selected YAML")
+    if args.gpu_indices is not None:
+        old_indices = spec["runtime"]["gpu_indices"]
+        if not args.gpu_indices or len(set(args.gpu_indices)) != len(args.gpu_indices) or not set(args.gpu_indices).issubset(old_indices):
+            parser.error("GPU subset must be unique indices from this recipe's approved allocation")
+        expected = spec["arms"][args.arm]["gpu_uuids"]
+        if expected is not None:
+            spec["arms"][args.arm]["gpu_uuids"] = [expected[old_indices.index(index)] for index in args.gpu_indices]
+        spec["runtime"]["gpu_indices"] = args.gpu_indices
+    if "environment" in spec["runtime"]:
+        runtime_environment = spec["runtime"]["environment"]
+        if set(runtime_environment) - {"VLLM_USE_DEEP_GEMM", "VLLM_MOE_USE_DEEP_GEMM"}:
+            raise ValueError("Only reviewed optional DeepGEMM switches are supported in runtime.environment")
+        if any(value not in ("0", "1") for value in runtime_environment.values()):
+            raise ValueError("Runtime environment switches must be quoted strings 0 or 1")
+        os.environ.update(runtime_environment)
+        print("XTOKEN_VARIANT_RUNTIME=" + json.dumps(runtime_environment), flush=True)
     root = Path(spec["root"] if args.run or "XTOKEN_ALL_ROOT" not in os.environ else os.environ["XTOKEN_ALL_ROOT"]).resolve()
     source.relative_to(root)
     os.environ["XTOKEN_ALL_ROOT"] = str(root)

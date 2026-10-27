@@ -1,0 +1,25 @@
+[
+  {
+    "algorithm": "dpca",
+    "source_file": "D:\\dev\\dsh\\research_vai\\SimCT\\kdflow\\algorithms\\_mp_opd_dpca.py",
+    "source_sha256": "6a6d6c253fcd2f05fbcbf1a053d72bdaf311579be43351a87ad105033f19e578",
+    "source_commit": "99096a927a3e4ae92d7a105e89ca7c18a28c810a",
+    "extracted_names": [
+      "DPCAConfig",
+      "dpca_atom_advantages",
+      "dpca_policy_loss"
+    ],
+    "fixture_sha256": "2bccb56f1cf0ec8e119710c69c92d2fc6770f800ee1b12bb5b0a3b63b503a8df"
+  },
+  {
+    "algorithm": "simct",
+    "source_file": "D:\\dev\\dsh\\research_vai\\SimCT\\kdflow\\algorithms\\span_ctkd.py",
+    "source_sha256": "c6da62a86e96008572a7e86c30ddc6975e268e0e0c6d123907f714816e8b3e85",
+    "source_commit": "99096a927a3e4ae92d7a105e89ca7c18a28c810a",
+    "extracted_names": [
+      "_build_virtual_vocab_logits",
+      "_compute_segment_teacher_Z"
+    ],
+    "fixture_sha256": "d0196616e430a31bcb63e2c454243723aae8193e56b01bf8bffe87c984e2727c"
+  }
+]

@@ -88,11 +88,22 @@ class NemoGymOnPolicyRollout(OnPolicyRollout):
                 raise RuntimeError("Could not release student generation memory")
         results = restore_order(returned, len(examples))
         rows, rewards_by_index, mask = [], {}, prompt_batch["sample_mask"].clone()
+        need_behavior = "requires_behavior_logprobs" in self.knobs and self.knobs["requires_behavior_logprobs"]
+        behavior_rows = []
         for index, result in enumerate(results):
             row, valid, reward = unpack_result(result, prompt_ids[index])
             if len(row) - len(prompt_ids[index]) > self.generation_config["max_new_tokens"]:
                 raise ValueError("Gym exceeded requested max_output_tokens")
             rows.append(row)
+            if need_behavior:
+                if valid:
+                    message = result["message_log"][1]
+                    values = torch.as_tensor(message["generation_logprobs"], dtype=torch.float32).cpu()
+                    if values.ndim != 1 or len(values) != len(row) - len(prompt_ids[index]) or not torch.isfinite(values).all():
+                        raise ValueError("DPCA needs one finite behavior logprob per sampled Gym token")
+                    behavior_rows.append(values)
+                else:
+                    behavior_rows.append(torch.empty(0))
             mask[index] *= valid
             if valid and reward_metric_valid(examples[index]):
                 rewards_by_index[index] = reward
@@ -102,6 +113,12 @@ class NemoGymOnPolicyRollout(OnPolicyRollout):
             ids[index, :len(row)] = torch.tensor(row, dtype=torch.long)
         prepared = BatchedDataDict(prompts=prompts, sample_mask=mask, idx=prompt_batch["idx"])
         generation = {"output_ids": ids, "unpadded_sequence_lengths": torch.tensor(list(map(len, rows)))}
+        if need_behavior:
+            behavior = torch.zeros_like(ids, dtype=torch.float32)
+            for index, values in enumerate(behavior_rows):
+                start = len(prompt_ids[index])
+                behavior[index, start:start + len(values)] = values
+            generation["behavior_logprobs"] = behavior
         self.rollout_counter += 1
         batch = self.response_collator(prepared, generation, prompt_ids,
                                       self.policy_version, self.rollout_counter)

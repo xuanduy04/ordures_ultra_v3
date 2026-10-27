@@ -74,6 +74,32 @@ def test_preserves_sampled_ids_and_excludes_prompt_eos_and_padding():
     assert batch["token_mask"][:, 1:].tolist() == [[1, 0, 0]]
 
 
+def test_behavior_logprobs_keep_token_positions_and_allow_extra_generation_padding():
+    _, collator, prompts, generation = fixture()
+    generation["behavior_logprobs"] = torch.tensor([[0., -.25, -.75, float("nan"), 0., 0., 0., 0.]])
+    batch = collator(prompts, generation, [[5]], 0, 1)
+    assert batch["behavior_logprobs"].shape == batch["input_ids"].shape
+    assert batch["behavior_logprobs"][0, 1] == -.25
+    assert batch["token_mask"][0, 2] == 0
+    generation["behavior_logprobs"][0, 1] = float("nan")
+    with pytest.raises(ValueError, match="Nonfinite sampled-token"):
+        collator(prompts, generation, [[5]], 0, 1)
+
+
+def test_variant_byte_atoms_preserve_native_groups_and_response_offsets():
+    from nemo_rl.algorithms.x_token.variant_alignment import SynchronizedAligner
+
+    student, collator, prompts, generation = fixture()
+    teacher = collator.teacher_tokenizers[0]
+    for tokenizer in (student, teacher):
+        tokenizer.backend_tokenizer = SimpleNamespace(pre_tokenizer="ByteLevel", decoder="ByteLevel")
+    collator.aligners = [SynchronizedAligner(student, teacher, collator.aligners[0])]
+    batch = collator(prompts, generation, [[5]], 0, 1)
+    assert batch["alignment_0_native_group_id"].tolist() == [[0]]
+    assert batch["alignment_0_student_chunk_id"].tolist() == [[-1, 0, -1, -1]]
+    assert batch["alignment_0_teacher_chunk_id"].tolist() == [[-1, 0, 0, -1]]
+
+
 @pytest.mark.parametrize("output,pattern", [([2, 4, 1], "changed"), ([5, 1], "non-empty"), ([5, 0, 1], "control")])
 def test_bad_or_empty_response_cannot_update(output, pattern):
     _, collator, prompts, _ = fixture()

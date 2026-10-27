@@ -1,0 +1,143 @@
+"""Budget-bounded CPU, NCCL and native-worker checks on a pinned existing image.
+
+Invoke with the pre-existing Modal SDK, not a new local Python environment.
+Each GPU call has a 480-second ceiling and an estimated USD4 upper reservation.
+"""
+
+from datetime import datetime, timezone
+from decimal import Decimal
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import signal
+import subprocess
+import tempfile
+
+import modal
+
+
+ROOT = Path(__file__).resolve().parents[2] if modal.is_local() else Path("/work/source")
+IMAGE_DIGEST = "nvcr.io/nvidia/nemo-rl@sha256:060a3337d167e66230ce8b3dac9e9b733ad25bc997f8a0121eebccf81cbf1b23"
+IMAGE = modal.Image.from_registry(IMAGE_DIGEST)
+for local, remote in (("nemo_rl", "nemo_rl"), ("tools/xtoken_all", "tools/xtoken_all"),
+                      ("tests/unit/algorithms/x_token", "tests/unit/algorithms/x_token")):
+    IMAGE = IMAGE.add_local_dir(str(ROOT / local), "/work/source/" + remote, ignore=["**/__pycache__/**"])
+for name in ("pyproject.toml", "uv.lock", "default_runtime_env.yaml", ".python-version", "run_xtoken.sh", "ensure_runtime.sh"):
+    IMAGE = IMAGE.add_local_file(str(ROOT / name), "/work/source/" + name)
+app = modal.App("nemo-algorithm-qualification-20261028")
+PYTHON = "/opt/nemo_rl_venv/bin/python"
+MODES = "dpca,ctopd_full,ctopd_topk,simct_full,simct_topk,grass_chunk_fixed_sigma"
+
+
+def safe_log(value):
+    lines = [line if not any(key in line for key in ("env_vars", "MODAL_IDENTITY_TOKEN", "TOKEN_SECRET", "os.environ"))
+             else "[environment line omitted]" for line in value.splitlines()]
+    text = "\n".join(lines)
+    return re.sub(r"\bhf_[A-Za-z0-9]{20,}\b|\bsk-[A-Za-z0-9_-]{20,}\b", "[credential redacted]", text)
+
+
+def child_env():
+    env = {key: value for key, value in os.environ.items() if key not in {
+        "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "MODAL_IDENTITY_TOKEN", "HF_TOKEN", "HUGGING_FACE_HUB_TOKEN",
+        "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"}}
+    env.update(PYTHONPATH="/work/source", NRL_IGNORE_VERSION_MISMATCH="1", PYTHONDONTWRITEBYTECODE="1",
+               HF_HUB_OFFLINE="1", UV_OFFLINE="1", OMP_NUM_THREADS="2",
+               VLLM_USE_DEEP_GEMM="0", VLLM_MOE_USE_DEEP_GEMM="0")
+    return env
+
+
+def execute(command, env, timeout):
+    with subprocess.Popen(command, cwd="/work/source", env=env, stdout=subprocess.PIPE,
+                          stderr=subprocess.PIPE, text=True, start_new_session=True) as run:
+        try:
+            stdout, stderr = run.communicate(timeout=timeout)
+            code = run.returncode
+        except subprocess.TimeoutExpired:
+            os.killpg(run.pid, signal.SIGTERM)
+            try:
+                stdout, stderr = run.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                os.killpg(run.pid, signal.SIGKILL)
+                stdout, stderr = run.communicate()
+            code = 124
+            stderr += "\nQualification command exceeded its scoped timeout."
+    return {"exit_code": code, "stdout": safe_log(stdout), "stderr": safe_log(stderr)}
+
+
+@app.function(image=IMAGE, cpu=2, memory=8192, timeout=420, retries=0)
+def cpu_checks():
+    env = child_env()
+    light = execute([PYTHON, "-B", "-m", "pytest", "--noconftest", "-o", "addopts=", "-p", "no:cacheprovider",
+                     "tools/xtoken_all/tests", "-q", "--tb=short"], env, 180)
+    unit = execute([PYTHON, "-B", "-m", "pytest", "--confcutdir=tests/unit/algorithms/x_token", "-o", "addopts=",
+                    "-p", "no:cacheprovider", "tests/unit/algorithms/x_token", "-q", "--tb=short"], env, 180)
+    return {"light": light, "unit": unit, "success": light["exit_code"] == unit["exit_code"] == 0}
+
+
+@app.function(image=IMAGE, cpu=8, memory=16384, timeout=480, retries=0)
+def gpu_checks(count):
+    if count not in (2, 3, 4):
+        raise ValueError("Physical allocation must match the requested 2/3/4 GPUs")
+    root = Path(tempfile.mkdtemp(prefix="nemo-algo-"))
+    env = child_env()
+    metadata_run = execute([PYTHON, "-B", "-c", "import json,torch; print(json.dumps({'gpu_count':torch.cuda.device_count(),'gpu_names':[torch.cuda.get_device_name(i) for i in range(torch.cuda.device_count())],'torch':torch.__version__,'cuda':torch.version.cuda}))"], env, 30)
+    if metadata_run["exit_code"]:
+        return {"success": False, "metadata": metadata_run}
+    metadata = json.loads(metadata_run["stdout"].splitlines()[-1])
+    if metadata["gpu_count"] != count:
+        raise ValueError("Physical CUDA allocation differs from requested GPU count")
+    launcher = [PYTHON, "-B", "-m", "torch.distributed.run", "--standalone", "--nproc-per-node=" + str(count)]
+    ddp = execute(launcher + ["tools/xtoken_all/tests/variant_ddp_probe.py", "--output", str(root / "ddp.json")], env, 150)
+    result = {**metadata, "image_digest": IMAGE_DIGEST, "ddp": ddp}
+    if ddp["exit_code"]:
+        result["success"] = False
+        return result
+    result["ddp_report"] = json.loads((root / "ddp.json").read_text())
+    native_env = dict(env, XTOKEN_FIXTURE_PATH=str(root / "native"), XTOKEN_VARIANT_MODES=MODES)
+    result["native"] = execute(launcher + ["tests/unit/algorithms/x_token/native_worker_smoke.py"], native_env, 210)
+    if result["native"]["exit_code"] == 0:
+        result["native_reports"] = [json.loads(path.read_text()) for path in sorted((root / "native").glob("native-variants-rank-*.json"))]
+        if len(result["native_reports"]) != count:
+            raise ValueError("Missing native worker result for one or more ranks")
+    if count == 2 and result["native"]["exit_code"] == 0:
+        legacy_env = dict(env, XTOKEN_FIXTURE_PATH=str(root / "legacy"))
+        result["legacy_ipc"] = execute(launcher + ["tests/unit/algorithms/x_token/native_worker_smoke.py"], legacy_env, 90)
+    result["success"] = result["native"]["exit_code"] == 0 and ("legacy_ipc" not in result or result["legacy_ipc"]["exit_code"] == 0)
+    return result
+
+
+@app.local_entrypoint()
+def main(phase: str, count: int, output_dir: str):
+    profile = os.environ["MODAL_PROFILE"]
+    if profile not in ("nguyenngocminh30012005", "nguyenepti") or phase not in ("cpu", "gpu"):
+        raise ValueError("Use the two authorized profiles and cpu/gpu phase")
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    billed = subprocess.run(["modal", "billing", "report", "--for", "this month", "--show-resources", "--json"],
+                            capture_output=True, text=True, check=True)
+    rows = json.loads(billed.stdout)
+    reported = sum((Decimal(row["cost"]) for row in rows), Decimal(0))
+    ledger = output / (profile + "-reservations.json")
+    previous = json.loads(ledger.read_text()) if ledger.is_file() else []
+    reserved = sum((Decimal(row["upper_bound_usd"]) for row in previous), Decimal(0))
+    bound = Decimal("0.15") if phase == "cpu" else Decimal("4.00")
+    allowed = max(reported, reserved) + bound + Decimal("2") <= Decimal("20")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+    label = profile + "-" + phase + "-" + str(count) + "-" + stamp
+    guard = {"profile": profile, "reported_month_usage_usd": str(reported), "local_reserved_upper_usd": str(reserved),
+             "call_bound_usd": str(bound), "reserve_usd": "2", "authorized_budget_usd": "20", "allowed": allowed,
+             "note": "Task began at reported usage zero on both profiles; CLI usage can lag and is not remaining credits"}
+    (output / (label + "-guard.json")).write_text(json.dumps(guard, indent=2))
+    print("ALGO_BUDGET=" + json.dumps(guard), flush=True)
+    if not allowed:
+        raise RuntimeError("Budget guard rejected this call")
+    previous.append({"id": label, "upper_bound_usd": str(bound), "state": "reserved"})
+    ledger.write_text(json.dumps(previous, indent=2))
+    result = cpu_checks.remote() if phase == "cpu" else gpu_checks.with_options(gpu="B200:" + str(count)).remote(count)
+    (output / (label + "-result.json")).write_text(json.dumps(result, indent=2))
+    print("ALGO_RESULT=" + json.dumps({"id": label, "success": result["success"], "result_file": str(output / (label + "-result.json"))}), flush=True)
+    if not result["success"]:
+        print(json.dumps(result)[-20000:], flush=True)
+        raise RuntimeError("Qualification failed; inspect persisted evidence before retry")

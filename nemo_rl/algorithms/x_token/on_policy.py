@@ -25,6 +25,18 @@ def validate_on_policy_config(config):
         raise ValueError("Cross-tokenizer EOS alignment is not implemented; include_eos_loss must be false")
     if config.loss_fn["dynamic_loss_scaling"] or config.loss_fn["ce_loss_scale"] != 0:
         raise ValueError("OPD recipe requires fixed KD weighting and ce_loss_scale=0")
+    if "variant" in config.loss_fn:
+        from nemo_rl.algorithms.x_token.variant_loss import MODES
+
+        mode = config.loss_fn["variant"]["mode"]
+        if mode not in MODES or len(config.teachers) != 1:
+            raise ValueError("Choose an explicit single-teacher variant mode")
+        remote = config.teachers[0].remote
+        if remote is None or (mode.endswith("_full") and remote["score_mode"] != "full"):
+            raise ValueError("Variant score contract unavailable: exact _full modes need a full-score remote endpoint")
+        dp = config.cluster["num_nodes"] * config.cluster["gpus_per_node"]
+        if policy["train_global_batch_size"] % (dp * policy["train_micro_batch_size"]):
+            raise ValueError("Variant global batch must be divisible by DP size times microbatch size")
     if knobs["max_prompt_tokens"] <= 0 or knobs["refit_buffer_size_gb"] <= 0:
         raise ValueError("Prompt and refit buffer limits must be positive")
     if "rollout_backend" in knobs and knobs["rollout_backend"] == "nemo_gym":
@@ -102,6 +114,8 @@ class OnPolicyRollout:
             result = self.generation.generate(inputs, greedy=False)
         finally:
             self.generation.finish_generation()
+        if "requires_behavior_logprobs" in self.knobs and self.knobs["requires_behavior_logprobs"]:
+            result["behavior_logprobs"] = result["logprobs"]
         self.rollout_counter += 1
         batch = self.response_collator(prompt_batch, result, prompt_ids,
                                       self.policy_version, self.rollout_counter)
@@ -132,6 +146,10 @@ def build_on_policy_rollout(config, student_policy, student_tokenizer,
         student_tokenizer, teacher_tokenizers[index], teacher.projection_matrix_path,
         config.data["alignment_max_combination_length"],
     ) for index, teacher in enumerate(config.teachers)]
+    if "variant" in config.loss_fn:
+        from nemo_rl.algorithms.x_token.variant_alignment import wrap_aligners
+
+        aligners = wrap_aligners(aligners, student_tokenizer, teacher_tokenizers)
     generation = student_policy.xtoken_generation
     gym_backend = "rollout_backend" in config.on_policy and config.on_policy["rollout_backend"] == "nemo_gym"
     stop_ids = generation.cfg["stop_token_ids"]

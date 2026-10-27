@@ -71,6 +71,8 @@ def main():
         "optimizer": {"name": "torch.optim.AdamW", "kwargs": {"lr": 1e-3, "foreach": False, "fused": False}},
         "scheduler": {"name": "torch.optim.lr_scheduler.ConstantLR", "kwargs": {"factor": 1., "total_iters": 10}},
     }
+    if "XTOKEN_VARIANT_MODES" in os.environ:
+        config["train_global_batch_size"] = 12
     tokenizer = AutoTokenizer.from_pretrained(root, local_files_only=True)
     worker_class = DTensorPolicyWorkerV2.__ray_metadata__.modified_class
     worker = worker_class(config, tokenizer, init_optimizer=True, init_reference_model=False)
@@ -79,6 +81,12 @@ def main():
                             input_lengths=torch.tensor([8, 6]),
                             sample_mask=torch.ones(2), token_mask=torch.tensor([[0, 0, 1, 1, 1, 1, 1, 1],
                                                                                  [0, 1, 1, 1, 1, 1, 0, 0]]))
+    if "XTOKEN_VARIANT_MODES" in os.environ:
+        from tools.xtoken_all.tests.variant_native_probe import exercise_native_variants
+
+        exercise_native_variants(worker, root, rank, world)
+        torch.distributed.destroy_process_group()
+        return
     exported = worker.get_full_logits_ipc(batch, micro_batch_size=1)
     storage = worker._teacher_ipc_storage
     original = storage.clone()

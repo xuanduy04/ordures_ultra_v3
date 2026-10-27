@@ -96,6 +96,7 @@ class CrossTokenizerDistillationLossConfig(TypedDict):
     ]  # "ce" | "entropy" | "max_prob"; None => static teacher_weights. sum-mode only.
     # Runtime-injected by xtoken_off_policy_distillation.setup (parallel
     # per-teacher lists + the student vocab size); not user loss_fn keys.
+    variant: NotRequired[dict[str, Any]]
     student_vocab_size: NotRequired[int]
     teacher_vocab_sizes: NotRequired[list[int]]
     projection_matrix_paths: NotRequired[list[Optional[str]]]

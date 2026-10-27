@@ -1,0 +1,180 @@
+def _build_virtual_vocab_logits(
+        self,
+        segments,
+        stu_logits_aligned,
+        tea_logits_aligned,
+        stu_label_ids_list,
+        tea_label_ids_list,
+    ):
+        """Build student and teacher logit matrices on the virtual common vocabulary.
+
+        For each aligned segment we construct a logit vector of size
+        ``num_overlap + num_total_spans`` where:
+        - the first ``num_overlap`` dims come from the base overlap vocabulary,
+        - the remaining ``num_total_spans`` dims correspond to span logits.
+
+        For a 1:1 aligned position the overlap-vocab logits are taken directly
+        from the single token; for a span the overlap-vocab logits are taken
+        from the **first** token position only (since the span is treated as a
+        single virtual token — other overlap tokens compete with it at the
+        first position).  The span-logit dimensions are filled with ``-1e9``
+        (≈ 0 after softmax) except for the span that the current segment
+        belongs to, which gets the mean of each constituent token's logit at
+        its own token id (i.e. the model's average confidence in generating
+        this span).
+
+        Args:
+            segments: list of (tea_start, tea_end, stu_start, stu_end) —
+                      indices into the label id sequences.
+            stu_logits_aligned: student logits at loss_mask positions
+                                [num_stu_loss_tokens, vocab_s].
+            tea_logits_aligned: teacher logits at loss_mask positions
+                                [num_tea_loss_tokens, vocab_t].
+            stu_label_ids_list: Python list of student label token ids.
+            tea_label_ids_list: Python list of teacher label token ids.
+
+        Returns:
+            stu_virtual_logits: [num_segments, num_overlap + num_spans]
+            tea_virtual_logits: [num_segments, num_overlap + num_spans]
+        """
+        if getattr(self.args.kd, "span_score_mode", "raw_logit") == "mean_logprob":
+            # Eq.7: normalize each autoregressive position BEFORE averaging.
+            # Shared-token candidates must use log probabilities as well.
+            stu_logits_aligned = torch.log_softmax(stu_logits_aligned.float(), dim=-1)
+            tea_logits_aligned = torch.log_softmax(tea_logits_aligned.float(), dim=-1)
+        num_overlap = self.student_overlap_token_ids.shape[0]
+        device = stu_logits_aligned.device
+
+        # Identify which segments are spans (multi-token on either side)
+        span_indices = []  # indices into `segments` that are spans
+        for seg_idx, (ts, te, ss, se) in enumerate(segments):
+            if (te - ts) > 1 or (se - ss) > 1:
+                span_indices.append(seg_idx)
+        num_spans = len(span_indices)
+        virtual_dim = num_overlap + num_spans
+
+        # Gather overlap-vocabulary logits for every segment in one operation.
+        # This is mathematically identical to the former per-segment loop, but
+        # avoids launching one GPU indexing kernel per segment and vocabulary.
+        stu_first_positions = torch.tensor(
+            [ss for _ts, _te, ss, _se in segments], device=device, dtype=torch.long
+        )
+        tea_first_positions = torch.tensor(
+            [ts for ts, _te, _ss, _se in segments], device=device, dtype=torch.long
+        )
+        stu_overlap = stu_logits_aligned[
+            stu_first_positions.unsqueeze(1), self.student_overlap_token_ids.unsqueeze(0)
+        ]
+        tea_overlap = tea_logits_aligned[
+            tea_first_positions.unsqueeze(1), self.teacher_overlap_token_ids.unsqueeze(0)
+        ]
+
+        if num_spans == 0:
+            return stu_overlap, tea_overlap
+
+        stu_span_values = []
+        tea_span_values = []
+        for seg_idx in span_indices:
+            ts, te, ss, se = segments[seg_idx]
+            stu_span_token_ids = torch.tensor(
+                stu_label_ids_list[ss:se], device=device, dtype=torch.long
+            )
+            tea_span_token_ids = torch.tensor(
+                tea_label_ids_list[ts:te], device=device, dtype=torch.long
+            )
+            stu_self_logits = stu_logits_aligned[
+                torch.arange(ss, se, device=device), stu_span_token_ids
+            ]
+            tea_self_logits = tea_logits_aligned[
+                torch.arange(ts, te, device=device), tea_span_token_ids
+            ]
+            stu_span_values.append(stu_self_logits.mean())
+            tea_span_values.append(tea_self_logits.mean())
+
+            if self._span_debug_count < 1:
+                self._span_debug_count += 1
+                logger.info(
+                    f"\n[SpanCTKD SPAN DEBUG] === Example span logits (seg_idx={seg_idx}) ===\n"
+                    f"  Student span token ids: {stu_span_token_ids.detach().cpu().tolist()}\n"
+                    f"  Student self_logits (per token): {stu_self_logits.detach().cpu().tolist()}\n"
+                    f"  Student span_dim value (mean):   {stu_self_logits.mean().item():.4f}\n"
+                    f"  Teacher span token ids: {tea_span_token_ids.detach().cpu().tolist()}\n"
+                    f"  Teacher self_logits (per token): {tea_self_logits.detach().cpu().tolist()}\n"
+                    f"  Teacher span_dim value (mean):   {tea_self_logits.mean().item():.4f}\n"
+                    f"  ---\n"
+                    f"  Student overlap logits (first pos) stats: mean={stu_overlap[seg_idx].mean().item():.4f}, "
+                    f"max={stu_overlap[seg_idx].max().item():.4f}, min={stu_overlap[seg_idx].min().item():.4f}, "
+                    f"std={stu_overlap[seg_idx].std().item():.4f}\n"
+                    f"  Teacher overlap logits (first pos) stats: mean={tea_overlap[seg_idx].mean().item():.4f}, "
+                    f"max={tea_overlap[seg_idx].max().item():.4f}, min={tea_overlap[seg_idx].min().item():.4f}, "
+                    f"std={tea_overlap[seg_idx].std().item():.4f}\n"
+                    f"  num_overlap={num_overlap}, num_spans={num_spans}, virtual_dim={virtual_dim}"
+                )
+
+        stu_span_dims = torch.full(
+            (len(segments), num_spans), -1e9, device=device, dtype=stu_overlap.dtype
+        )
+        tea_span_dims = torch.full(
+            (len(segments), num_spans), -1e9, device=device, dtype=tea_overlap.dtype
+        )
+        span_rows = torch.tensor(span_indices, device=device, dtype=torch.long)
+        span_columns = torch.arange(num_spans, device=device)
+        stu_span_dims[span_rows, span_columns] = torch.stack(stu_span_values)
+        tea_span_dims[span_rows, span_columns] = torch.stack(tea_span_values)
+        return (
+            torch.cat([stu_overlap, stu_span_dims], dim=1),
+            torch.cat([tea_overlap, tea_span_dims], dim=1),
+        )
+
+def _compute_segment_teacher_Z(self, segments, tea_logits_aligned, tea_label_ids_list):
+        """Teacher mass ``Z_T(h)`` captured by the SimCT candidate space, per segment.
+
+        ``Z_T(h)`` is computed on the **full-vocabulary** teacher softmax so that
+        it measures the original teacher probability mass that the candidate
+        space (shared tokens + the span realized at this position) represents:
+
+        - shared-token mass at the first teacher position, plus
+        - for a span, the geometric-mean probability of the span's teacher
+          tokens (matching the span logit used in the virtual distribution).
+
+        The re-normalization multiplier is then ``G(h) = 1 / Z_T(h)``.  A large
+        ``G(h)`` means the candidate space holds little teacher mass, so
+        re-normalizing over it would amplify a low-mass tail.
+
+        Returns:
+            Z: [num_segments] float tensor in (0, 1].
+        """
+        device = tea_logits_aligned.device
+        if not segments:
+            return torch.empty(0, device=device, dtype=torch.float32)
+
+        # One full-vocabulary normalization per teacher-token row.  The former
+        # reference implementation launched softmax/log_softmax separately for
+        # every segment and every span token.  Using log-sum-exp identities is
+        # the same probability calculation while batching the GPU work:
+        #   sum_{v in overlap} softmax(x)_v
+        # = exp(logsumexp(x_overlap) - logsumexp(x_full)).
+        tea_logits_float = tea_logits_aligned.float()
+        full_log_norm = torch.logsumexp(tea_logits_float, dim=-1)
+        first_positions = torch.tensor(
+            [ts for ts, _te, _ss, _se in segments], device=device, dtype=torch.long
+        )
+        first_logits = tea_logits_float[first_positions]
+        overlap_log_mass = torch.logsumexp(
+            first_logits[:, self.teacher_overlap_token_ids], dim=-1
+        )
+        Z = torch.exp(overlap_log_mass - full_log_norm[first_positions])
+
+        for seg_idx, (ts, te, ss, se) in enumerate(segments):
+            if (te - ts) <= 1 and (se - ss) <= 1:
+                continue
+            span_positions = torch.arange(ts, te, device=device)
+            span_ids = torch.tensor(
+                tea_label_ids_list[ts:te], device=device, dtype=torch.long
+            )
+            span_logps = (
+                tea_logits_float[span_positions, span_ids]
+                - full_log_norm[span_positions]
+            )
+            Z[seg_idx] = (Z[seg_idx] + torch.exp(span_logps.mean())).clamp(max=1.0)
+        return Z.clamp(max=1.0)

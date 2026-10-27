@@ -94,3 +94,27 @@ def test_expired_batch_deadline_is_not_extended_by_ready_results(monkeypatch):
         rollout.generate(batch, training=True)
     generation.finish_generation.assert_called_once()
     assert rollout.pending_rollout is None
+
+
+@pytest.mark.parametrize("scores", [[-.25, -.75], None, [-.25]])
+def test_dpca_preserves_real_gym_behavior_scores_or_refuses_update(monkeypatch, scores):
+    rollout, batch, generation, collator, _ = harness(monkeypatch)
+    rollout.knobs["requires_behavior_logprobs"] = True
+    assistant = {"role": "assistant", "token_ids": torch.tensor([7, 8])}
+    if scores is not None:
+        assistant["generation_logprobs"] = torch.tensor(scores)
+    payload = {"full_result": {"reward": .75}, "message_log": [
+        {"role": "user", "token_ids": torch.tensor([3, 4])}, assistant]}
+    rollout.environment.run_rollouts.remote.side_effect = lambda *args: iter([(0, payload, None)])
+    if scores is None:
+        with pytest.raises(KeyError, match="generation_logprobs"):
+            rollout.generate(batch, training=True)
+        assert rollout.pending_rollout is None
+    elif len(scores) != 2:
+        with pytest.raises(ValueError, match="one finite behavior logprob"):
+            rollout.generate(batch, training=True)
+        assert rollout.pending_rollout is None
+    else:
+        rollout.generate(batch, training=True)
+        torch.testing.assert_close(collator.call_args.args[1]["behavior_logprobs"], torch.tensor([[0., 0., -.25, -.75]]))
+    generation.finish_generation.assert_called_once()
