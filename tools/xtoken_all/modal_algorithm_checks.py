@@ -30,6 +30,7 @@ for name in ("pyproject.toml", "uv.lock", "default_runtime_env.yaml", ".python-v
     IMAGE = IMAGE.add_local_file(str(ROOT / name), "/work/source/" + name)
 app = modal.App("nemo-algorithm-qualification-20261028")
 PYTHON = "/opt/nemo_rl_venv/bin/python"
+POLICY_PYTHON = "/opt/ray_venvs/nemo_rl.models.policy.workers.dtensor_policy_worker_v2.DTensorPolicyWorkerV2/bin/python"
 MODES = "dpca,ctopd_full,ctopd_topk,simct_full,simct_topk,grass_chunk_fixed_sigma"
 
 
@@ -85,11 +86,22 @@ def cpu_checks():
                      "tools/xtoken_all/tests", "-q", "--tb=short"], env, 180)
     unit = execute([PYTHON, "-B", "-m", "pytest", "--confcutdir=tests/unit/algorithms/x_token", "-o", "addopts=",
                     "-p", "no:cacheprovider", "tests/unit/algorithms/x_token", "-q", "--tb=short"], env, 180)
-    automodel = execute([PYTHON, "-B", "-m", "pytest", "--noconftest", "-o", "addopts=", "-p", "no:cacheprovider",
+    automodel = execute([POLICY_PYTHON, "-B", "-m", "pytest", "--noconftest", "-o", "addopts=", "-p", "no:cacheprovider",
                         "tests/unit/models/automodel/test_automodel_train.py", "-k", "TestForwardWithPostProcessingFn",
                         "-q", "-rs", "--tb=short"], env, 90)
     return {**source_fingerprint(), "light": light, "unit": unit, "automodel": automodel,
             "success": light["exit_code"] == unit["exit_code"] == 0 and automodel["exit_code"] in (0, 5)}
+
+
+@app.function(image=IMAGE, cpu=1, memory=2048, timeout=90, retries=0)
+def runtime_inventory():
+    paths = [Path(PYTHON), *sorted(Path("/opt/ray_venvs").glob("*/bin/python"))]
+    results = []
+    script = "import importlib.util,json,sys; print(json.dumps({'python':sys.executable,'automodel_spec':str(importlib.util.find_spec('nemo_automodel')),'torch_spec':str(importlib.util.find_spec('torch'))}))"
+    for path in paths:
+        if "dtensor" in str(path) or str(path) == PYTHON:
+            results.append({"interpreter": str(path), **execute([str(path), "-B", "-c", script], child_env(), 20)})
+    return {"interpreters": results, "success": all(row["exit_code"] == 0 for row in results)}
 
 
 @app.function(image=IMAGE, cpu=8, memory=16384, timeout=480, retries=0)
@@ -113,9 +125,10 @@ def gpu_checks(count):
         result["success"] = False
         return result
     result["ddp_report"] = json.loads((root / "ddp.json").read_text())
+    native_launcher = [POLICY_PYTHON, "-B", "-m", "torch.distributed.run", "--standalone", "--nproc-per-node=" + str(count)]
     native_env = dict(env, XTOKEN_FIXTURE_PATH=str(root / "native"), XTOKEN_VARIANT_MODES=MODES)
     print("ALGO_PHASE=native", flush=True)
-    result["native"] = execute(launcher + ["tests/unit/algorithms/x_token/native_worker_smoke.py"], native_env, 210)
+    result["native"] = execute(native_launcher + ["tests/unit/algorithms/x_token/native_worker_smoke.py"], native_env, 210)
     if result["native"]["exit_code"]:
         print("ALGO_FAILURE=" + json.dumps(result["native"])[-6000:], flush=True)
     if result["native"]["exit_code"] == 0:
@@ -125,7 +138,7 @@ def gpu_checks(count):
     if count == 2 and result["native"]["exit_code"] == 0:
         print("ALGO_PHASE=legacy_ipc", flush=True)
         legacy_env = dict(env, XTOKEN_FIXTURE_PATH=str(root / "legacy"))
-        result["legacy_ipc"] = execute(launcher + ["tests/unit/algorithms/x_token/native_worker_smoke.py"], legacy_env, 90)
+        result["legacy_ipc"] = execute(native_launcher + ["tests/unit/algorithms/x_token/native_worker_smoke.py"], legacy_env, 90)
     result["success"] = result["native"]["exit_code"] == 0 and ("legacy_ipc" not in result or result["legacy_ipc"]["exit_code"] == 0)
     return result
 
@@ -133,7 +146,7 @@ def gpu_checks(count):
 @app.local_entrypoint()
 def main(phase: str, count: int, output_dir: str):
     profile = os.environ["MODAL_PROFILE"]
-    if profile not in ("nguyenngocminh30012005", "nguyenepti") or phase not in ("cpu", "gpu"):
+    if profile not in ("nguyenngocminh30012005", "nguyenepti") or phase not in ("cpu", "gpu", "inspect"):
         raise ValueError("Use the two authorized profiles and cpu/gpu phase")
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
@@ -144,7 +157,7 @@ def main(phase: str, count: int, output_dir: str):
     ledger = output / (profile + "-reservations.json")
     previous = json.loads(ledger.read_text()) if ledger.is_file() else []
     reserved = sum((Decimal(row["upper_bound_usd"]) for row in previous), Decimal(0))
-    bound = Decimal("0.15") if phase == "cpu" else Decimal("4.00")
+    bound = Decimal("4.00") if phase == "gpu" else Decimal("0.15")
     allowed = max(reported, reserved) + bound + Decimal("2") <= Decimal("20")
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
     label = profile + "-" + phase + "-" + str(count) + "-" + stamp
@@ -164,7 +177,7 @@ def main(phase: str, count: int, output_dir: str):
         source_dirty = bool(subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT, text=True, stderr=subprocess.PIPE).strip())
     except subprocess.CalledProcessError:
         source_commit, source_dirty = None, None
-    result = cpu_checks.remote() if phase == "cpu" else gpu_checks.with_options(gpu="B200:" + str(count)).remote(count)
+    result = runtime_inventory.remote() if phase == "inspect" else cpu_checks.remote() if phase == "cpu" else gpu_checks.with_options(gpu="B200:" + str(count)).remote(count)
     result["source_commit_at_dispatch"] = source_commit
     result["source_dirty_at_dispatch"] = source_dirty
     (output / (label + "-result.json")).write_text(json.dumps(result, indent=2))
