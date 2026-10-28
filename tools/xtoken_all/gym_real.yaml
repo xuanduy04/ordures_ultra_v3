@@ -37,7 +37,7 @@ qualification_limits:
   teacher_s: 2100
   student_s: 1500
   single_teacher_s: 550
-  single_student_s: 390
+  single_student_s: 430
   legacy_teacher_s: 500
   legacy_student_s: 350
   startup_s: 180
