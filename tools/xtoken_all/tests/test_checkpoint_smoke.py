@@ -57,10 +57,12 @@ def test_existing_training_save_branch_runs_after_first_and_second_update(tmp_pa
 
 
 @pytest.mark.parametrize("failure", [None, "optimizer", "weights", "training_info", "dataloader"])
-def test_result_checker_requires_finalized_step_one_payloads(tmp_path, failure):
+@pytest.mark.parametrize('step_field', ['total_steps', 'current_step'])
+def test_result_checker_requires_finalized_step_one_payloads(tmp_path, failure, step_field):
     step = tmp_path / 'step_1'
     step.mkdir()
-    (step / 'training_info.json').write_text(json.dumps({'total_steps': 1}))
+    metadata = {'total_steps': 1} if step_field == 'total_steps' else {'total_steps': 0, 'current_step': 1}
+    (step / 'training_info.json').write_text(json.dumps(metadata))
     (step / 'config.yaml').write_text('checkpointing: {}\n')
     (step / 'train_dataloader.pt').write_bytes(b'fixture-only')
     for name in ('weights', 'optimizer', 'tokenizer'):
@@ -73,8 +75,14 @@ def test_result_checker_requires_finalized_step_one_payloads(tmp_path, failure):
         (step / 'training_info.json').write_text('{broken')
     elif failure == 'dataloader':
         (step / 'train_dataloader.pt').unlink()
-    assert checker.inspect_checkpoint(tmp_path, 1)['success'] is (failure is None)
-    assert checker.inspect_checkpoint(tmp_path, 2)['success'] is False
+    result = checker.inspect_checkpoint(tmp_path, 1, step_field=step_field)
+    assert result['success'] is (failure is None)
+    if failure != 'training_info':
+        assert result['training_info'] == metadata
+        assert len(result['training_info_sha256']) == 64
+    assert checker.inspect_checkpoint(tmp_path, 2, step_field=step_field)['success'] is False
+    if failure is None and step_field == 'current_step':
+        assert checker.inspect_checkpoint(tmp_path, 1)['success'] is False
 
 
 def test_smoke_and_train_have_separate_save_cadences_and_budgets():

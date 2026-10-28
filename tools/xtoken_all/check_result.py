@@ -1,5 +1,6 @@
 """Judge a two-update smoke from its metrics and successful process exits."""
 import argparse
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -8,13 +9,17 @@ import yaml
 from teacher_probe_contract import score_events_match
 
 
-def inspect_checkpoint(root, step):
+def inspect_checkpoint(root, step, *, step_field=None):
     """Check finalized file closure without loading tensors or pickle data."""
     path = root / ('step_' + str(step))
     reasons = []
     info = path / 'training_info.json'
+    field = 'total_steps' if step_field is None else step_field
+    training_info = None
     try:
-        valid_info = info.is_file() and json.loads(info.read_text())['total_steps'] == step
+        if info.is_file():
+            training_info = json.loads(info.read_text())
+        valid_info = training_info is not None and training_info[field] == step
     except (OSError, ValueError, KeyError, TypeError):
         valid_info = False
     if not valid_info:
@@ -31,6 +36,8 @@ def inspect_checkpoint(root, step):
         if not files:
             reasons.append('missing checkpoint payload: ' + str(directory))
     return {'step': step, 'path': str(path), 'success': not reasons, 'reasons': reasons,
+            'training_info': training_info, 'step_field': field,
+            'training_info_sha256': hashlib.sha256(info.read_bytes()).hexdigest() if info.is_file() else None,
             'scope': 'finalized metadata/file closure; no load or resume-parity claim'}
 
 

@@ -94,7 +94,7 @@ def assess_legacy(run, relay_url):
         receipts = json.load(response)
     if len(receipts) < 2 or not all(item['status'] == 200 for item in receipts):
         reasons.append('Insufficient successful real legacy teacher scoring calls')
-    checkpoints = [inspect_checkpoint(run / 'checkpoints', step) for step in (1, 2)]
+    checkpoints = [inspect_checkpoint(run / 'checkpoints', step, step_field='current_step') for step in (1, 2)]
     for report in checkpoints:
         reasons.extend(report['reasons'])
         for name in ('replay_buffer.pt', 'rollouts.pt'):
