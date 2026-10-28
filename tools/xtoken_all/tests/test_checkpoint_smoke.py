@@ -99,6 +99,19 @@ def test_smoke_and_train_have_separate_save_cadences_and_budgets():
     assert train['policy']['train_global_batch_size'] == train['distillation']['num_prompts_per_step']
 
 
+def test_company_async_checkpoint_updates_current_step_instead_of_total_steps():
+    tree = ast.parse((ROOT / 'nemo_rl/algorithms/grpo.py').read_text())
+    async_train = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'async_grpo_train')
+    assignments = [node for node in ast.walk(async_train) if isinstance(node, ast.Assign)
+                   and ast.unparse(node.targets[0]) == "grpo_save_state['current_step']"]
+    assert len(assignments) == 1
+    for completed in (0, 1):
+        state = {'current_step': completed, 'total_steps': 0}
+        namespace = {'step': completed, 'grpo_save_state': state}
+        exec(compile(ast.Module(body=assignments, type_ignores=[]), 'actual_company_checkpoint_counter', 'exec'), namespace)
+        assert state == {'current_step': completed + 1, 'total_steps': 0}
+
+
 def test_checkpoint_async_setting_survives_actual_config_type_validation():
     tree = ast.parse((ROOT / 'nemo_rl/algorithms/xtoken_off_policy_distillation.py').read_text())
     cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'CheckpointingConfig')
