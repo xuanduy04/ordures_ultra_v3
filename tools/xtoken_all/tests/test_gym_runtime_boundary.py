@@ -230,6 +230,13 @@ def test_service_probe_subprocess_never_imports_training_stack(tmp_path, service
     app.write_text("class " + class_name + ":\n    pass\n")
     command = '''
 import importlib.abc, runpy, sys
+import types
+uvicorn = types.ModuleType('uvicorn')
+uvicorn.__version__ = 'contract-fixture'
+def uvicorn_run(app=None, *, timeout_worker_healthcheck=None):
+    pass
+uvicorn.run = uvicorn_run
+sys.modules['uvicorn'] = uvicorn
 class BlockTraining(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path, target=None):
         if fullname.split('.')[0] in ('torch', 'vllm', 'transformers', 'nemo_rl'):

@@ -1,0 +1,59 @@
+# Remote qualification only; production and existing 1.7B/4B plans are unchanged.
+accelerator: B200
+budget_usd: 20
+billing_lag_reserve_usd: 2
+billing_baseline_usd:
+  nguyenngocminh30012005: '0.04621146'
+  nguyenepti: '3.32707534'
+student:
+  repo: Qwen/Qwen3-4B
+  revision: 1cfa9a7208912126459214e8b04321603b3df60c
+teachers:
+  cross:
+    repo: google/gemma-4-26B-A4B-it
+    revision: 4d7ae4984b7db7de8f8457170b3f1a419ee76d52
+    alias: gemma-4-26B-A4B-it
+    vocab: 262144
+  same:
+    repo: Qwen/Qwen3-32B
+    revision: 9216db5781bf21249d130ec9da846c4624c16137
+    alias: Qwen3-32B
+    vocab: 151936
+assets:
+  url: https://huggingface.co/datasets/codemaivanngu/xtoken-qwen3-gemma4-assets/resolve/db283cda9727993f8ac1210779b6bf9bd385366d/releases/xtoken-qwen3-1p7b-gemma4-assets-20261026-r2.zip
+  sha256: 580dc64b87e243e1363ac5368ccda72739be0d18b57b908ac2489e8e203fe4ee
+supplement:
+  # Pure dependencies shared across all Py3.13 roles, installed remotely without deps.
+  packages:
+    - ray==2.55.1
+    - nltk==3.9.2
+    - joblib==1.5.3
+    - mlflow==3.12.0
+    - mlflow-skinny==3.12.0
+    - mlflow-tracing==3.12.0
+    - uvicorn==0.37.0
+modes: [topk_tail_kl, dpca, ctopd_topk, simct_topk, grass_chunk_fixed_sigma]
+variant:
+  score_mode: topk
+  adv_clamp: 10.0
+  clip_ratio_low: 0.2
+  clip_ratio_high: 0.28
+  clip_ratio_c: 10.0
+  kl_clamp: 20.0
+  sigma2: 0.1
+  gh_threshold: 4.0
+canary:
+  gpu_count: 2
+  max_num_steps: 2
+  global_batch_size: 4
+  micro_batch_size: 1
+  context: 256
+  response_tokens: 32
+  max_prompt_tokens: 192
+  teacher_context: 512
+  refit_buffer_size_gb: 4.0
+  checkpoint_period: 1
+  keep_checkpoints: 2
+  teacher_probe_timeout_s: 240
+  mode_timeout_s: 450
+  actor_import_timeout_s: 240

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -14,6 +15,11 @@ from teacher_probe_contract import mode_basis, score_contract, validate_teacher_
 
 
 def main():
+    started = time.monotonic()
+    def phase(name):
+        print('XTK_TEACHER_PHASE=' + json.dumps({'phase': name, 'elapsed_s': time.monotonic() - started}), flush=True)
+
+    phase('starting')
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', required=True)
     parser.add_argument('--server-mode-evidence', type=Path)
@@ -27,6 +33,8 @@ def main():
     from omegaconf import OmegaConf
     from nemo_rl.algorithms.utils import get_tokenizer
     from nemo_rl.algorithms.x_token.remote_teacher import XTokenFullLogprobClient, XTokenTopKLogprobClient
+
+    phase('framework_imports_complete')
 
     cfg = OmegaConf.to_container(OmegaConf.load(args.config), resolve=True)
     policy_path = Path(__file__).with_name('teacher_probe_policy.yaml')
@@ -56,12 +64,14 @@ def main():
 
     version = request('/version')['version']
     models = [item['id'] for item in request('/v1/models')['data']]
+    phase('metadata_received')
     if remote['model'] not in models:
         raise ValueError('Configured served name is absent from /v1/models')
     basis = mode_basis(remote, version, evidence, policy)
     if evidence is not None and not basis['accepted']:
         raise ValueError('Explicit deployment configuration reports an incompatible logprobs mode')
     tokenizer = get_tokenizer(cfg['teachers'][0]['tokenizer'])
+    phase('tokenizer_loaded')
     for text in ('Hello world.', 'Xin chào, 201 + 37 = ?',
                  tokenizer.apply_chat_template([{'role': 'user', 'content': 'Say hello.'}],
                      tokenize=False, add_generation_prompt=True)):
@@ -70,6 +80,7 @@ def main():
                                      'add_special_tokens': False})['tokens']
         if actual != expected:
             raise ValueError('Teacher tokenizer IDs differ from staged tokenizer; do not train')
+    phase('tokenizer_parity_complete')
     ids = tokenizer.encode('Hello world. Another sentence.', add_special_tokens=False)[:2]
     assert len(ids) == 2
     assert max(ids) < remote['model_vocab_size']
@@ -79,6 +90,7 @@ def main():
         scores = asyncio.run(client.score_group(
             {'url': remote['url'], 'model': remote['model']},
             torch.tensor([ids], dtype=torch.long), torch.tensor([2], dtype=torch.long)))
+        phase('scores_received')
         if score_mode == 'topk':
             valid = scores['topk_valid'][0, 0]
             retained = float(scores['topk_logprobs'][0, 0][valid].exp().sum())

@@ -243,6 +243,7 @@ guides/use-custom-vllm.md
 guides/xtoken-distillation.md
 guides/xtoken-gym-super.md
 guides/algorithm-ports.md
+guides/gym-real-qualification.md
 ```
 
 ```{toctree}

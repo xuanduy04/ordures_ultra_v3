@@ -2,6 +2,7 @@
 
 import argparse
 import importlib
+import inspect
 import json
 from pathlib import Path
 import sys
@@ -26,9 +27,17 @@ def probe(service, gym_root):
         raise ValueError("Service app imported another source tree")
     if not callable(getattr(app, class_name)):
         raise TypeError("Missing Gym service class: " + class_name)
+    uvicorn = importlib.import_module("uvicorn")
+    validate_server_runner(uvicorn.run)
     return {"service": service, "python_executable": sys.executable,
             "python_prefix": sys.prefix, "module": str(Path(app.__file__).resolve()),
-            "app_import_completed": True, "servers_started": False}
+            "app_import_completed": True, "servers_started": False,
+            "uvicorn_worker_healthcheck_supported": True, "uvicorn_version": uvicorn.__version__}
+
+
+def validate_server_runner(run):
+    """Super passes this keyword even with one worker; import alone is insufficient."""
+    inspect.signature(run).bind_partial(timeout_worker_healthcheck=30)
 
 
 def main():
