@@ -22,5 +22,20 @@
     "multinode_main.sh": "83917fff32725aba866deaab8c72688ad1670ea27deec129982ec246aa112eb9",
     "vt_super.yaml": "46f7d06294762398ba5a564d8f7e60bde749ffdbc2dcd6efccf38252021c818e"
   },
-  "launcher_reuse_boundary": "Follow existing source overlay, actor registry and separate venv roles; X-Token update schedule/loss remain the explicit adaptation, not a replay of GRPO training."
+  "launcher_reuse_boundary": "Follow existing source overlay, actor registry and separate venv roles; X-Token update schedule/loss remain the explicit adaptation, not a replay of GRPO training.",
+  "company_baseline": {
+    "ref": "vllm_teacher",
+    "commit": "d92dc0967696a8982c6f226b97cd74957fb5c83d",
+    "scope": "Protected legacy GRPO, rewards and original external-teacher OPD modules; not a whole-runtime parity claim",
+    "normalized_lf_sha256": {
+      "nemo_rl/algorithms/grpo.py": "a2118d328692cc63eefcff7dc74900b6abc184336581bba3e6e970576b008e23",
+      "nemo_rl/algorithms/reward_functions.py": "37f022bacb63bfb132c9e81eee80a5ebfee867cc5dd6e922bfbdaf27e76f8179",
+      "nemo_rl/algorithms/async_utils.py": "ad71d69397190cb4a072c3b5e3308a1090bc5a744bb12bf5354be9c7de0f8f92",
+      "nemo_rl/algorithms/opd.py": "2cf453cf48d4ae68b3573e469adbe4f0715dbbba84c9f380f16256a604945f35",
+      "examples/nemo_gym/run_grpo_nemo_gym.py": "b711d7831b17f02f54431fd267fa45ee36ab9982f34a59d05b0ee895c3edfb30",
+      "nemo_rl/experience/rollouts.py": "650906060e39563ace1bac042f69f64ec3bf76026a24abe08659db0b5743a038",
+      "custom_utils/utils_data/filter_overlong_token.py": "38eef274956dd7347cc46947dad548726277e856be36223b8d261269e7024e67",
+      "custom_utils/utils_training/use_custom_opt.sh": "c455cdb640d5db016fa5deee7637699db08366f32e644567ab20c774fc8603f0"
+    }
+  }
 }

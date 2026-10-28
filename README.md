@@ -349,6 +349,13 @@ It includes an external teacher client and an explicit top-20 plus OTHER-bucket
 approximation for servers that cannot return the full vocabulary.
 Its guide lists the required local artifacts, supported transport and validation gates.
 
+The `tung/algo/minimal-company` branch restores and fingerprints the company
+GRPO/OPD entrypoints, rollout and setup helpers against `vllm_teacher@d92dc09`.
+X-Token owns its refit and preprocessing adapters; shared data/tokenizer callbacks
+are optional. See the [company integration boundary](docs/guides/company-boundary.md)
+for the protected files, remaining worker hooks and validation limits. Earlier
+GPU receipts do not automatically qualify this restored branch.
+
 We provide an example on-policy distillation experiment using the [DeepScaler dataset](https://huggingface.co/agentica-org/DeepScaleR-1.5B-Preview).
 
 ### On-policy Distillation Single Node

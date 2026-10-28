@@ -14,6 +14,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "tools/xtoken_all"))
 
 
 def load_file(name, path):
@@ -194,7 +195,7 @@ def test_source_fingerprint_detects_code_edits(tmp_path):
     assert "ensure_runtime.sh" in setup["files"]
 
 
-@pytest.mark.parametrize("retain,has_ids", [(False, True), (True, True), (True, False)])
+@pytest.mark.parametrize("retain,has_ids", [(False, True), (True, True), (True, False), (None, True), (None, False)])
 def test_actual_gym_postprocessor_keeps_bounded_prefix_only_when_requested(retain, has_ids):
     tree = ast.parse((ROOT / "nemo_rl/environments/nemo_gym.py").read_text(encoding="utf-8"))
     cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "NemoGym")
@@ -220,9 +221,12 @@ def test_actual_gym_postprocessor_keeps_bounded_prefix_only_when_requested(retai
     payload = {"reward": 0, "response": {"output": [output],
                                         "incomplete_details": {"reason": "max_output_tokens"}},
                "responses_create_params": {"input": [{"role": "user", "content": "2+3?"}]}}
-    env = SimpleNamespace(cfg={"retain_truncated_token_ids": retain})
+    env = SimpleNamespace(cfg={} if retain is None else {"retain_truncated_token_ids": retain})
     parsed = namespace[method.name](env, payload, tokenizer)
-    if retain and has_ids:
+    if retain is None and not has_ids:
+        assert parsed["message_log"] == []
+        assert parsed["input_message_log"][0]["token_ids"].tolist() == []
+    elif (retain or retain is None) and has_ids:
         assert parsed["message_log"][1]["token_ids"].tolist() == [7, 8]
     else:
         assert len(parsed["message_log"]) == 1

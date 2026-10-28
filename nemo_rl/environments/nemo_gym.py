@@ -387,8 +387,9 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
                 output_item_dict["generation_str"] = generation_str
 
         is_overlong_sample = (
-            not last_model_call_item_had_token_ids
-            or (nemo_gym_result["response"].get("incomplete_details") or {}).get("reason") == "max_output_tokens"
+            "retain_truncated_token_ids" in self.cfg
+            and (not last_model_call_item_had_token_ids
+                 or (nemo_gym_result["response"].get("incomplete_details") or {}).get("reason") == "max_output_tokens")
         )
 
         # X-Token can train the sampled prefix at an explicit output budget.
@@ -432,6 +433,14 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
                     "token_ids": torch.tensor([tokenizer.pad_token_id], dtype=torch.long),
                 }
             ]
+            if "retain_truncated_token_ids" not in self.cfg:
+                # Preserve the vllm_teacher result shape for existing GRPO callers.
+                return {
+                    "message_log": [],
+                    "input_message_log": [{"role": "user", "content": "",
+                                           "token_ids": torch.tensor([], dtype=torch.long)}],
+                    "full_result": nemo_gym_result if isinstance(nemo_gym_result, dict) else {"reward": 0.0},
+                }
             return {
                 "message_log": dummy_message_log,
                 "input_message_log": dummy_message_log,

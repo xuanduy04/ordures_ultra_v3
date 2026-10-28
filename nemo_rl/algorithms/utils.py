@@ -220,7 +220,7 @@ def set_seed(seed: int) -> None:
 
 
 def get_tokenizer(
-    tokenizer_config: TokenizerConfig, get_processor: bool = False
+    tokenizer_config: TokenizerConfig, get_processor: bool = False, *, pretrained_factory=None
 ) -> PreTrainedTokenizerBase:
     """Get the tokenizer and set pad token to eos token if it is not already set.
 
@@ -296,19 +296,16 @@ def get_tokenizer(
     maybe_patch_fastokens()
 
     processor = None
-    load_kwargs = tokenizer_config.get("from_pretrained_kwargs")
-    load_kwargs = {} if load_kwargs is None else dict(load_kwargs)
-    if "trust_remote_code" in load_kwargs:
-        raise ValueError("from_pretrained_kwargs must not duplicate trust_remote_code")
-
     if get_processor:
-        processor = AutoProcessor.from_pretrained(
-            tokenizer_config["name"], trust_remote_code=True, use_fast=True, **load_kwargs
+        factory = AutoProcessor.from_pretrained if pretrained_factory is None else pretrained_factory
+        processor = factory(
+            tokenizer_config["name"], trust_remote_code=True, use_fast=True
         )
         tokenizer = processor.tokenizer
     else:
-        tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_config["name"], trust_remote_code=True, **load_kwargs
+        factory = AutoTokenizer.from_pretrained if pretrained_factory is None else pretrained_factory
+        tokenizer = factory(
+            tokenizer_config["name"], trust_remote_code=True
         )
 
     if tokenizer.pad_token is None:

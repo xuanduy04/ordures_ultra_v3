@@ -1,5 +1,16 @@
 # DSH — r16: Qwen3-4B gốc, non-thinking, cross Gemma / same Qwen32
 
+## Nhánh tối thiểu hóa thay đổi code công ty
+
+Nhánh `tung/algo/minimal-company` ghim `vllm_teacher@d92dc09`, giữ nguyên GRPO,
+reward, async helper, OPD cũ và entrypoint GRPO theo mốc đó. X-Token dùng module
+refit/data riêng; callback mới không bật cho caller GRPO cũ. Đọc
+[company boundary](../../docs/guides/company-boundary.md) trước khi triển khai.
+Đây là source mới, chưa được GPU canary sau khi tách; không dùng receipts của
+pilot r15 hay canary Modal cũ để gọi nhánh này đã pass. Không sửa source/run đang
+chạy, không tự rebuild runtime hoặc host lại teacher. Bản operator-reconcile và
+evidence cũ giữ nguyên để đối chiếu.
+
 ## Đối chiếu báo cáo DSH ngày 2026-10-28: ba pilot r15 hoàn tất
 
 Đây là snapshot từ transcript operator cung cấp, không phải lần Codex truy cập

@@ -8,7 +8,7 @@ import pprint
 
 from omegaconf import OmegaConf
 
-from nemo_rl.algorithms.utils import get_tokenizer
+from nemo_rl.algorithms.x_token.data import dataset_transform, get_tokenizer
 from nemo_rl.algorithms.xtoken_off_policy_distillation import (
     MasterConfig,
     setup,
@@ -92,7 +92,8 @@ def main(*, require_on_policy=None) -> None:
     # and validation-from-config — features the prior manual route silently
     # dropped.
     train_dataset, val_dataset = setup_response_data(
-        student_tokenizer, config.data, env_configs=None
+        student_tokenizer, config.data, env_configs=None,
+        dataset_transform=dataset_transform(student_tokenizer, config.data),
     )
 
     (

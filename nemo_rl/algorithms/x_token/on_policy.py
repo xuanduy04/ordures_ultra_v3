@@ -137,7 +137,7 @@ class OnPolicyRollout:
 def build_on_policy_rollout(config, student_policy, student_tokenizer,
                             teacher_tokenizers, state):
     """Use the existing production IPC refit and generation interfaces."""
-    from nemo_rl.algorithms.grpo import refit_policy_generation
+    from nemo_rl.algorithms.x_token.refit import refit_policy_generation
     from nemo_rl.algorithms.x_token import TokenAligner
 
     validate_on_policy_config(config)

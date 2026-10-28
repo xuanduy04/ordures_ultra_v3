@@ -34,7 +34,7 @@ def main():
     if args.count <= 0 or args.max_prompt_tokens <= 0 or args.output_dir.exists():
         raise ValueError("Use positive explicit limits and a new output directory")
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from nemo_rl.algorithms.utils import get_tokenizer
+    from nemo_rl.algorithms.x_token.data import get_tokenizer
 
     tokenizer = get_tokenizer({"name": args.tokenizer, "chat_template_kwargs": {"enable_thinking": False}})
     before = sha256(args.input)

@@ -309,7 +309,7 @@ def main():
     metadata = json.loads((old_run / "provenance.json").read_text())
     projection_reuse = None
     if spec["arms"][args.arm]["tokenizer_mode"] == "cross" and "reuse_baseline_projection" in spec["arms"][args.arm]:
-        from nemo_rl.algorithms.utils import get_tokenizer
+        from nemo_rl.algorithms.x_token.data import get_tokenizer
 
         spec, projection_reuse = resolve_projection_reuse(baseline, spec, args.arm, get_tokenizer)
     data = prepare_dataset(root, spec)

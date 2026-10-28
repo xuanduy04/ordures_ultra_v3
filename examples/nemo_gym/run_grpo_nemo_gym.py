@@ -1,3 +1,5 @@
+
+
 import argparse
 import os
 import pprint
@@ -9,17 +11,27 @@ import wandb.util
 wandb.util.VALUE_BYTES_LIMIT = 10_000_000
 
 from omegaconf import OmegaConf
+from wandb import Table
 
 from nemo_rl.algorithms.grpo import (
+    ColocatablePolicyInterface,
+    EnvironmentInterface,
+    GenerationInterface,
+    Logger,
     MasterConfig,
+    StatefulDataLoader,
+    TokenizerType,
     _should_use_nemo_gym,
-    async_grpo_train,
+    refit_policy_generation,
     setup,
 )
 from nemo_rl.algorithms.utils import get_tokenizer
 from nemo_rl.data.utils import setup_response_data
 from nemo_rl.distributed.virtual_cluster import init_ray
-from nemo_rl.environments.nemo_gym import setup_nemo_gym_config
+from nemo_rl.environments.nemo_gym import (
+    setup_nemo_gym_config,
+)
+from nemo_rl.experience.rollouts import run_async_nemo_gym_rollout
 from nemo_rl.models.generation import configure_generation_config
 from nemo_rl.utils.config import (
     load_config,
@@ -41,6 +53,54 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     args, overrides = parser.parse_known_args()
 
     return args, overrides
+
+
+# These types are directly imported from grpo_train since if something about the architecture changes we want to immediately fail.
+def collect_trajectories(
+    policy: ColocatablePolicyInterface,
+    policy_generation: GenerationInterface,
+    val_dataloader: StatefulDataLoader,
+    tokenizer: TokenizerType,
+    val_task_to_env: dict[str, EnvironmentInterface],
+    logger: Logger,
+    master_config: MasterConfig,
+) -> None:
+    """Run trajectory collection."""
+    # common config/state items
+    colocated_inference = master_config["policy"]["generation"]["colocated"]["enabled"]
+    refit_policy_generation(policy, policy_generation, colocated_inference)
+
+    log_filename = "trajectory_collection.jsonl"
+
+    print("\n🔍 Running trajectory collection...", flush=True)
+    generation_config = master_config["policy"]["generation"]
+    for val_batch in val_dataloader:
+        nemo_gym_rollout_result = run_async_nemo_gym_rollout(
+            policy_generation=policy_generation,
+            input_batch=val_batch,
+            tokenizer=tokenizer,
+            task_to_env=val_task_to_env,
+            max_seq_len=None,
+            generation_config=generation_config,
+            max_rollout_turns=None,
+            greedy=False,
+        )
+
+        rows_to_log: list[str] = []
+        for key, value in nemo_gym_rollout_result.rollout_metrics.items():
+            if "full_result" not in key:
+                continue
+
+            value: Table
+            data: list[list[str]] = value.data  # (n, 1)
+            rows_to_log.extend(v[0] for v in data)
+
+        logger.log_string_list_as_jsonl(rows_to_log, log_filename)
+
+        # TODO: eventually as trajectory collection use cases exceed 4 hours, we can leverage the dataloader save functionality to resume
+        # And also leverage the TimeoutChecker functionality as well
+
+    policy_generation.finish_generation()
 
 
 def main() -> None:
@@ -99,9 +159,25 @@ def main() -> None:
     # Validation dataset config setup.
     with rl_init_timer.time("data"):
         print("\n▶ Setting up data...")
-        train_dataset, _ = setup_response_data(
+        train_dataset, val_dataset = setup_response_data(
             tokenizer, config["data"], env_configs=None
         )
+
+        if config["grpo"]["max_val_samples"] is not None:
+            raise ValueError(
+                """A non-null `grpo.max_val_samples` parameter is not supported.
+
+Gym principle is that there is no hidden data pre or post processing from you. What you see is what you get.
+
+The validation set you pass in will directly be used for validation with no additional preprocessing. If you want to have some number of repetitions, please include that in your dataset, via ``num_repeats``, in your dataset config and `ng_prepare_data` will prepare it accordingly."""
+            )
+
+        if val_dataset is not None:
+            print(
+                f"Setting `grpo.max_val_samples` and `grpo.val_batch_size` to the length of the validation dataset, which is {len(val_dataset)}"
+            )
+            config["grpo"]["max_val_samples"] = len(val_dataset)
+            config["grpo"]["val_batch_size"] = config["grpo"]["max_val_samples"]
 
     # Print config
     print("Final config:")
@@ -109,6 +185,10 @@ def main() -> None:
 
     with rl_init_timer.time("ray_connect"):
         init_ray()
+
+    is_trajectory_collection = (
+        config["env"]["nemo_gym"].pop("is_trajectory_collection", False) or False
+    )
 
     with rl_init_timer.time("setup"):
         (
@@ -123,7 +203,7 @@ def main() -> None:
             checkpointer,
             grpo_state,
             master_config,
-        ) = setup(config, tokenizer, train_dataset)
+        ) = setup(config, tokenizer, train_dataset, val_dataset)
 
     rl_init_timer.record("total", time.perf_counter() - main_start)
 
@@ -138,8 +218,18 @@ def main() -> None:
     task_to_env = {"nemo_gym": nemo_gym_env}
     val_task_to_env = task_to_env
 
+    if is_trajectory_collection:
+        collect_trajectories(
+            policy=policy,
+            policy_generation=policy_generation,
+            val_dataloader=val_dataloader,
+            tokenizer=tokenizer,
+            val_task_to_env=val_task_to_env,
+            logger=logger,
+            master_config=master_config,
+        )
     # Check if async mode is enabled
-    if "async_grpo" in config["grpo"] and config["grpo"]["async_grpo"]["enabled"]:
+    elif "async_grpo" in config["grpo"] and config["grpo"]["async_grpo"]["enabled"]:
         # Async GRPO does not support dynamic sampling (implementation issue with async), reward scaling (already natively enforced)
         unsupported_features = [
             "use_dynamic_sampling",
@@ -150,14 +240,18 @@ def main() -> None:
             if feature not in config["grpo"]:
                 continue
 
-            if (
-                config["grpo"][feature]
-                if isinstance(config["grpo"][feature], bool)
-                else config["grpo"][feature].get("enabled", False)
-            ):
-                raise NotImplementedError(
-                    f"{feature} is not supported with async GRPO"
-                )
+            if feature == "use_dynamic_sampling":
+                if config["grpo"][feature]:
+                    raise NotImplementedError(
+                        f"{feature} is not supported with async GRPO"
+                    )
+            else:
+                if config["grpo"][feature]["enabled"]:
+                    raise NotImplementedError(
+                        f"{feature} is not supported with async GRPO"
+                    )
+
+        from nemo_rl.algorithms.grpo import async_grpo_train
 
         print("🚀 Running async GRPO training")
 
@@ -167,7 +261,7 @@ def main() -> None:
             policy=policy,
             policy_generation=policy_generation,
             dataloader=dataloader,
-            val_dataloader=None,
+            val_dataloader=val_dataloader,
             tokenizer=tokenizer,
             loss_fn=loss_fn,
             task_to_env=task_to_env,

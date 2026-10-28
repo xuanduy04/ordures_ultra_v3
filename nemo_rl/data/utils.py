@@ -1,7 +1,9 @@
-from typing import Any, Optional, Union, cast
+
+
+from typing import Any, Optional, Union
 
 from datasets import concatenate_datasets
-from transformers import AutoProcessor, AutoTokenizer, PreTrainedTokenizerBase
+from transformers import AutoProcessor, AutoTokenizer
 
 from nemo_rl.data import DataConfig
 from nemo_rl.data.datasets import (
@@ -11,11 +13,7 @@ from nemo_rl.data.datasets import (
     load_response_dataset,
     update_single_dataset_config,
 )
-from nemo_rl.data.processors import (
-    filter_overlong_nemo_gym_dataset,
-    nemo_gym_data_processor,
-    preference_preprocessor,
-)
+from nemo_rl.data.processors import preference_preprocessor
 from nemo_rl.environments.interfaces import EnvironmentInterface
 from nemo_rl.environments.utils import create_env
 
@@ -26,6 +24,8 @@ def setup_response_data(
     data_config: DataConfig,
     env_configs: Optional[dict[str, Any]] = None,
     is_vlm: bool = False,
+    *,
+    dataset_transform=None,
 ) -> Union[
     tuple[AllTaskProcessedDataset, Optional[AllTaskProcessedDataset]],
     tuple[
@@ -47,6 +47,8 @@ def setup_response_data(
             - Algorithms like SFT which do not need environments.
             - Environments like NeMo-Gym which need to handle the environment creation outside of this function.
         is_vlm: Whether to use VLM training or not.
+        dataset_transform: Optional algorithm-owned transform after dataset loading.
+            Existing callers leave it unset and preserve the company data path.
 
     Returns:
         If env_configs is not None:
@@ -85,15 +87,8 @@ def setup_response_data(
         if "default" in data_config and data_config["default"] is not None:
             update_single_dataset_config(cfg, data_config["default"])
         data = load_response_dataset(cfg)
-        if (
-            data_config["max_input_seq_length"] is not None
-            and data.processor is nemo_gym_data_processor
-        ):
-            data.dataset = filter_overlong_nemo_gym_dataset(
-                data.dataset,
-                cast(PreTrainedTokenizerBase, tokenizer),
-                data_config["max_input_seq_length"],
-            )
+        if dataset_transform is not None:
+            data = dataset_transform(data)
         data_list.append(data)
         # bind task_name to task_data_processors and task_to_env
         task_name = data.task_name
@@ -136,15 +131,8 @@ def setup_response_data(
             if "default" in data_config and data_config["default"] is not None:
                 update_single_dataset_config(cfg, data_config["default"])
             val_data = load_response_dataset(cfg)
-            if (
-                data_config["max_input_seq_length"] is not None
-                and val_data.processor is nemo_gym_data_processor
-            ):
-                val_data.dataset = filter_overlong_nemo_gym_dataset(
-                    val_data.dataset,
-                    cast(PreTrainedTokenizerBase, tokenizer),
-                    data_config["max_input_seq_length"],
-                )
+            if dataset_transform is not None:
+                val_data = dataset_transform(val_data)
             val_data_list.append(val_data.dataset)
             # bind task_name to task_data_processors and task_to_env
             task_name = val_data.task_name

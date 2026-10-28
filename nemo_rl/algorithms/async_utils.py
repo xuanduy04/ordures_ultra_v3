@@ -15,7 +15,7 @@ from torchdata.stateful_dataloader import StatefulDataLoader
 from transformers import PreTrainedTokenizerBase
 
 from nemo_rl.algorithms.grpo import MasterConfig
-from nemo_rl.algorithms.opd_outsource import (
+from nemo_rl.algorithms.opd import (
     TeacherContextLengthError,
     VLLMTeacherLogprobClient,
     is_opd_enabled,

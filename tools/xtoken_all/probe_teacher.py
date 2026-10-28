@@ -31,7 +31,7 @@ def main():
     sys.path.insert(0, str(source))
     import torch
     from omegaconf import OmegaConf
-    from nemo_rl.algorithms.utils import get_tokenizer
+    from nemo_rl.algorithms.x_token.data import get_tokenizer
     from nemo_rl.algorithms.x_token.remote_teacher import XTokenFullLogprobClient, XTokenTopKLogprobClient
 
     phase('framework_imports_complete')

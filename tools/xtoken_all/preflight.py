@@ -99,7 +99,7 @@ def check(run):
 
     sys.path.insert(0, str(SOURCE))
     import torch
-    from nemo_rl.algorithms.utils import get_tokenizer
+    from nemo_rl.algorithms.x_token.data import get_tokenizer
     from nemo_rl.algorithms.x_token.gym_protocol import prepare_example
     from nemo_rl.algorithms.x_token.loss_utils import get_sparse_projection_matrix
     from nemo_rl.algorithms.x_token.on_policy import validate_on_policy_config

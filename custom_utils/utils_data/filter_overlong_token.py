@@ -4,7 +4,7 @@ import argparse
 import json
 import logging
 import multiprocessing
-import subprocess
+import os
 import sys
 from collections.abc import Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
@@ -16,6 +16,8 @@ from tqdm.auto import tqdm
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
+
+BUF_SIZE = 1024 * 1024
 
 CHUNK_SIZE = 256
 INFLIGHT_TASKS_PER_WORKER = 4
@@ -71,98 +73,18 @@ def _resolve_max_token(value: int) -> int:
     return value if value % 1000 == 0 else value * 1000
 
 
-def _parse_tool_arguments(arguments: Any) -> Any:
-    """Return *arguments* decoded from JSON when it is a valid JSON string, else unchanged."""
-    if not isinstance(arguments, str):
-        return arguments
-    try:
-        return json.loads(arguments)
-    except json.JSONDecodeError:
-        return arguments
-
-
-def _sanitize_nemo_gym_conversation(conversation: list[dict]) -> list[dict]:
-    """Convert raw agent execution traces into valid HF chat-template messages."""
-    hf_messages: list[dict] = []
-
-    for msg in conversation:
-        # 1. If it's already a standard chat message with a role, keep it and fix argument types if needed
-        if "role" in msg:
-            fixed = dict(msg)
-            if "tool_calls" in fixed:
-                for tc in fixed["tool_calls"]:
-                    function = tc.get("function", {})
-                    if "arguments" in function:
-                        function["arguments"] = _parse_tool_arguments(function["arguments"])
-            hf_messages.append(fixed)
-            continue
-
-        # 2. Handle internal trace items that lack a 'role' key
-        msg_type = msg.get("type")
-
-        if msg_type == "reasoning":
-            continue
-
-        if msg_type == "function_call":
-            # Map to standard assistant tool_calls message format
-            hf_messages.append({
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {
-                        "id": msg.get("call_id"),
-                        "type": "function",
-                        "function": {
-                            "name": msg.get("name"),
-                            "arguments": _parse_tool_arguments(msg.get("arguments", {})),
-                        },
-                    }
-                ],
-            })
-            continue
-
-        if msg_type == "function_call_output":
-            # Map to standard tool response format
-            hf_messages.append({
-                "role": "tool",
-                "tool_call_id": msg.get("call_id"),
-                "content": str(msg.get("output", "")),
-            })
-
-    return hf_messages
-
-
 def _extract_main_field(entry: dict, data_type: str) -> Any:
-    """Return the main field measured for *data_type*: ``messages``, ``question``, or the gym input.
-
-    For ``nemo_gym`` rows the optional ``responses_create_params.instructions``
-    (system prompt) is prepended as a system message so the measurement includes it.
-    """
+    """Return the main field measured for *data_type*: ``messages``, ``question``, or the gym input."""
     try:
         if data_type == DATA_TYPE_SFT:
             return entry["messages"]
         if data_type == DATA_TYPE_RL_QA:
             return entry["question"]
         if data_type == DATA_TYPE_NEMO_GYM:
-            rcp = entry["responses_create_params"]
-            messages = _sanitize_nemo_gym_conversation(rcp["input"])
-            instructions = rcp.get("instructions")
-            if instructions:
-                messages = [{"role": "system", "content": instructions}] + messages
-            return messages
+            return entry["responses_create_params"]["input"]
     except (KeyError, TypeError) as exc:
         raise ValueError(f"Missing or invalid main field for data type {data_type}: {exc!r}") from exc
     raise ValueError(f"Unsupported data type: {data_type}")
-
-
-def _extract_tools(entry: dict, data_type: str) -> Any:
-    """Return the ``responses_create_params.tools`` list for a nemo_gym row, or None."""
-    if data_type != DATA_TYPE_NEMO_GYM:
-        return None
-    try:
-        return entry["responses_create_params"].get("tools")
-    except (KeyError, TypeError, AttributeError) as exc:
-        raise ValueError(f"Missing or invalid main field for data type {data_type}: {exc!r}") from exc
 
 
 def _init_worker(tokenizer_dir: str, data_type: str, max_token: int) -> None:
@@ -179,44 +101,25 @@ def _count_string_tokens(texts: list[str]) -> list[int]:
     return [len(ids) for ids in encoded["input_ids"]]
 
 
-def _count_conversation_tokens(
-    conversations: list[list[dict]], tools_list: list[Any]
-) -> list[int]:
+def _count_conversation_tokens(conversations: list[list[dict]]) -> list[int]:
     """Return the chat-template token count of each conversation in *conversations*.
 
-    Each entry in *tools_list* holds the row's ``tools`` (or None). When any row
-    carries tools the template must be applied per conversation because
-    batched application cannot take per-row tools. ``add_generation_prompt`` is
-    enabled for nemo_gym rows to mirror the generation-side prompt. Failed
-    batch/rows are retried per conversation and reported as ``-1``.
+    A failed batch is retried one conversation at a time so that a single bad
+    row does not discard its whole chunk; failed rows are reported as ``-1``.
     """
-    add_generation_prompt = G_DATA_TYPE == DATA_TYPE_NEMO_GYM
-    if not any(tools for tools in tools_list):
-        try:
-            encoded = G_TOKENIZER.apply_chat_template(
-                conversations,
-                tokenize=True,
-                return_dict=True,
-                add_generation_prompt=add_generation_prompt,
-            )
-            return [len(ids) for ids in encoded["input_ids"]]
-        except Exception as exc:
-            logger.warning(f"Batched chat-template tokenization failed ({exc}); retrying per conversation.")
-    counts: list[int] = []
-    for conversation, tools in zip(conversations, tools_list):
-        try:
-            kwargs: dict[str, Any] = {
-                "tokenize": True,
-                "return_dict": True,
-                "add_generation_prompt": add_generation_prompt,
-            }
-            if tools:
-                kwargs["tools"] = tools
-            ids = G_TOKENIZER.apply_chat_template(conversation, **kwargs)["input_ids"]
-            counts.append(len(ids))
-        except Exception:
-            counts.append(-1)
-    return counts
+    try:
+        encoded = G_TOKENIZER.apply_chat_template(conversations, tokenize=True, return_dict=True)
+        return [len(ids) for ids in encoded["input_ids"]]
+    except Exception as exc:
+        logger.warning(f"Batched chat-template tokenization failed ({exc}); retrying per conversation.")
+        counts: list[int] = []
+        for conversation in conversations:
+            try:
+                ids = G_TOKENIZER.apply_chat_template(conversation, tokenize=True, return_dict=True)["input_ids"]
+                counts.append(len(ids))
+            except Exception:
+                counts.append(-1)
+        return counts
 
 
 def _process_chunk(chunk: tuple[int, list[str]]) -> tuple[list[str], int, int, int]:
@@ -232,7 +135,6 @@ def _process_chunk(chunk: tuple[int, list[str]]) -> tuple[list[str], int, int, i
     string_fields: list[str] = []
     conversation_positions: list[int] = []
     conversation_fields: list[list[dict]] = []
-    conversation_tools: list[Any] = []
     n_errors = 0
 
     for offset, line in enumerate(lines):
@@ -243,7 +145,6 @@ def _process_chunk(chunk: tuple[int, list[str]]) -> tuple[list[str], int, int, i
         try:
             entry = json.loads(stripped)
             field = _extract_main_field(entry, G_DATA_TYPE)
-            tools = _extract_tools(entry, G_DATA_TYPE)
         except Exception as exc:
             n_errors += 1
             logger.warning(f"Skipping unreadable entry at line {lineno}: {exc}")
@@ -254,7 +155,6 @@ def _process_chunk(chunk: tuple[int, list[str]]) -> tuple[list[str], int, int, i
         elif isinstance(field, (list, dict)):
             conversation_positions.append(offset)
             conversation_fields.append(field if isinstance(field, list) else [field])
-            conversation_tools.append(tools)
         else:
             n_errors += 1
             logger.warning(f"Skipping entry at line {lineno}: main field has unsupported type {type(field).__name__}.")
@@ -273,7 +173,7 @@ def _process_chunk(chunk: tuple[int, list[str]]) -> tuple[list[str], int, int, i
                 keep[offset] = count <= G_MAX_TOKEN
 
     if conversation_fields:
-        conversation_counts = _count_conversation_tokens(conversation_fields, conversation_tools)
+        conversation_counts = _count_conversation_tokens(conversation_fields)
         for offset, count in zip(conversation_positions, conversation_counts):
             if count < 0:
                 n_errors += 1
@@ -286,25 +186,32 @@ def _process_chunk(chunk: tuple[int, list[str]]) -> tuple[list[str], int, int, i
     return kept_lines, len(lines), n_dropped, n_errors
 
 
-def _try_count_lines(input_path: Path) -> int | None:
-    """Best-effort line count via ``wc -l``.
-
-    Returns ``None`` when ``wc`` is unavailable or fails
-    """
+def _resolve_worker_count() -> int:
+    """Return the number of worker processes to use, honouring CPU affinity."""
     try:
-        with input_path.open("rb") as f:
-            result = subprocess.run(
-                ["wc", "-l"],
-                stdin=f,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=True,
-            )
-        return int(result.stdout.strip())
-    except (subprocess.CalledProcessError, OSError, ValueError) as exc:
-        logger.warning(f"Failed to count '{input_path}' with `wc -l` ({exc}); progress bar will have no total.")
-        return None
+        return max(1, len(os.sched_getaffinity(0)))
+    except AttributeError:
+        return max(1, os.cpu_count() or 1)
+
+
+def _count_lines(input_path: Path) -> int:
+    """Fast pass: count the number of lines in *input_path*."""
+    with input_path.open("rb") as f:
+        lines = 0
+        last_byte = b""
+        read_f = f.raw.read
+        # Wrap in tqdm; Note: total is unknown initially, so it will show iterations/sec
+        with tqdm(unit=" line", desc=f"Counting {input_path.name}") as pbar:
+            buf = read_f(BUF_SIZE)
+            while buf:
+                newlines = buf.count(b"\n")
+                lines += newlines
+                last_byte = buf[-1:]
+                pbar.update(newlines)
+                buf = read_f(BUF_SIZE)
+        if last_byte and last_byte != b"\n":
+            lines += 1
+    return lines
 
 
 def _iter_chunks(input_path: Path, chunk_size: int) -> Iterator[tuple[int, list[str]]]:
@@ -325,7 +232,7 @@ def _iter_chunks(input_path: Path, chunk_size: int) -> Iterator[tuple[int, list[
 def _filter_pass(
     input_path: Path,
     output_path: Path,
-    total_lines: int | None,
+    total_lines: int,
     tokenizer_dir: Path,
     data_type: str,
     max_token: int,
@@ -337,7 +244,7 @@ def _filter_pass(
     bounded on large inputs.  Kept lines are written in completion order, which
     shuffles the dataset.
     """
-    worker_count = 64
+    worker_count = _resolve_worker_count()
     inflight_limit = worker_count * INFLIGHT_TASKS_PER_WORKER
     chunks = _iter_chunks(input_path, CHUNK_SIZE)
 
@@ -465,17 +372,15 @@ def main() -> None:
 
     logger.info(f"Filtering {input_path} to at most {max_token} tokens ({args.data_type}) -> {output_path}")
 
-    total_lines = _try_count_lines(input_path)
+    total_lines = _count_lines(input_path)
     if total_lines == 0:
         parser.error("Input dataset is empty.")
-    if total_lines is not None:
-        logger.info(f"Found {total_lines} line(s) in '{input_path.name}'.")
+    logger.info(f"Found {total_lines} line(s) in '{input_path.name}'.")
 
     stats = _filter_pass(input_path, output_path, total_lines, tokenizer_dir, args.data_type, max_token)
 
-    total_note = f" of {total_lines}" if total_lines is not None else ""
     logger.info(
-        f"Done - kept {stats['kept']}{total_note} entries, dropped {stats['dropped_overlong']} overlong, "
+        f"Done - kept {stats['kept']} of {total_lines} entries, dropped {stats['dropped_overlong']} overlong, "
         f"skipped {stats['skipped_unreadable']} unreadable; wrote to {output_path}."
     )
 
