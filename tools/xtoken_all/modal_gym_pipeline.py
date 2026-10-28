@@ -506,6 +506,11 @@ def run_teacher_session(arm, accelerator, limit, session_path, guard):
 
 def run_shared_learner(arm, accelerator, selected, limit, session_path):
     path = Path(session_path)
+    ready_deadline = time.monotonic() + 180
+    while not path.is_file():
+        if time.monotonic() >= ready_deadline:
+            raise TimeoutError('Separately reserved teacher session did not become ready')
+        time.sleep(1)
     descriptor = json.loads(path.read_text())
     if descriptor['arm'] != arm or time.time() - descriptor['created_at'] > 600 or not descriptor['guard']['allowed']:
         raise ValueError('Missing current separately reserved teacher session')
@@ -556,6 +561,8 @@ def main(phase: str, arm: str, output_dir: str, accelerator: str | None = None, 
         teacher_limit, student_limit = limits['legacy_teacher_s'], limits['legacy_student_s']
     if phase in ('teacher', 'learner'):
         teacher_limit, student_limit = limits['shared_teacher_s'], limits['shared_student_s']
+        if selected == [CONFIG['legacy_mode']]:
+            teacher_limit, student_limit = limits['shared_legacy_teacher_s'], limits['shared_legacy_student_s']
     count = CONFIG["canary"]["gpu_count"]
     if count not in (2, 3, 4):
         raise ValueError("Use an explicit two-, three-, or four-GPU student topology")

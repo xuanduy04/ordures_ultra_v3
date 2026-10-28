@@ -44,6 +44,8 @@ qualification_limits:
   teardown_s: 32
   shared_teacher_s: 1200
   shared_student_s: 850
+  shared_legacy_teacher_s: 400
+  shared_legacy_student_s: 350
 legacy_mode: legacy_opd
 variant:
   score_mode: topk
