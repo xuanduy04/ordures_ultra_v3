@@ -6,7 +6,12 @@ PYTHON="${NRL_PYTHON:-/opt/nemo_rl_venv/bin/python}"
 CONFIG="${XTOKEN_PILOT_CONFIG:-$SOURCE/tools/xtoken_all/pilot_200_4b.yaml}"
 ARM="${1:-cross}"
 if [ "$#" -gt 0 ]; then shift; fi
-source "$SOURCE/ensure_runtime.sh" --
+# A zero-argument function keeps pilot flags out of the sourced setup script.
+xtoken_ensure_runtime() {
+  source "$SOURCE/ensure_runtime.sh"
+}
+xtoken_ensure_runtime
+unset -f xtoken_ensure_runtime
 PYTHON="$NRL_PYTHON"
 test -x "$PYTHON"
 source "$SOURCE/custom_utils/utils_training/use_custom_opt.sh" "$SOURCE" "${CUSTOM_NLTK_DATA_DIR:-/workspace/storage-shared/nlp/vai-1.4-30b/nemo-rl/custom_opt_ultra_selfbuilt_nano/nltk_data}"

@@ -4,6 +4,7 @@ import io
 import json
 import os
 from pathlib import Path
+import shutil
 import tarfile
 import tempfile
 import subprocess
@@ -224,6 +225,59 @@ class RuntimeSetup(unittest.TestCase):
             self.m.install_missing(self.args.archive, self.roots, self.required)
         self.assertFalse(self.m.DRIVER.exists())
         self.assertEqual((self.m.PYTHON_HOME / 'bin/python3.12').read_text(), 'different build')
+
+
+@unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'Run the actual Bash wrapper on Linux')
+class LauncherBoundary(unittest.TestCase):
+    def exercise(self, arguments, fail_runtime=False):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            wrapper = root / 'run_xtoken.sh'
+            wrapper.write_text((ROOT / 'run_xtoken.sh').read_text())
+            runtime = root / 'ensure_runtime.sh'
+            runtime.write_text('''if [ "$#" -ne 0 ]; then
+  echo "Training arguments leaked into runtime setup" >&2
+  return 31
+fi
+if [ "$XTOKEN_TEST_FAIL" = 1 ]; then return 37; fi
+export NRL_PYTHON="$XTOKEN_TEST_PYTHON"
+export XTOKEN_TEST_RUNTIME_EXPORT=visible
+''')
+            custom = root / 'custom_utils/utils_training/use_custom_opt.sh'
+            custom.parent.mkdir(parents=True)
+            custom.write_text('test "$XTOKEN_TEST_RUNTIME_EXPORT" = visible\n')
+            interpreter = root / 'python'
+            interpreter.write_text('''#!/usr/bin/env bash
+printf '%s\\0' "$@" > "$XTOKEN_TEST_ARGV"
+''')
+            interpreter.chmod(0o755)
+            output = root / 'argv.bin'
+            config = root / 'selected-1p7b.yaml'
+            env = dict(os.environ, XTOKEN_TEST_PYTHON=str(interpreter), XTOKEN_TEST_ARGV=str(output),
+                       XTOKEN_TEST_FAIL='1' if fail_runtime else '0', XTOKEN_PILOT_CONFIG=str(config))
+            result = subprocess.run(['bash', str(wrapper), *arguments], env=env, capture_output=True,
+                                    text=True, timeout=10)
+            argv = output.read_bytes().decode().split('\0')[:-1] if output.is_file() else None
+            expected = ['-B', str(root / 'tools/xtoken_all/prepare_pilot.py'),
+                        '--config', str(config), '--arm', arguments[0] if arguments else 'cross', '--run',
+                        *arguments[1:]]
+            return result, argv, expected
+
+    def test_default_launch_exports_runtime_without_setup_arguments(self):
+        result, argv, expected = self.exercise([])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(argv, expected)
+
+    def test_check_only_and_gpu_subset_reach_pilot_unchanged(self):
+        result, argv, expected = self.exercise(['same', '--check-only', '--gpu-indices', '0', '1',
+                                               '--teacher-model', 'model with spaces'])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(argv, expected)
+
+    def test_runtime_failure_stops_before_training(self):
+        result, argv, _ = self.exercise(['cross'], fail_runtime=True)
+        self.assertEqual(result.returncode, 37, result.stderr)
+        self.assertIsNone(argv)
 
 
 if __name__ == '__main__':

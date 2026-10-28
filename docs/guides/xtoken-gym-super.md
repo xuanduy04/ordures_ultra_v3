@@ -7,6 +7,21 @@ không gọi nó là P-KL nguyên bản, PPO hay sampled-token MOPD của GRPO.
 
 ## Bản r16: student Qwen3-4B gốc, tắt thinking
 
+Cập nhật operator2026-10-28: transcript DSH đã báo ba pilot recipe1.7B r15
+A-on-14/B-on-02/C-on-01 hoàn tất200/200, exit0, step200 và20 checkpoint directories.
+Đọc phần đối chiếu mới ở đầu
+[handoff](../../tools/xtoken_all/HANDOFF-three-arms-r11.md) trước snapshot node
+bên dưới. A có deployment-mode evidence; B/C giữ nhãn accepted assumption.
+Đây chưa phải quality evaluation và không phải full pilot4B. Recipe gốc được
+giữ nguyên; thay node/URL/evidence nằm trong deployment config và receipt từng run.
+
+Wrapper đã sửa boundary tham số setup: dùng function không tham số để source
+`ensure_runtime.sh`, giữ exports trong shell gọi, không chuyển literal `--` hoặc
+các flag pilot vào argparse setup. `--check-only` của launcher vẫn có thể setup
+runtime/Ray trước preflight; muốn chỉ đọc runtime dùng helper trực tiếp với
+`bash ensure_runtime.sh --check-only`. Regression chạy actual Bash gồm default,
+check-only/GPU subset và setup-failure; không thay acceptance gate hoặc runtime.
+
 Launcher `run_xtoken.sh` nay mặc định đọc `tools/xtoken_all/pilot_200_4b.yaml`.
 Recipe 1.7B `pilot_200.yaml` giữ nguyên từng byte từ r15; source, run directories,
 effective config, optimizer và checkpoint 1.7B cũ không được sửa hoặc resume.

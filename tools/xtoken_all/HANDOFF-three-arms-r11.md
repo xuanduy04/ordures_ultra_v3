@@ -1,5 +1,107 @@
 # DSH — r16: Qwen3-4B gốc, non-thinking, cross Gemma / same Qwen32
 
+## Đối chiếu báo cáo DSH ngày 2026-10-28: ba pilot r15 hoàn tất
+
+Đây là snapshot từ transcript operator cung cấp, không phải lần Codex truy cập
+node độc lập. Ba launch dưới đây có output `pilot-result.success:true`,
+200/200 update, process/tee exit0, final checkpoint step200; listing có20 thư mục
+step10..200. Chưa nhận bản file gốc để kiểm lại toàn bộ payload của20 checkpoint,
+source hash/effective config từng run hoặc chất lượng held-out. Đây là campaign
+recipe1.7B r15, tách biệt với10 canary Qwen3-4B/2GPU trên Modal ở nhánh gym-real.
+
+| Arm | Run launch dưới `runs/` | Teacher / vLLM | Bằng chứng mode khi train |
+| --- | --- | --- | --- |
+| A cross | A-on-14-20261027-204156-3c2be9 | Gemma-4-26B-A4B-it /0.32.0 | deployment_config, verified:true |
+| B same | B-on-02-20261028-110847-8e50d0 | Qwen3-32B /0.30.0 | upstream_default_assumption, accepted:true, verified:false |
+| C same235 | C-on-01-20261028-131134-02361d | Qwen3-235B-A22B-Instruct /0.31.0 | upstream_default_assumption, accepted:true, verified:false |
+
+Check-only attempts không có process-exit/pilot-result/checkpoints là đúng;
+không tính chúng thành run fail. Giữ B-on-02-20261027-210946-e8cb03 exit1 làm
+bằng chứng lỗi warmup eval-6. Không launch lại200 step chỉ vì có metadata mới.
+
+### Quyết định về thay đổi operator
+
+Merge sửa wrapper vào source dùng chung. Bản gốc `source ensure_runtime.sh --`
+truyền literal `--` vào argparse. Chỉ bỏ `--` vẫn để Bash kế thừa pilot flags.
+Bản vá dùng một function gọi không tham số, source setup trong cùng shell để
+giữ exports, rồi chuyển nguyên pilot flags đến prepare_pilot. Đã kiểm actual
+Bash với setup/interpreter stub: launch mặc định, check-only+GPU subset+argument
+có dấu cách, và setup fail phải dừng trước pilot. Không giả lập GPU ở các test này.
+
+Không ghi đè recipe gốc `pilot_200.yaml` hoặc `pilot_200_4b.yaml` bằng snapshot
+node. Giữ thay đổi triển khai trong bản YAML operator của campaign và
+`launch-input.yaml`/`effective.yaml` đã đóng trong từng run. Một spec shared bị
+chỉnh sau khi A hoàn tất không chứng minh đó là input A đã dùng. Source r16 đã
+có nghĩa là recipe4B, không gắn lại nhãn r16 cho campaign1.7B vừa hoàn tất.
+
+Snapshot triển khai DSH báo: node cross -0-2 được thay pod thành
+`rl-test-opd-ultra-selfbuilt-trainllm-1-0-3`; B/C chạy tuần tự ở -0-3.
+Teacher A giữ `http://172.29.93.105:8000` cùng evidence gemma-032;
+B chuyển `http://172.29.219.204:8001`, evidence null; C giữ
+`http://172.29.131.162:8000`, evidence null. B/C null chỉ hợp lệ vì exact version
+và measured scoring/parity được policy chấp nhận; không phải bỏ gate.
+Node -0-3 có4 GPU UUID654c372c/8cb6790e/0df4fc7d/47300b26, Ray head PID875,
+IP172.29.167.250 tại thời điểm probe. Đây là snapshot lịch sử, không phải
+allocation/PID/IP để tái dùng trực tiếp cho lần launch mới. Muốn run4B tiếp thì
+sửa bản deployment YAML4B riêng từ recipe4B và lấy allocation/evidence mới;
+không copy file1.7B lên4B, không đổi run cũ, không resume chéo student.
+
+QA venv copy và tar built-source18GB là thao tác runtime DSH báo đã làm, không
+phải dependency/source được merge vào Git. Venv cần giữ prefix và qua actual
+app/import/API probe; copy từ math_with_judge không tự chứng minh general_qa đúng.
+Tar nguồn `_C` load được không tự chứng minh mọi native module hợp glibc.
+DeepGEMM-off ở eval-6 chỉ qua CPU guard; campaign B/C cuối chuyển sang -0-3,
+không dùng kết quả đó để tuyên bố eval-6 đã generation/train pass. Không rebuild
+hay sửa runtime đang chạy, không dừng Ray/job của người khác.
+
+### B/C có được eval ngay không?
+
+Có. Held-out evaluation chấm weights student, không cần teacher đang chạy hoặc
+mode teacher được nâng thành verified trước. Policy hiện hành chấp nhận exact
+0.30.0/0.31.0 với nhãn assumption; giữ nhãn đó trong report. Muốn xác minh mode,
+đọc args/config/image+deployment identity của server, không restart. Để gắn bằng
+chứng vào run lịch sử, phải chứng minh deployment đó bao phủ thời gian training;
+args của server hiện tại đơn độc không xác minh server quá khứ. Lưu supplemental
+audit riêng, không sửa teacher-probe/effective YAML/receipt của run đã hoàn tất.
+Nếu có bằng chứng mode thật khác raw_logprobs, đánh giá tác động lên training
+objective trước khi dùng kết quả để kết luận về phương pháp.
+
+Probe mass khoảng A0.9306/B0.0686/C0.7401 là một prompt probe, không phải retained
+mass trung bình training và không phải điểm teacher. Không so train loss giữa
+ba teacher thành quality ranking; support/top20 và tail có thể khác nhau.
+
+### Bước tiếp: cùng một protocol held-out cho baseline+A+B+C
+
+Không train thêm. Đầu tiên chốt file gốc của đúng ba run launch: pilot-plan,
+provenance, launch-input, effective YAML, teacher-probe, process-exit, pilot-result
+và metrics. Đối chiếu cùng initial student/tokenizer, data hash/order, seed,
+non-thinking, context/response, batch/LR/schedule,200 updates, objective/top20.
+Các khác biệt phải hiện trong report. Metadata lịch sử không được suy ra từ
+YAML shared hiện tại; chưa đủ bằng chứng thì ghi unknown.
+
+Dùng `export_checkpoint.py` hiện có (Automodel consolidate), `--inspect` trước,
+`--validate-load` khi export, mỗi output thư mục mới. Giữ shards nguồn; không
+đổi tên shard/đoán mapping, không serve export có FAILED. Xuất step200 của A/B/C;
+baseline là đúng initial1.7B đã dùng, không phải initial4B hoặc A-on-11 weights.
+Export được kiểm file/load không chứng minh optimizer resume parity.
+
+Primary comparison: baseline cùng ba checkpoint step200; không chọn best20
+checkpoint trên test set. Tái dùng launcher/scorer evalhub đã chạy; pin exact
+dataset split/revision/hash, scorer version, chat template enable_thinking:false,
+temperature/top-p, token budget, stop rules, sample count và seed giống nhau.
+Loại/ghi nhận overlap với16367 prompt train trước khi gọi held-out. Cố định tập
+sample/order; lưu responses và per-example scores để scorer có thể chạy lại mà
+không regenerate. Missing/timeout không thành đáp án sai0 một cách âm thầm.
+Report pass@1/accuracy, số bài thực chấm, truncation/failure, và paired differences
+so với baseline; chi phí/tokens/wall-clock riêng. Một train seed/pilot chưa đủ
+để kết luận phương pháp nào tốt hơn nói chung. Nếu xem learning curve, dùng cùng
+mốc checkpoint cho tất cả arm và tách checkpoint selection khỏi final test.
+
+Chưa có config/CLI evalhub thực trong transcript này nên chưa phát minh lệnh
+eval hoặc launch job công ty. DSH gửi config và lệnh evalhub đã chạy cùng bốn
+model/export paths để chốt lệnh dùng lại. Đây là bước còn thiếu cho quality;
+không cản việc đóng training pilot thành mechanical pass có provenance caveat.
+
 ## Plan hiện hành r16; các mục r15 trở xuống để đối chiếu lịch sử
 
 Gói r16 mặc định dùng tools/xtoken_all/pilot_200_4b.yaml, chỉ2 arm4B. File
