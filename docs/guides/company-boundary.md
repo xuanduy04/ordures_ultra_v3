@@ -138,3 +138,70 @@ not patched for this transport. No company teacher endpoint is contacted.
 
 Campaign startup/preparation or a configured harness is not a GPU pass. Read the
 actual new attempt receipts for results and the recorded source payload hash.
+
+## Qualification on 2026-10-29
+
+The prioritized campaign uses real Qwen3-4B with thinking disabled, the fixed
+eight-row DAPO smoke pool, context 256, responses capped at 32 tokens, global
+batch four and two optimizer updates. It is a mechanical integration check,
+not a quality/convergence benchmark or resume-parity test. The learner is the
+pinned NGC/supplement runtime above (Python 3.13/Torch 2.10), not a bitwise copy
+of the company's Python 3.12 installation. No company node or teacher is touched.
+
+The unchanged old OPD entrypoint was first incorrectly given X-Token's colocated
+generation setting by the test renderer. Async GRPO rejected it. The corrected
+renderer now reserves disjoint generation/train GPUs: 1/1 for two GPUs, 1/2 for
+three, and 2/2 for four, with batch divisibility checks. This fixes the test
+configuration without changing company GRPO. CPU preflight exercised the corrected
+renderer in the native runtime; only the two-GPU topology has fresh GPU evidence.
+
+The legacy retry completed both updates and normal shutdown on 2xH100, with losses
+`0.10136213898658752`, `0.2683687210083008`, gradient norms `5.625`, `25.0`,
+and eight real HTTP-200 teacher scoring requests. Both checkpoints contained
+nonempty model, optimizer, tokenizer, dataloader, replay-buffer and rollout
+payloads. Its original checker still reported failure because it checked the
+X-Token `total_steps` counter instead of GRPO's `current_step`. The checkpoint
+counter check is now explicit per algorithm, tested against the actual company
+assignment and both metadata schemas, and retains parsed metadata plus its hash.
+The retry's original metadata was removed with temporary tensors before this
+checker fix, so its step-counter validation cannot be retroactively called a
+GPU pass. The original failed result remains intact; two successful training
+updates and incomplete checkpoint-counter qualification are reported separately.
+
+X-Token same-tokenizer Qwen32 passed on 2xH200 (an automatic H100 allocation
+upgrade), with losses `0.10891263908706605`, `0.7510658428072929`, gradient
+norms `13.875`, `21.75`, eight teacher scoring calls and finalized checkpoints
+1/2. Its source payload is
+`a926a03b7c6635cca83c9706a8215fac0347fd1cebaa9f83c1ee058db913f4e4`.
+The parent suite remained failed because it also included the first rejected
+legacy attempt; this does not change the individual X-Token result.
+
+X-Token cross-Gemma also passed on 2xH100, with losses `3.6902465224266052`,
+`1.8905098736286163`, gradient norms `70.0`, `36.25`, eight teacher scoring calls,
+and finalized checkpoints 1/2 with retained step metadata and hashes. Its source
+payload is `79c226d21ae1cd9e47910ae1c844917bc2fde4ec8e32e2b18d230add3215ed36`.
+The container's 250 Python-file hashes were captured: training/harness code
+matches `af437bc`; only a subsequently added regression test differs from
+`594cad1`. Eight protected company files still match the pinned baseline.
+
+| Path | Fresh GPU result | App |
+|---|---|---|
+| Old OPD/Qwen32, original renderer | Rejected colocated configuration | `ap-mAa10CFUPNvq928rf6XCEQ` |
+| X-Token same/Qwen32 | Pass, two updates/checkpoints | `ap-mAa10CFUPNvq928rf6XCEQ` |
+| Old OPD/Qwen32, corrected renderer | Two updates complete; checkpoint-counter recheck remains open | `ap-X3zHPXdDcT686jYfQdvdlk` |
+| X-Token cross/Gemma4 | Pass, two updates/checkpoints | `ap-AJt8aKwffwCo5ymF0wZsCd` |
+| DPCA, CTOPD-topk, SimCT-topk, GRASS fixed-sigma, both arms | Not launched on this branch: cumulative budget guard | — |
+
+At final billing refresh, reported month usage was USD13.19459787 (ngocminh) and
+USD15.21643733 (nguyenepti). The more conservative cumulative bounds, including
+prior attempts and reservations, were USD16.4532954960036254837104 and
+USD17.6702499016530802629752. After the USD2/profile lag reserve, USD1.5467 and
+USD0.3298 remain; neither covers the USD3.50 bound of another single canary, or
+the USD8.80 full-mode-suite bound. No additional GPU job was launched. All owned
+apps are stopped; small receipts/logs/TensorBoard files were downloaded before
+deleting only this campaign's scratch volume on each profile.
+
+The final lightweight suite completed with 274 passed and 15 skipped. These
+counts do not include unavailable CUDA/Torch or archive-bound tests. The previous
+ten mode/arm passes on source `449332a` do not substitute for fresh minimal-company
+results. Full qualification of every requested mode remains incomplete.
