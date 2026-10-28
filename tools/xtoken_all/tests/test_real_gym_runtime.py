@@ -182,6 +182,21 @@ def test_cpu_settlement_never_releases_shared_gpu_role_reservations(monkeypatch,
     assert json.loads(ledger.read_text()) == rows
 
 
+@pytest.mark.parametrize('total,batch,inference', [(2, 4, 1), (3, 6, 1), (4, 4, 2)])
+def test_legacy_async_topology_never_inherits_xtoken_colocation(total, batch, inference):
+    from tools.xtoken_all.gym_legacy_worker import configure_legacy_topology
+
+    base = {'cluster': {'num_nodes': 1, 'gpus_per_node': total},
+            'policy': {'train_global_batch_size': batch, 'generation': {
+                'colocated': {'enabled': True}, 'vllm_cfg': {'tensor_parallel_size': 1}}},
+            'env': {'nemo_gym': {'policy_model': {'responses_api_models': {'vllm_model': {'num_workers': total}}}}}}
+    recipe = {'canary_overrides': {'inference_gpus_by_total': {2: 1, 3: 1, 4: 2}}}
+    assert configure_legacy_topology(base, recipe) == {'training_gpus': total - inference, 'generation_gpus': inference}
+    generation = base['policy']['generation']
+    assert generation['colocated'] == {'enabled': False, 'resources': {'gpus_per_node': inference, 'num_nodes': 1}}
+    assert base['env']['nemo_gym']['policy_model']['responses_api_models']['vllm_model']['num_workers'] == inference
+
+
 def test_legacy_loopback_relay_keeps_real_payload_and_authenticates_upstream(monkeypatch):
     observed = []
 

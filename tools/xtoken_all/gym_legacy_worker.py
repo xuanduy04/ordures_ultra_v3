@@ -10,6 +10,23 @@ import urllib.request
 import yaml
 
 
+def configure_legacy_topology(base, recipe):
+    """Keep the company's async OPD train and generation allocations disjoint."""
+    total = base['cluster']['gpus_per_node']
+    inference = recipe['canary_overrides']['inference_gpus_by_total'][total]
+    training = total - inference
+    if base['cluster']['num_nodes'] != 1 or inference <= 0 or training <= 0:
+        raise ValueError('Legacy canary requires disjoint train/generation GPUs on one node')
+    if base['policy']['train_global_batch_size'] % training:
+        raise ValueError('Legacy global batch must divide across training GPUs')
+    generation = base['policy']['generation']
+    if inference % generation['vllm_cfg']['tensor_parallel_size']:
+        raise ValueError('Legacy generation allocation must divide by tensor parallel size')
+    generation['colocated'] = {'enabled': False, 'resources': {'gpus_per_node': inference, 'num_nodes': 1}}
+    base['env']['nemo_gym']['policy_model']['responses_api_models']['vllm_model']['num_workers'] = inference
+    return {'training_gpus': training, 'generation_gpus': inference}
+
+
 def render_legacy(config, common):
     from omegaconf import OmegaConf
     from transformers import AutoTokenizer
@@ -40,6 +57,7 @@ def render_legacy(config, common):
                 'nemo_gym': deepcopy(common['on_policy']['nemo_gym']['global_config'])}
     base.env.nemo_gym.general_qa.resources_servers.general_qa.judge_server_url = '${oc.env:XTOKEN_LEGACY_TEACHER_URL}'
     base.env.nemo_gym.policy_model.responses_api_models.vllm_model.num_groups_nemo_rl = 2
+    configure_legacy_topology(base, recipe)
     tokenizer = AutoTokenizer.from_pretrained(common['policy']['tokenizer']['name'], local_files_only=True)
     ids = {'eos': tokenizer.eos_token_id, 'think_open': tokenizer.convert_tokens_to_ids('<think>'),
            'think_close': tokenizer.convert_tokens_to_ids('</think>')}
