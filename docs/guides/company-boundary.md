@@ -99,3 +99,42 @@ tests and native/GPU checks are not included in the pass count. AST/JSON parsing
 shell syntax, protected-file comparison against the pinned Git blobs and
 whitespace checks outside the restored company files also passed. No paid remote
 job, model download or company-node action was performed for this change.
+
+## Native qualification harness
+
+The subsequent GPU campaign also exercises the unchanged company entrypoint
+with `adv_estimator: opd`, not a substituted reward-only GRPO test.
+`tools/xtoken_all/gym_legacy.yaml` retains the OPD/loss/penalty settings from
+the supplied `vt_super.yaml` SHA256
+`46f7d06294762398ba5a564d8f7e60bde749ffdbc2dcd6efccf38252021c818e`.
+Only the canary model/topology, batches, token budgets, steps, validation and
+local logging are overridden; EOS/thinking token IDs come from the real Qwen
+tokenizer. Native CPU preflight imports the actual legacy entrypoint and
+constructs its rendered loss and advantage estimator before GPU allocation.
+
+Legacy acceptance requires two finite losses and nonzero finite gradient norms
+from real TensorBoard events, successful actual teacher scoring requests, normal
+completion and finalized checkpoints 1/2 including replay-buffer/rollout state.
+The raw TensorBoard files are retained with hashes. This does not establish
+quality or resume parity. The five X-Token modes retain their existing two-update
+acceptance criteria, with fresh students/optimizers per mode.
+
+For the tight cumulative USD20/profile ceiling, the harness can reserve teacher
+and learner roles on different authorized profiles. `--phase teacher` writes a
+0600 ephemeral descriptor inside a private WSL `/tmp` directory; it is never
+printed, committed or included in evidence. `--phase learner` consumes it and
+signals the owned teacher to stop in cleanup. Each role receives its own fresh
+billing guard, hard GPU/CPU/RAM/lifetime reservation and audit entry. Old usage
+and reservations remain; CPU reconciliation explicitly excludes GPU role entries.
+The USD2/profile billing-lag reserve is retained. Bounds use the public
+[Modal resource prices](https://modal.com/pricing).
+
+The old OPD client has no API-key option. A test-only relay bound exclusively to
+the learner container's loopback interface forwards its unchanged score-only
+requests to the real authenticated isolated teacher. It preserves request and
+response payloads and records status/count receipts; it does not synthesize
+scores or expose an unauthenticated public scorer. Protected company files are
+not patched for this transport. No company teacher endpoint is contacted.
+
+Campaign startup/preparation or a configured harness is not a GPU pass. Read the
+actual new attempt receipts for results and the recorded source payload hash.

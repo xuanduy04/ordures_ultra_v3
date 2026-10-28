@@ -97,6 +97,11 @@ def staging(config, arm):
 def imports(config, arm):
     """Use the real service probe, importing apps rather than only finding specs."""
     Path("/cache/imports-" + arm + ".json").write_text(json.dumps({"success": False, "state": "imports_pending"}))
+    from tools.xtoken_all.integrity import verify_company_source
+    protected = verify_company_source('/work/source')
+    subprocess.run([sys.executable, '-B', '-c',
+                    'import examples.nemo_gym.run_grpo_nemo_gym; import nemo_rl.algorithms.opd; from tensorboard.backend.event_processing.event_accumulator import EventAccumulator; print("GYM_LEGACY_IMPORT=ok")'],
+                   check=True, timeout=120)
     roots = [Path("/opt/nemo_rl_venv"), *Path("/opt/ray_venvs").glob("*")]
     for root in roots:
         if "dtensor_policy_worker_v2" not in str(root) and "vllm_worker_async" not in str(root) and "NemoGym" not in str(root) and root.name != "nemo_rl_venv":
@@ -145,7 +150,22 @@ def imports(config, arm):
             raise ValueError("Actual Qwen4B nonthinking smoke prompt exceeds its configured cap")
     output = Path("/cache/data")
     conversion = convert(data[0], output, 8, "text", "ground_truth", "dapo") if not output.exists() else json.loads((output / "conversion.json").read_text())
+    legacy_checked = False
+    if arm == 'same':
+        from tools.xtoken_all.gym_legacy_worker import render_legacy
+        from nemo_rl.algorithms.grpo import ClippedPGLossFn, _create_advantage_estimator
+        check = Path('/tmp/legacy-config-preflight')
+        check.mkdir(exist_ok=True)
+        os.environ['XTOKEN_LEGACY_TEACHER_URL'] = 'http://127.0.0.1:9'
+        common = render(config, arm, 'topk_tail_kl', check, 'http://127.0.0.1:9')
+        legacy_config, _ = render_legacy(config, common)
+        ClippedPGLossFn(legacy_config['loss_fn'])
+        _create_advantage_estimator(legacy_config)
+        legacy_checked = True
+        print('GYM_LEGACY_CONFIG=validated_without_servers_or_gpu', flush=True)
     receipt = {"success": True, "supplement_packages": config["supplement"]["packages"],
+               'company_source': protected, 'legacy_entrypoint_imported': True,
+               'legacy_render_checked': legacy_checked,
                "projection_vocabulary_identical": True, "student_tokenizer_len": len(student),
                "source": source_receipt, "data": conversion}
     Path("/cache/imports-" + arm + ".json").write_text(json.dumps(receipt, indent=2))
@@ -180,7 +200,8 @@ def run_process(command, env, timeout, log_path, key):
                 log.write(clean)
                 log.flush()
                 if any(marker in clean for marker in ("XTOKEN_TRAIN_STEP=", "XTOKEN_TEACHER_SCORE=", "XTOKEN_ROLLOUT=",
-                                                      "XTOKEN_REFIT_REQUEST=", "NRL_REFIT_BUFFER=", "XTK_TEACHER_", "Error", "Exception", "Traceback")):
+                                                      "XTOKEN_REFIT_REQUEST=", "NRL_REFIT_BUFFER=", "XTK_TEACHER_", "Error", "Exception", "Traceback",
+                                                      'Saving checkpoint for step', 'Training Results:', 'Loss:', 'Max number of steps')):
                     print(clean, end="", flush=True)
             code = process.wait()
         finally:
@@ -284,7 +305,7 @@ def canaries(config, arm, teacher_url):
     persistent = Path("/cache/evidence") / arm
     persistent.mkdir(parents=True, exist_ok=True)
     selected = json.loads(os.environ["XTOKEN_GYM_SELECTED_MODES"])
-    if not selected or len(set(selected)) != len(selected) or not set(selected).issubset(config["modes"]):
+    if not selected or len(set(selected)) != len(selected) or not set(selected).issubset([*config["modes"], config['legacy_mode']]):
         raise ValueError("Unknown or duplicated explicit mode selection")
     suite_seconds = int(os.environ["XTOKEN_GYM_SUITE_SECONDS"])
     cleanup_seconds = 15 if len(selected) == 1 else 65
@@ -295,7 +316,8 @@ def canaries(config, arm, teacher_url):
             break
         run = Path("/tmp/xtoken-real") / arm / mode
         run.mkdir(parents=True, exist_ok=False)
-        render(config, arm, mode, run, teacher_url)
+        legacy = mode == config['legacy_mode']
+        common = render(config, arm, 'topk_tail_kl' if legacy else mode, run, teacher_url)
         if not reports:
             evidence = {"teacher_url": teacher_url, "served_model": config["teachers"][arm]["alias"],
                         "logprobs_mode": "raw_logprobs", "verification_source": "operator_checked_server_args",
@@ -306,15 +328,30 @@ def canaries(config, arm, teacher_url):
                                       "--server-mode-evidence", str(run / "server-mode.json")], env, config["canary"]["teacher_probe_timeout_s"], run / "teacher-probe.log", key)
             if probe_code:
                 raise RuntimeError("Real teacher scoring/tokenizer parity probe failed; see teacher-probe.log")
+        if legacy:
+            from tools.xtoken_all.gym_legacy_worker import render_legacy
+            (run / 'teacher-probe-input.yaml').write_text(yaml.safe_dump(common, sort_keys=False))
+            legacy_config, recipe = render_legacy(config, common)
+            (run / 'effective.yaml').write_text(yaml.safe_dump(legacy_config, sort_keys=False))
+            (run / 'legacy-recipe.json').write_text(json.dumps({'source_vt_super_sha256': recipe['source_vt_super_sha256'],
+                'model': legacy_config['policy']['model_name'], 'token_ids': legacy_config['token_ids'],
+                'note': 'Original OPD loss/penalties; test overrides model, DTensor topology, token budgets, batches, steps and local logging'}))
+            env.update(RAY_ADDRESS='127.0.0.1:6379', NEMO_GYM_VENV_DIR='/cache/gym_venvs',
+                       NRL_REFIT_BUFFER_MEMORY_RATIO=recipe['canary_overrides']['refit_memory_ratio'])
         subprocess.run([sys.executable, "-m", "ray.scripts.scripts", "start", "--head", "--node-ip-address=127.0.0.1",
                         "--port=6379", "--num-cpus=12", "--num-gpus=" + str(count), "--disable-usage-stats",
                         "--include-dashboard=false"], env=env, check=True, capture_output=True, text=True, timeout=90)
         print("GYM_CANARY=" + json.dumps({"arm": arm, "mode": mode, "state": "starting"}), flush=True)
         try:
-            code = run_process([sys.executable, "-B", "examples/run_xtoken_on_policy_distillation.py", "--config", str(run / "effective.yaml")],
+            entrypoint = 'examples/nemo_gym/run_grpo_nemo_gym.py' if legacy else 'examples/run_xtoken_on_policy_distillation.py'
+            code = run_process([sys.executable, "-B", entrypoint, "--config", str(run / "effective.yaml")],
                                env, min(config["canary"]["mode_timeout_s"], max(1, suite_deadline - time.monotonic() - cleanup_seconds)), run / "driver.log", key)
             (run / "process-exit.json").write_text(json.dumps({"driver_exit_code": code, "tee_exit_code": 0}))
-            report = assess(run, "on")
+            if legacy:
+                from tools.xtoken_all.gym_legacy_worker import assess_legacy
+                report = assess_legacy(run, os.environ['XTOKEN_LEGACY_TEACHER_URL'])
+            else:
+                report = assess(run, "on")
             report.update(mode=mode, arm=arm, hardware=hardware)
             (run / "result.json").write_text(json.dumps(report, indent=2))
         finally:
@@ -324,11 +361,14 @@ def canaries(config, arm, teacher_url):
         target = persistent / mode
         target.mkdir(exist_ok=True)
         for path in run.rglob("*"):
-            if path.is_file() and path.suffix in (".json", ".yaml", ".log") and "checkpoints" not in path.parts:
+            if path.is_file() and (path.suffix in (".json", ".yaml", ".log") or path.name.startswith('events.out.tfevents.')) and "checkpoints" not in path.parts:
                 relative = path.relative_to(run)
                 destination = target / relative
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                destination.write_text(sanitized(path.read_text(errors="replace"), key))
+                if path.name.startswith('events.out.tfevents.'):
+                    destination.write_bytes(path.read_bytes())
+                else:
+                    destination.write_text(sanitized(path.read_text(errors="replace"), key))
         print("GYM_CANARY_RESULT=" + json.dumps(report), flush=True)
         # Only this temporary run's bulk tensors are removed after file-closure
         # evidence has been retained. No user checkpoint or volume is targeted.

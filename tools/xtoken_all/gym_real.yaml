@@ -40,6 +40,9 @@ qualification_limits:
   single_student_s: 540
   startup_s: 180
   teardown_s: 32
+  shared_teacher_s: 1200
+  shared_student_s: 850
+legacy_mode: legacy_opd
 variant:
   score_mode: topk
   adv_clamp: 10.0

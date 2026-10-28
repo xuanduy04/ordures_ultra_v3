@@ -1,0 +1,106 @@
+# Test-only legacy OPD recipe derived from the supplied vt_super.yaml.
+grpo:
+  num_prompts_per_step: 1024
+  num_generations_per_prompt: 1
+  max_rollout_turns: 1
+  max_num_epochs: 1000000000000
+  max_num_steps: 101
+  normalize_rewards: true
+  use_leave_one_out_baseline: true
+  advantage_clip_low: -20
+  advantage_clip_high: 20
+  val_period: -1
+  val_at_start: false
+  val_at_end: false
+  overlong_filtering: false
+  max_val_samples: null
+  val_batch_size: 256
+  seed: 2212
+  use_dynamic_sampling: false
+  dynamic_sampling_max_gen_batches: 10
+  batch_multiplier: 1
+  penalize_invalid_tool_call: true
+  invalid_tool_call_advantage: -1.5
+  penalize_malformed_think_tag: true
+  malformed_thinking_advantage: ${grpo.invalid_tool_call_advantage}
+  penalize_eos_token: true
+  eos_token_advantage: ${grpo.invalid_tool_call_advantage}
+  penalize_empty_final_answer: true
+  empty_final_answer_advantage: ${grpo.invalid_tool_call_advantage}
+  reward_shaping:
+    enabled: true
+    n_gram_repetition_weight: 0.335
+    n_gram_size: 5
+    n_gram_threshold: 5
+    max_response_length: 3000
+    overlong_buffer_length: 1500
+    overlong_buffer_penalty: 10.0
+  reward_scaling:
+    enabled: false
+    source_min: 0.0
+    source_max: 1.0
+    target_min: 0.0
+    target_max: 1.0
+  async_grpo:
+    enabled: true
+    max_trajectory_age_steps: 1
+    in_flight_weight_updates: true
+    recompute_kv_cache_after_weight_updates: false
+  adv_estimator:
+    name: opd
+  use_best_at_k: false
+  best_at_k_k: 8
+  best_at_k_m: 1000
+  use_combined_training: false
+  combined_training_weight_mode: auto
+  combined_training_best_at_k_weight: 0.2
+  combined_training_pass_at_1_weight: 1.0
+  dynamic_sampling_oversample_ratio: 1.0
+  seq_logprob_error_threshold: 2
+loss_fn:
+  reference_policy_kl_penalty: 0.0
+  reference_policy_kl_type: k3
+  kl_input_clamp_value: null
+  kl_output_clamp_value: null
+  ratio_clip_min: 0.2
+  ratio_clip_max: 0.28
+  ratio_clip_c: null
+  use_on_policy_kl_approximation: true
+  use_importance_sampling_correction: true
+  truncated_importance_sampling_ratio: 5
+  truncated_importance_sampling_ratio_min: 0.2
+  truncated_importance_sampling_type: tis
+  sequence_level_importance_ratios: false
+  token_level_loss: true
+  force_on_policy_ratio: true
+  use_kl_in_reward: false
+on_policy_distillation:
+  enabled: true
+  opd_advantage_weight: 0.5
+  orm_advantage_weight: 2.0
+  opd_advantage_clip_low: -10
+  opd_advantage_clip_high: 10
+  orm_advantage_clip_low: -15
+  orm_advantage_clip_high: 10
+  zero_out_of_bounds_advantages: false
+  orm_advantage_estimator:
+    orm_estimator_name: reinforce
+    minus_baseline: false
+    leave_one_out_baseline: false
+    batch_level_baseline: false
+  teacher_model_by_agent_name:
+    general_qa_simple_agent:
+      url: ${oc.env:XTOKEN_LEGACY_TEACHER_URL}
+      model: Qwen3-32B
+    general_qa_simple_agent_reasoning_off:
+      url: ${oc.env:XTOKEN_LEGACY_TEACHER_URL}
+      model: Qwen3-32B
+  default_teacher_alias: general_qa_simple_agent
+penalize_duplicated_reasoning: false
+penalize_empty_final_answer: false
+penalize_eos_token: false
+penalize_malformed_think_tag: false
+source_vt_super_sha256: 46f7d06294762398ba5a564d8f7e60bde749ffdbc2dcd6efccf38252021c818e
+canary_overrides:
+  max_trajectory_age_steps: 1
+  refit_memory_ratio: '0.06'

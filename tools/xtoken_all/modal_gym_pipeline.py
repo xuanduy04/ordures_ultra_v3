@@ -73,7 +73,8 @@ def execute_worker(command, env, timeout, key):
                 clean = "[environment line omitted]\n"
             lines.append(clean)
             if any(marker in clean for marker in ("GYM_", "XTOKEN_TRAIN_STEP=", "XTOKEN_TEACHER_SCORE=", "XTOKEN_ROLLOUT=",
-                                                  "XTOKEN_REFIT_REQUEST=", "NRL_REFIT_BUFFER=", "XTK_TEACHER_", "PROBE=", "Error", "Traceback")):
+                                                  "XTOKEN_REFIT_REQUEST=", "NRL_REFIT_BUFFER=", "XTK_TEACHER_", "PROBE=", "Error", "Traceback",
+                                                  'Saving checkpoint for step', 'Training Results:', 'Loss:', 'Max number of steps')):
                 print(clean, end="", flush=True)
         code = process.wait()
     finally:
@@ -168,6 +169,71 @@ def metadata_gateway(key, listen, upstream):
     return server
 
 
+def legacy_loopback_gateway(key, upstream):
+    """Forward the unchanged old client through an authenticated owned teacher.
+
+    Only the learner container's loopback interface accepts unauthenticated
+    legacy requests. The public teacher scorer still requires its ephemeral key.
+    """
+    receipts = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_GET(self):
+            if self.path == '/_receipts':
+                body = json.dumps(receipts).encode()
+                self.send_response(200)
+                self.send_header('Content-Length', str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            elif self.path in ('/v1/models', '/version'):
+                self.forward(None)
+            else:
+                self.send_error(404)
+
+        def do_POST(self):
+            if self.path != '/v1/completions':
+                self.send_error(404)
+                return
+            count = int(self.headers['Content-Length'])
+            if count < 0 or count > 4 * 1024 * 1024:
+                self.send_error(413)
+                return
+            body = self.rfile.read(count)
+            value = json.loads(body)
+            if value['max_tokens'] != 0 or value['echo'] is not True:
+                self.send_error(400)
+                return
+            self.forward(body)
+
+        def forward(self, body):
+            request = urllib.request.Request(upstream + self.path, data=body,
+                headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
+            try:
+                response = urllib.request.urlopen(request, timeout=180)
+            except urllib.error.HTTPError as error:
+                response = error
+            with response:
+                payload = response.read(67108865)
+                if len(payload) > 67108864:
+                    self.send_error(502)
+                    return
+                if body is not None:
+                    receipts.append({'status': response.code, 'response_bytes': len(payload),
+                                     'scoring_only': True})
+                self.send_response(response.code)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
 @app.function(image=TEACHER_IMAGE, volumes={"/cache": VOLUME}, cpu=(16, 16), memory=(131072, 131072),
               timeout=2100, startup_timeout=180, scaledown_window=2, retries=0)
 def teacher_server(arm, key, ready, control):
@@ -235,14 +301,21 @@ def teacher_server(arm, key, ready, control):
 def student_pipeline(arm, url, key, ready, selected, execution_limit):
     ready.put({"state": "student_allocated"})
     VOLUME.reload()
+    summary_path = Path('/cache/evidence') / arm / 'summary.json'
+    summary_path.unlink(missing_ok=True)
+    VOLUME.commit()
     env = environment()
     env.update(XTOKEN_TEACHER_URL=url, XTOKEN_TEACHER_API_KEY=key)
+    relay = legacy_loopback_gateway(key, url)
+    env['XTOKEN_LEGACY_TEACHER_URL'] = 'http://127.0.0.1:' + str(relay.server_port)
     env.update(XTOKEN_GYM_SELECTED_MODES=json.dumps(selected),
                XTOKEN_GYM_SUITE_SECONDS=str(execution_limit - (40 if len(selected) == 1 else 130)))
     command = [PYTHON, "-B", "/work/source/tools/xtoken_all/gym_real_worker.py", "--phase", "canary", "--arm", arm]
     try:
         result = execute_worker(command, env, execution_limit - (20 if len(selected) == 1 else 70), key)
     finally:
+        relay.shutdown()
+        relay.server_close()
         root = Path("/tmp/xtoken-real") / arm
         if root.is_dir():
             for path in root.rglob("*"):
@@ -291,6 +364,21 @@ def cpu_elapsed_bound(seconds):
     return ((elapsed + 30) * rate + Decimal("0.03")).quantize(Decimal("0.01"), rounding=ROUND_CEILING)
 
 
+def gpu_role_bound(accelerator, count, teacher_s, student_s, overhead_s, margin):
+    if accelerator not in ('H100', 'B200') or count not in (2, 3, 4):
+        raise ValueError('Unknown priced GPU topology')
+    if min(teacher_s, student_s, overhead_s) < 0 or teacher_s + student_s <= 0:
+        raise ValueError('GPU lifetimes must be positive for at least one reserved role')
+    rate = Decimal('0.001097') if accelerator == 'H100' else Decimal('0.001736')
+    host = 16 * Decimal('0.0000131') + 128 * Decimal('0.00000222')
+    bound = Decimal(str(margin))
+    if teacher_s:
+        bound += (teacher_s + overhead_s) * (rate + host)
+    if student_s:
+        bound += (student_s + overhead_s) * (count * rate + host)
+    return bound.quantize(Decimal('0.1'), rounding=ROUND_CEILING)
+
+
 def settle_cpu_history(ledger, output, profile):
     """Tighten completed CPU reservations from retained duration evidence only."""
     if not ledger.is_file():
@@ -298,7 +386,7 @@ def settle_cpu_history(ledger, output, profile):
     with locked(ledger):
         records = json.loads(ledger.read_text())
         for row in records:
-            if row["phase"] == "gpu" or "id" not in row:
+            if row["phase"] not in ('stage', 'imports') or "id" not in row:
                 continue
             receipt = output / (profile + "-" + row["arm"] + "-" + row["phase"] + "-" + row["id"] + ".json")
             if not receipt.is_file():
@@ -378,21 +466,94 @@ def run_arm(arm, accelerator, selected, teacher_limit, student_limit):
                 "student_submit_to_stop_s": now - student_seconds if student_seconds is not None else 0}
 
 
+def run_teacher_session(arm, accelerator, limit, session_path, guard):
+    """Reserve teacher GPU on one profile while a separately reserved learner uses it."""
+    key = secrets.token_urlsafe(32)
+    path = Path(session_path)
+    if not path.is_absolute() or not str(path).startswith('/tmp/') or path.exists():
+        raise ValueError('Use a fresh private /tmp session file, never a repository/artifact path')
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    started = time.monotonic()
+    with modal.Queue.ephemeral() as ready, modal.Queue.ephemeral() as control:
+        teacher = teacher_server.with_options(gpu=accelerator, timeout=limit).spawn(arm, key, ready, control)
+        try:
+            if ready.get(timeout=120)['state'] != 'allocated':
+                raise RuntimeError('Missing teacher allocation receipt')
+            connection = ready.get(timeout=360)
+            if connection['state'] != 'ready':
+                raise RuntimeError('Teacher did not become ready')
+            descriptor = {'url': connection['url'], 'key': key, 'arm': arm, 'profile': os.environ['MODAL_PROFILE'],
+                          'app_id': app.app_id, 'created_at': time.time(), 'guard': guard}
+            pending = path.with_suffix('.pending')
+            descriptor_fd = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor_fd, 'w') as stream:
+                json.dump(descriptor, stream)
+            pending.replace(path)
+            print('GYM_SHARED_TEACHER_READY=' + json.dumps({'arm': arm, 'app_id': app.app_id}), flush=True)
+            while time.monotonic() - started < limit - 20 and not path.with_suffix('.stop').exists():
+                time.sleep(1)
+        finally:
+            control.put('stop')
+            try:
+                teacher.get(timeout=20)
+            except Exception:
+                teacher.cancel(terminate_containers=True)
+            path.unlink(missing_ok=True)
+            path.with_suffix('.pending').unlink(missing_ok=True)
+    return {'exit_code': 0, 'teacher_submit_to_stop_s': time.monotonic() - started,
+            'student_submit_to_stop_s': 0, 'teacher_session': True}
+
+
+def run_shared_learner(arm, accelerator, selected, limit, session_path):
+    path = Path(session_path)
+    descriptor = json.loads(path.read_text())
+    if descriptor['arm'] != arm or time.time() - descriptor['created_at'] > 600 or not descriptor['guard']['allowed']:
+        raise ValueError('Missing current separately reserved teacher session')
+    if descriptor['profile'] == os.environ['MODAL_PROFILE']:
+        raise ValueError('Shared session requires explicit separate profile accounting')
+    started = time.monotonic()
+    with modal.Queue.ephemeral() as ready:
+        student = None
+        try:
+            student = student_pipeline.with_options(gpu=accelerator + ':' + str(CONFIG['canary']['gpu_count']),
+                                                   timeout=limit).spawn(
+                arm, descriptor['url'], descriptor['key'], ready, selected, limit)
+            if ready.get(timeout=120)['state'] != 'student_allocated':
+                raise RuntimeError('Missing learner allocation receipt')
+            result = student.get(timeout=limit + 200)
+        finally:
+            if student is not None:
+                student.cancel(terminate_containers=True)
+            path.with_suffix('.stop').touch()
+    return {'student': result, 'teacher_profile': descriptor['profile'], 'teacher_app_id': descriptor['app_id'],
+            'teacher_submit_to_stop_s': 0, 'student_submit_to_stop_s': time.monotonic() - started}
+
+
 @app.local_entrypoint()
-def main(phase: str, arm: str, output_dir: str, accelerator: str | None = None, only_mode: str | None = None):
+def main(phase: str, arm: str, output_dir: str, accelerator: str | None = None, only_mode: str | None = None,
+         mode_set: str | None = None, teacher_session: str | None = None):
     if accelerator is None:
         accelerator = CONFIG["accelerator"]
     profile = os.environ["MODAL_PROFILE"]
     if profile not in ("nguyenngocminh30012005", "nguyenepti") or arm not in ("cross", "same"):
         raise ValueError("Use an authorized profile and explicit cross/same arm")
-    if phase not in ("stage", "imports", "gpu") or accelerator not in ("B200", "H100"):
+    if phase not in ("stage", "imports", "gpu", "teacher", "learner") or accelerator not in ("B200", "H100"):
         raise ValueError("Unknown phase")
-    if only_mode is not None and (phase != "gpu" or only_mode not in CONFIG["modes"]):
+    supported = [*CONFIG['modes'], CONFIG['legacy_mode']]
+    if only_mode is not None and (phase not in ('gpu', 'learner') or only_mode not in supported):
         raise ValueError("Single-mode retry requires an explicit configured GPU mode")
     selected = CONFIG["modes"] if only_mode is None else [only_mode]
+    if mode_set is not None:
+        selected = mode_set.split(',')
+        if only_mode is not None or not selected or len(set(selected)) != len(selected) or not set(selected).issubset(supported):
+            raise ValueError('Invalid explicit mode set')
+    if phase in ('teacher', 'learner') and teacher_session is None:
+        raise ValueError('A private teacher session is required for separately billed roles')
     limits = CONFIG["qualification_limits"]
     teacher_limit = limits["teacher_s"] if only_mode is None else limits["single_teacher_s"]
     student_limit = limits["student_s"] if only_mode is None else limits["single_student_s"]
+    if phase in ('teacher', 'learner'):
+        teacher_limit, student_limit = limits['shared_teacher_s'], limits['shared_student_s']
     count = CONFIG["canary"]["gpu_count"]
     if count not in (2, 3, 4):
         raise ValueError("Use an explicit two-, three-, or four-GPU student topology")
@@ -402,7 +563,7 @@ def main(phase: str, arm: str, output_dir: str, accelerator: str | None = None, 
         raise ValueError("YAML cannot relax the user's USD20 profile ceiling or its USD2 lag reserve")
     output = Path(output_dir)
     output.mkdir(parents=True, exist_ok=True)
-    if phase == "gpu":
+    if phase in ('gpu', 'teacher', 'learner'):
         apps = json.loads(subprocess.check_output(["modal", "app", "list", "--json"], text=True))
         if any(row["app_id"] != app.app_id and int(row["tasks"]) > 0 for row in apps):
             raise RuntimeError("Another active app has unbounded overlapping spend; wait for it or account for its reservation")
@@ -414,6 +575,8 @@ def main(phase: str, arm: str, output_dir: str, accelerator: str | None = None, 
         receipt = prepared["receipt"]
         if receipt["success"] is not True or receipt["supplement_packages"] != CONFIG["supplement"]["packages"]:
             raise RuntimeError("CPU preparation is stale for the selected runtime supplement")
+        if CONFIG['legacy_mode'] in selected and (not receipt['legacy_entrypoint_imported'] or not receipt['legacy_render_checked']):
+            raise RuntimeError('The legacy entrypoint and actual rendered OPD loss must pass CPU preflight first')
     rows = json.loads(subprocess.check_output(["modal", "billing", "report", "--for", "this month", "--show-resources", "--json"], text=True))
     reported = sum((Decimal(row["cost"]) for row in rows), Decimal(0))
     # This preparation is CPU8/32GiB, <=1200s plus startup/teardown. GPU reservations
@@ -421,9 +584,12 @@ def main(phase: str, arm: str, output_dir: str, accelerator: str | None = None, 
     rate = Decimal("0.001736") if accelerator == "B200" else Decimal("0.001097")
     host_rate = 16 * Decimal("0.0000131") + 128 * Decimal("0.00000222")
     overhead = limits["startup_s"] + limits["teardown_s"]
-    gpu_bound = ((teacher_limit + overhead) * (rate + host_rate) + (student_limit + overhead) * (count * rate + host_rate)
-                 + Decimal("0.5")).quantize(Decimal("0.1"), rounding=ROUND_CEILING)
+    gpu_bound = gpu_role_bound(accelerator, count, teacher_limit, student_limit, overhead, '0.5')
     bound = gpu_bound if phase == "gpu" else Decimal("0.35")
+    if phase == 'teacher':
+        bound = gpu_role_bound(accelerator, count, teacher_limit, 0, overhead, '0.1')
+    if phase == 'learner':
+        bound = gpu_role_bound(accelerator, count, 0, student_limit, overhead, '0.1')
     ledger = output / (profile + "-cpu-reservations.json")
     settle_cpu_history(ledger, output, profile)
     prior = json.loads(ledger.read_text()) if ledger.is_file() else []
@@ -445,17 +611,24 @@ def main(phase: str, arm: str, output_dir: str, accelerator: str | None = None, 
         ledger.write_text(json.dumps(current, indent=2))
     (output / (profile + "-" + phase + "-billing.json")).write_text(json.dumps(rows, indent=2))
     started = time.monotonic()
-    result = run_arm(arm, accelerator, selected, teacher_limit, student_limit) if phase == "gpu" else stage.remote(arm, phase)
+    if phase == 'teacher':
+        result = run_teacher_session(arm, accelerator, teacher_limit, teacher_session, guard)
+    elif phase == 'learner':
+        result = run_shared_learner(arm, accelerator, selected, student_limit, teacher_session)
+    else:
+        result = run_arm(arm, accelerator, selected, teacher_limit, student_limit) if phase == "gpu" else stage.remote(arm, phase)
     if phase == "imports" and result["exit_code"] == 0:
         result["teacher_runtime"] = teacher_inventory.remote()
     result.update(profile=profile, arm=arm, elapsed_seconds=time.monotonic() - started, guard=guard,
                   app_id=app.app_id, selected_modes=selected, teacher_limit_s=teacher_limit, student_limit_s=student_limit)
     (output / (profile + "-" + arm + "-" + phase + "-" + label + ".json")).write_text(json.dumps(result, indent=2))
     (output / (profile + "-" + arm + "-" + phase + ".json")).write_text(json.dumps(result, indent=2))
-    if phase == "gpu":
+    if phase in ('gpu', 'teacher', 'learner'):
         gpu_rate = Decimal("0.001736") if accelerator == "B200" else Decimal("0.001097")
         cpu_memory_rate = 16 * Decimal("0.0000131") + 128 * Decimal("0.00000222")
-        ceiling = Decimal(str(result["teacher_submit_to_stop_s"] + 60)) * (gpu_rate + cpu_memory_rate)
+        ceiling = Decimal('0')
+        if result['teacher_submit_to_stop_s']:
+            ceiling += Decimal(str(result["teacher_submit_to_stop_s"] + 60)) * (gpu_rate + cpu_memory_rate)
         if result["student_submit_to_stop_s"]:
             ceiling += Decimal(str(result["student_submit_to_stop_s"] + 60)) * (count * gpu_rate + cpu_memory_rate)
         ceiling += Decimal("0.1")
@@ -465,7 +638,7 @@ def main(phase: str, arm: str, output_dir: str, accelerator: str | None = None, 
             row.update(upper_bound_usd=str(min(bound, ceiling)), elapsed_seconds=str(result["elapsed_seconds"]),
                        settlement="submit-to-result plus60s; conservative upper estimate, not billed actual")
             ledger.write_text(json.dumps(current, indent=2))
-        success = result["student"]["exit_code"] == 0 and result["student"]["summary"] is not None and result["student"]["summary"]["success"]
+        success = result['exit_code'] == 0 if phase == 'teacher' else result["student"]["exit_code"] == 0 and result["student"]["summary"] is not None and result["student"]["summary"]["success"]
     else:
         success = result["exit_code"] == 0
     if not success:

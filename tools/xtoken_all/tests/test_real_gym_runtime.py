@@ -158,3 +158,61 @@ def test_cpu_settlement_rejects_invalid_elapsed(monkeypatch, elapsed):
     module = load_runner(monkeypatch)
     with pytest.raises(ValueError):
         module.cpu_elapsed_bound(elapsed)
+
+
+def test_shared_role_bounds_include_only_the_reserved_role(monkeypatch):
+    module = load_runner(monkeypatch)
+    assert module.gpu_role_bound('H100', 2, 1050, 0, 212, '0.1') == Decimal('2.2')
+    assert module.gpu_role_bound('H100', 2, 1200, 0, 212, '0.1') == Decimal('2.4')
+    assert module.gpu_role_bound('H100', 2, 0, 850, 212, '0.1') == Decimal('3.0')
+    with pytest.raises(ValueError):
+        module.gpu_role_bound('H100', 2, -1, 850, 212, '0.1')
+
+
+def test_cpu_settlement_never_releases_shared_gpu_role_reservations(monkeypatch, tmp_path):
+    module = load_runner(monkeypatch)
+    ledger = tmp_path / 'ledger.json'
+    rows = [{'id': '1', 'phase': 'teacher', 'arm': 'same', 'upper_bound_usd': '2.2'},
+            {'id': '2', 'phase': 'learner', 'arm': 'same', 'upper_bound_usd': '3.0'}]
+    ledger.write_text(json.dumps(rows))
+    for row in rows:
+        (tmp_path / ('profile-same-' + row['phase'] + '-' + row['id'] + '.json')).write_text(json.dumps(
+            {'profile': 'profile', 'arm': 'same', 'exit_code': 0, 'elapsed_seconds': 100}))
+    module.settle_cpu_history(ledger, tmp_path, 'profile')
+    assert json.loads(ledger.read_text()) == rows
+
+
+def test_legacy_loopback_relay_keeps_real_payload_and_authenticates_upstream(monkeypatch):
+    observed = []
+
+    class Upstream(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            observed.append((self.path, self.headers['Authorization'], self.rfile.read(int(self.headers['Content-Length']))))
+            payload = b'{"actual_teacher":true}'
+            self.send_response(200)
+            self.send_header('Content-Length', str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+    upstream = ThreadingHTTPServer(('127.0.0.1', 0), Upstream)
+    threading.Thread(target=upstream.serve_forever, daemon=True).start()
+    runner = load_runner(monkeypatch)
+    relay = runner.legacy_loopback_gateway('test-ephemeral-key', 'http://127.0.0.1:' + str(upstream.server_port))
+    url = 'http://127.0.0.1:' + str(relay.server_port)
+    body = b'{"prompt":[3,4],"max_tokens":0,"echo":true}'
+    try:
+        assert relay.server_address[0] == '127.0.0.1'
+        with urllib.request.urlopen(urllib.request.Request(url + '/v1/completions', data=body)) as response:
+            assert json.load(response) == {'actual_teacher': True}
+        assert observed == [('/v1/completions', 'Bearer test-ephemeral-key', body)]
+        with urllib.request.urlopen(url + '/_receipts') as response:
+            receipts = json.load(response)
+        assert len(receipts) == 1 and receipts[0]['status'] == 200
+    finally:
+        relay.shutdown()
+        relay.server_close()
+        upstream.shutdown()
+        upstream.server_close()
