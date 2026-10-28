@@ -165,6 +165,8 @@ def test_shared_role_bounds_include_only_the_reserved_role(monkeypatch):
     assert module.gpu_role_bound('H100', 2, 1050, 0, 212, '0.1') == Decimal('2.2')
     assert module.gpu_role_bound('H100', 2, 1200, 0, 212, '0.1') == Decimal('2.4')
     assert module.gpu_role_bound('H100', 2, 0, 850, 212, '0.1') == Decimal('3.0')
+    assert module.gpu_role_bound('H100', 2, 500, 350, 212, '0.5') == Decimal('3.2')
+    assert module.gpu_role_bound('H100', 2, 550, 390, 212, '0.5') == Decimal('3.4')
     with pytest.raises(ValueError):
         module.gpu_role_bound('H100', 2, -1, 850, 212, '0.1')
 

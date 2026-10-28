@@ -552,6 +552,8 @@ def main(phase: str, arm: str, output_dir: str, accelerator: str | None = None, 
     limits = CONFIG["qualification_limits"]
     teacher_limit = limits["teacher_s"] if only_mode is None else limits["single_teacher_s"]
     student_limit = limits["student_s"] if only_mode is None else limits["single_student_s"]
+    if only_mode == CONFIG['legacy_mode']:
+        teacher_limit, student_limit = limits['legacy_teacher_s'], limits['legacy_student_s']
     if phase in ('teacher', 'learner'):
         teacher_limit, student_limit = limits['shared_teacher_s'], limits['shared_student_s']
     count = CONFIG["canary"]["gpu_count"]
