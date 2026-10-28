@@ -132,3 +132,29 @@ def test_budget_retains_prior_usage_without_double_counting_paid_calls(monkeypat
     records = [{"upper_bound_usd": "0.35"}, {"upper_bound_usd": "2.4"}]
     assert module.cumulative_upper("5.0", "3.3", records) == Decimal("6.05")
     assert module.cumulative_upper("7.0", "3.3", records) == Decimal("7.0")
+
+
+def test_cpu_settlement_uses_completed_receipt_and_preserves_gpu_reservation(monkeypatch, tmp_path):
+    module = load_runner(monkeypatch)
+    ledger = tmp_path / "ledger.json"
+    rows = [{"id": "101", "phase": "imports", "arm": "same", "upper_bound_usd": "0.35"},
+            {"id": "102", "phase": "gpu", "arm": "same", "upper_bound_usd": "8.8"},
+            {"id": "103", "phase": "stage", "arm": "same", "upper_bound_usd": "0.35"}]
+    ledger.write_text(json.dumps(rows))
+    (tmp_path / "profile-same-imports-101.json").write_text(json.dumps({
+        "profile": "profile", "arm": "same", "exit_code": 0, "elapsed_seconds": 100}))
+    module.settle_cpu_history(ledger, tmp_path, "profile")
+    result = json.loads(ledger.read_text())
+    assert result[0]["upper_bound_usd"] == "0.06"
+    assert result[0]["initial_upper_bound_usd"] == "0.35"
+    assert len(result[0]["settlement_receipt_sha256"]) == 64
+    assert result[1:] == rows[1:]
+    module.settle_cpu_history(ledger, tmp_path, "profile")
+    assert json.loads(ledger.read_text()) == result
+
+
+@pytest.mark.parametrize("elapsed", [-1, "NaN", "Infinity"])
+def test_cpu_settlement_rejects_invalid_elapsed(monkeypatch, elapsed):
+    module = load_runner(monkeypatch)
+    with pytest.raises(ValueError):
+        module.cpu_elapsed_bound(elapsed)

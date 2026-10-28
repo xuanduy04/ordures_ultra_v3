@@ -1,0 +1,929 @@
+{
+  "recorded_at_utc": "2026-10-28T13:53:15.509174+00:00",
+  "success": true,
+  "passed_canaries": 10,
+  "expected_canaries": 10,
+  "scope": "Two-update mechanical real-model Gym HTTP canaries; no quality, convergence, paper replication or checkpoint resume claim",
+  "execution": "First four modes per arm in bounded suite calls; GRASS retried independently with fresh student and optimizer after original suite watchdog exit124 before first update",
+  "b200": "Allocation did not enter function within120s on either profile; canceled; no B200 Gym pass",
+  "student_gpu_count": 2,
+  "three_four_gpu_full_gym": "not executed in this campaign",
+  "student": {
+    "repo": "Qwen/Qwen3-4B",
+    "revision": "1cfa9a7208912126459214e8b04321603b3df60c"
+  },
+  "teachers": {
+    "cross": {
+      "repo": "google/gemma-4-26B-A4B-it",
+      "revision": "4d7ae4984b7db7de8f8457170b3f1a419ee76d52",
+      "alias": "gemma-4-26B-A4B-it",
+      "vocab": 262144
+    },
+    "same": {
+      "repo": "Qwen/Qwen3-32B",
+      "revision": "9216db5781bf21249d130ec9da846c4624c16137",
+      "alias": "Qwen3-32B",
+      "vocab": 151936
+    }
+  },
+  "learner_nemo_rl_git_tree": "28494887affe0818920ac191c1870dfc92eac355",
+  "learner_image": "nvcr.io/nvidia/nemo-rl@sha256:060a3337d167e66230ce8b3dac9e9b733ad25bc997f8a0121eebccf81cbf1b23",
+  "teacher_image": "vllm/vllm-openai@sha256:a4a4c0437bf7240089da5f08aa370c4aee17ae5290f7a3b468825ee26c4c3a6b",
+  "runtime_scope": "NGC source overlay and pinned supplements; not bitwise company Python3.12 runtime",
+  "supplement_packages": [
+    "ray==2.55.1",
+    "nltk==3.9.2",
+    "joblib==1.5.3",
+    "mlflow==3.12.0",
+    "mlflow-skinny==3.12.0",
+    "mlflow-tracing==3.12.0",
+    "uvicorn==0.37.0"
+  ],
+  "data": {
+    "rows": 8,
+    "source_sha256": "4793e2a4e79adfc8a450dae752ca5b6881f418cbe8315431ba36e8ebfcd414e8",
+    "general_qa_sha256": "999e3428986945345e87fa40e3f19950c33384ae1219256397183a646b3f44d6",
+    "conversion": "existing Super _convert_entry; order preserved; answers are verifier metadata"
+  },
+  "limits": {
+    "gpu_count": 2,
+    "max_num_steps": 2,
+    "global_batch_size": 4,
+    "micro_batch_size": 1,
+    "context": 256,
+    "response_tokens": 32,
+    "max_prompt_tokens": 192,
+    "teacher_context": 512,
+    "refit_buffer_size_gb": 4.0,
+    "checkpoint_period": 1,
+    "keep_checkpoints": 2,
+    "teacher_probe_timeout_s": 240,
+    "mode_timeout_s": 450,
+    "actor_import_timeout_s": 240
+  },
+  "score_contract": {
+    "representation": "topk_logprobs",
+    "top_k": 20,
+    "logprobs_mode": "raw_logprobs",
+    "full_vocabulary_distribution": false
+  },
+  "temporary_task_volume_deleted_both_profiles": true,
+  "budgets": [
+    {
+      "profile": "nguyenngocminh30012005",
+      "period": "calendar month; includes earlier usage",
+      "reported_usage_usd": "8.61899013",
+      "conservative_cumulative_upper_usd": "10.9285315444229273279736",
+      "lag_reserve_usd": "2",
+      "hard_limit_usd": "20",
+      "active_owned_apps": 0,
+      "billing_sha256": "9141d300e806cbccedafe5a06d1e05bf929bcdda55cc5bf1f1ade4eb64b46c65",
+      "ledger_sha256": "df6b687dea1e04bdcfabc40d8d7d08909aa0c94436c86329202a9ad2cf4e9c82"
+    },
+    {
+      "profile": "nguyenepti",
+      "period": "calendar month; includes earlier usage",
+      "reported_usage_usd": "13.23259034",
+      "conservative_cumulative_upper_usd": "15.2754856168004085466712",
+      "lag_reserve_usd": "2",
+      "hard_limit_usd": "20",
+      "active_owned_apps": 0,
+      "billing_sha256": "55647dbb73b327b939b05235bf5b449d349a9ebe1f852058e4318b6d9b985ee1",
+      "ledger_sha256": "294347a30e2adcf1a714128a03507ecc36279a3e9f3fa03a05ecdac81347e3b7"
+    }
+  ],
+  "reports": [
+    {
+      "arm": "cross",
+      "mode": "topk_tail_kl",
+      "success": true,
+      "steps": [
+        {
+          "step": 1,
+          "loss": 3.5561084747314453,
+          "grad_norm": 67.5,
+          "lr": 5e-05,
+          "retained_mass": {
+            "teacher_retained_mass_t0": 0.9492855668067932,
+            "student_retained_mass_t0": 0.5946919098496437
+          }
+        },
+        {
+          "step": 2,
+          "loss": 2.101040542125702,
+          "grad_norm": 46.75,
+          "lr": 5e-05,
+          "retained_mass": {
+            "teacher_retained_mass_t0": 0.9943913817405701,
+            "student_retained_mass_t0": 0.5796847343444824
+          }
+        }
+      ],
+      "rollouts": [
+        {
+          "backend": "nemo_gym",
+          "policy_version": 0,
+          "rollout_id": 1,
+          "training": true,
+          "batch_size": 4,
+          "response_tokens": 128,
+          "valid_samples": 4,
+          "gym_reward_mean": 0.0,
+          "gym_reward_sample_count": 4,
+          "gym_code_qa_scores_excluded": 0,
+          "reward_used_in_loss": false
+        },
+        {
+          "backend": "nemo_gym",
+          "policy_version": 1,
+          "rollout_id": 2,
+          "training": true,
+          "batch_size": 4,
+          "response_tokens": 128,
+          "valid_samples": 4,
+          "gym_reward_mean": 0.0,
+          "gym_reward_sample_count": 4,
+          "gym_code_qa_scores_excluded": 0,
+          "reward_used_in_loss": false
+        }
+      ],
+      "teacher_score_receipts": 8,
+      "checkpoints": [
+        {
+          "step": 1,
+          "success": true,
+          "reasons": [],
+          "scope": "finalized metadata/file closure; no load or resume-parity claim"
+        },
+        {
+          "step": 2,
+          "success": true,
+          "reasons": [],
+          "scope": "finalized metadata/file closure; no load or resume-parity claim"
+        }
+      ],
+      "hardware": {
+        "count": 2,
+        "gpu_names": [
+          "NVIDIA H100 80GB HBM3",
+          "NVIDIA H100 80GB HBM3"
+        ],
+        "torch": "2.10.0+cu129",
+        "cuda": "12.9",
+        "source_payload_sha256": "97058931c19372a29bb7be6357432e36fdf832a108dde2de8b178f5278a393bb"
+      },
+      "app_id": "ap-jze578ha5MgrhACmegRSPK",
+      "evidence_directory": "evidence-cross-full-attempt/topk_tail_kl",
+      "evidence_sha256": {
+        "driver.log": "d9afb15f724e03bde2644c26c027bccf083de61b191f9bf524ba9dc46ec0a0fb",
+        "effective.yaml": "fdba7e07f4eae5597523a38558da3ffd9f8aa1e9384d7d4010889253af307833",
+        "process-exit.json": "c96ca955a366fbac81810c123d32e0a53b7e80d78e40efb1b1f86da270485d2f",
+        "result.json": "77fd2dc7b5aec1140ea4d36ddaefdb6c8576f1079a387f73401ec94dae68fa06"
+      }
+    },
+    {
+      "arm": "cross",
+      "mode": "dpca",
+      "success": true,
+      "steps": [
+        {
+          "step": 1,
+          "loss": 1.630210429430008,
+          "grad_norm": 60.0,
+          "lr": 5e-05,
+          "retained_mass": {}
+        },
+        {
+          "step": 2,
+          "loss": 1.7673286497592926,
+          "grad_norm": 152.0,
+          "lr": 5e-05,
+          "retained_mass": {}
+        }
+      ],
+      "rollouts": [
+        {
+          "backend": "nemo_gym",
+          "policy_version": 0,
+          "rollout_id": 1,
+          "training": true,
+          "batch_size": 4,
+          "response_tokens": 128,
+          "valid_samples": 4,
+          "gym_reward_mean": 0.0,
+          "gym_reward_sample_count": 4,
+          "gym_code_qa_scores_excluded": 0,
+          "reward_used_in_loss": false
+        },
+        {
+          "backend": "nemo_gym",
+          "policy_version": 1,
+          "rollout_id": 2,
+          "training": true,
+          "batch_size": 4,
+          "response_tokens": 128,
+          "valid_samples": 4,
+          "gym_reward_mean": 0.0,
+          "gym_reward_sample_count": 4,
+          "gym_code_qa_scores_excluded": 0,
+          "reward_used_in_loss": false
+        }
+      ],
+      "teacher_score_receipts": 8,
+      "checkpoints": [
+        {
+          "step": 1,
+          "success": true,
+          "reasons": [],
+          "scope": "finalized metadata/file closure; no load or resume-parity claim"
+        },
+        {
+          "step": 2,
+          "success": true,
+          "reasons": [],
+          "scope": "finalized metadata/file closure; no load or resume-parity claim"
+        }
+      ],
+      "hardware": {
+        "count": 2,
+        "gpu_names": [
+          "NVIDIA H100 80GB HBM3",
+          "NVIDIA H100 80GB HBM3"
+        ],
+        "torch": "2.10.0+cu129",
+        "cuda": "12.9",
+        "source_payload_sha256": "97058931c19372a29bb7be6357432e36fdf832a108dde2de8b178f5278a393bb"
+      },
+      "app_id": "ap-jze578ha5MgrhACmegRSPK",
+      "evidence_directory": "evidence-cross-full-attempt/dpca",
+      "evidence_sha256": {
+        "driver.log": "d8cf5b5f462059f8d24fbf6a2d430f1484e238eda38002b72d3a80ac576955b5",
+        "effective.yaml": "f17ffb0cd5d50a38f9a90b3e7b3a4fd73bb8b5abf272cc09cd985b1e76a02675",
+        "process-exit.json": "c96ca955a366fbac81810c123d32e0a53b7e80d78e40efb1b1f86da270485d2f",
+        "result.json": "bac1f6ee173c3baa6f681e7270784805c511ac4833f89215bfcc766b2dd4d1b2"
+      }
+    },
+    {
+      "arm": "cross",
+      "mode": "ctopd_topk",
+      "success": true,
+      "steps": [
+        {
+          "step": 1,
+          "loss": 1.2593965530395508,
+          "grad_norm": 44.25,
+          "lr": 5e-05,
+          "retained_mass": {}
+        },
+        {
+          "step": 2,
+          "loss": 2.2067768573760986,
+          "grad_norm": 76.0,
+          "lr": 5e-05,
+          "retained_mass": {}
+        }
+      ],
+      "rollouts": [
+        {
+          "backend": "nemo_gym",
+          "policy_version": 0,
+          "rollout_id": 1,
+          "training": true,
+          "batch_size": 4,
+          "response_tokens": 128,
+          "valid_samples": 4,
+          "gym_reward_mean": 0.0,
+          "gym_reward_sample_count": 4,
+          "gym_code_qa_scores_excluded": 0,
+          "reward_used_in_loss": false
+        },
+        {
+          "backend": "nemo_gym",
+          "policy_version": 1,
+          "rollout_id": 2,
+          "training": true,
+          "batch_size": 4,
+          "response_tokens": 74,
+          "valid_samples": 4,
+          "gym_reward_mean": 0.0,
+          "gym_reward_sample_count": 4,
+          "gym_code_qa_scores_excluded": 0,
+          "reward_used_in_loss": false
+        }
+      ],
+      "teacher_score_receipts": 8,
+      "checkpoints": [
+        {
+          "step": 1,
+          "success": true,
+          "reasons": [],
+          "scope": "finalized metadata/file closure; no load or resume-parity claim"
+        },
+        {
+          "step": 2,
+          "success": true,
+          "reasons": [],
+          "scope": "finalized metadata/file closure; no load or resume-parity claim"
+        }
+      ],
+      "hardware": {
+        "count": 2,
+        "gpu_names": [
+          "NVIDIA H100 80GB HBM3",
+          "NVIDIA H100 80GB HBM3"
+        ],
+        "torch": "2.10.0+cu129",
+        "cuda": "12.9",
+        "source_payload_sha256": "97058931c19372a29bb7be6357432e36fdf832a108dde2de8b178f5278a393bb"
+      },
+      "app_id": "ap-jze578ha5MgrhACmegRSPK",
+      "evidence_directory": "evidence-cross-full-attempt/ctopd_topk",
+      "evidence_sha256": {
+        "driver.log": "9f733b49deac1d24c4adc7edd03d3d321cf8ad12dd13d033980f9be9b305b8bc",
+        "effective.yaml": "b53d57720e42d83d393485c3d820036a7f54d14b960f80468e6e6b25ffacf0e7",
+        "process-exit.json": "c96ca955a366fbac81810c123d32e0a53b7e80d78e40efb1b1f86da270485d2f",
+        "result.json": "0010203a2911e0042b6e3ac7e9aaf12cb032e70c3444cc89d61ee70d84e8d2d8"
+      }
+    },
+    {
+      "arm": "cross",
+      "mode": "simct_topk",
+      "success": true,
+      "steps": [
+        {
+          "step": 1,
+          "loss": 1.2067925333976746,
+          "grad_norm": 29.0,
+          "lr": 5e-05,
+          "retained_mass": {}
+        },
+        {
+          "step": 2,
+          "loss": 1.9047755599021912,
+          "grad_norm": 6.09375,
+          "lr": 5e-05,
+          "retained_mass": {}
+        }
+      ],
+      "rollouts": [
+        {
+          "backend": "nemo_gym",
+          "policy_version": 0,
+          "rollout_id": 1,
+          "training": true,
+          "batch_size": 4,
+          "response_tokens": 128,
+          "valid_samples": 4,
+          "gym_reward_mean": 0.0,
+          "gym_reward_sample_count": 4,
+          "gym_code_qa_scores_excluded": 0,
+          "reward_used_in_loss": false
+        },
+        {
+          "backend": "nemo_gym",
+          "policy_version": 1,
+          "rollout_id": 2,
+          "training": true,
+          "batch_size": 4,
+          "response_tokens": 55,
+          "valid_samples": 4,
+          "gym_reward_mean": 0.0,
+          "gym_reward_sample_count": 4,
+          "gym_code_qa_scores_excluded": 0,
+          "reward_used_in_loss": false
+        }
+      ],
+      "teacher_score_receipts": 8,
+      "checkpoints": [
+        {
+          "step": 1,
+          "success": true,
+          "reasons": [],
+          "scope": "finalized metadata/file closure; no load or resume-parity claim"
+        },
+        {
+          "step": 2,
+          "success": true,
+          "reasons": [],
+          "scope": "finalized metadata/file closure; no load or resume-parity claim"
+        }
+      ],
+      "hardware": {
+        "count": 2,
+        "gpu_names": [
+          "NVIDIA H100 80GB HBM3",
+          "NVIDIA H100 80GB HBM3"
+        ],
+        "torch": "2.10.0+cu129",
+        "cuda": "12.9",
+        "source_payload_sha256": "97058931c19372a29bb7be6357432e36fdf832a108dde2de8b178f5278a393bb"
+      },
+      "app_id": "ap-jze578ha5MgrhACmegRSPK",
+      "evidence_directory": "evidence-cross-full-attempt/simct_topk",
+      "evidence_sha256": {
+        "driver.log": "25419d0bcf0a16f7ff1f059095d6267977742c0c70d0ba6a0890f2291f42e5ef",
+        "effective.yaml": "fcfbbe7457439057e21da8244e65bee16a04b60d6add3ffe11012e837a85e52f",
+        "process-exit.json": "c96ca955a366fbac81810c123d32e0a53b7e80d78e40efb1b1f86da270485d2f",
+        "result.json": "581556014e2cc9e0d476cc42285cf1e2520fff9fb0940ecf0be9069455381006"
+      }
+    },
+    {
+      "arm": "cross",
+      "mode": "grass_chunk_fixed_sigma",
+      "success": true,
+      "steps": [
+        {
+          "step": 1,
+          "loss": -0.46361348452046514,
+          "grad_norm": 62.0,
+          "lr": 5e-05,
+          "retained_mass": {}
+        },
+        {
+          "step": 2,
+          "loss": -0.15699894609861076,
+          "grad_norm": 46.0,
+          "lr": 5e-05,
+          "retained_mass": {}
+        }
+      ],
+      "rollouts": [
+        {
+          "backend": "nemo_gym",
+          "policy_version": 0,
+          "rollout_id": 1,
+          "training": true,
+          "batch_size": 4,
+          "response_tokens": 128,
+          "valid_samples": 4,
+          "gym_reward_mean": 0.0,
+          "gym_reward_sample_count": 4,
+          "gym_code_qa_scores_excluded": 0,
+          "reward_used_in_loss": false
+        },
+        {
+          "backend": "nemo_gym",
+          "policy_version": 1,
+          "rollout_id": 2,
+          "training": true,
+          "batch_size": 4,
+          "response_tokens": 128,
+          "valid_samples": 4,
+          "gym_reward_mean": 0.0,
+          "gym_reward_sample_count": 4,
+          "gym_code_qa_scores_excluded": 0,
+          "reward_used_in_loss": false
+        }
+      ],
+      "teacher_score_receipts": 8,
+      "checkpoints": [
+        {
+          "step": 1,
+          "success": true,
+          "reasons": [],
+          "scope": "finalized metadata/file closure; no load or resume-parity claim"
+        },
+        {
+          "step": 2,
+          "success": true,
+          "reasons": [],
+          "scope": "finalized metadata/file closure; no load or resume-parity claim"
+        }
+      ],
+      "hardware": {
+        "count": 2,
+        "gpu_names": [
+          "NVIDIA H100 80GB HBM3",
+          "NVIDIA H100 80GB HBM3"
+        ],
+        "torch": "2.10.0+cu129",
+        "cuda": "12.9",
+        "source_payload_sha256": "fb9c26f073f0d48be5e568a264492e3997d4d04b53b0eebcebac5a03377e3115"
+      },
+      "app_id": "ap-yMdIkQeDDUvrfDqDGpLjcG",
+      "evidence_directory": "evidence-cross-final/grass_chunk_fixed_sigma",
+      "evidence_sha256": {
+        "driver.log": "2d0d1fdcc08a84d41762194c5ccfb80d0103cd4f16d922008f03609988ac52e6",
+        "effective.yaml": "907c5b83826613be402d4acdc4970337279aed84af630b63dcf5a1c3ceea30f1",
+        "process-exit.json": "c96ca955a366fbac81810c123d32e0a53b7e80d78e40efb1b1f86da270485d2f",
+        "result.json": "62d2aa3d1459480280530f197367c3615f5fb63e9445dbd6a845f2d780fc7e0f"
+      }
+    },
+    {
+      "arm": "same",
+      "mode": "topk_tail_kl",
+      "success": true,
+      "steps": [
+        {
+          "step": 1,
+          "loss": 0.10710969706997275,
+          "grad_norm": 13.6875,
+          "lr": 5e-05,
+          "retained_mass": {
+            "teacher_retained_mass_t0": 0.9980058521032333,
+            "student_retained_mass_t0": 0.9980951994657516
+          }
+        },
+        {
+          "step": 2,
+          "loss": 0.7609445601701736,
+          "grad_norm": 23.0,
+          "lr": 5e-05,
+          "retained_mass": {
+            "teacher_retained_mass_t0": 0.9971251934766769,
+            "student_retained_mass_t0": 0.9742726981639862
+          }
+        }
+      ],
+      "rollouts": [
+        {
+          "backend": "nemo_gym",
+          "policy_version": 0,
+          "rollout_id": 1,
+          "training": true,
+          "batch_size": 4,
+          "response_tokens": 128,
+          "valid_samples": 4,
+          "gym_reward_mean": 0.0,
+          "gym_reward_sample_count": 4,
+          "gym_code_qa_scores_excluded": 0,
+          "reward_used_in_loss": false
+        },
+        {
+          "backend": "nemo_gym",
+          "policy_version": 1,
+          "rollout_id": 2,
+          "training": true,
+          "batch_size": 4,
+          "response_tokens": 128,
+          "valid_samples": 4,
+          "gym_reward_mean": 0.0,
+          "gym_reward_sample_count": 4,
+          "gym_code_qa_scores_excluded": 0,
+          "reward_used_in_loss": false
+        }
+      ],
+      "teacher_score_receipts": 8,
+      "checkpoints": [
+        {
+          "step": 1,
+          "success": true,
+          "reasons": [],
+          "scope": "finalized metadata/file closure; no load or resume-parity claim"
+        },
+        {
+          "step": 2,
+          "success": true,
+          "reasons": [],
+          "scope": "finalized metadata/file closure; no load or resume-parity claim"
+        }
+      ],
+      "hardware": {
+        "count": 2,
+        "gpu_names": [
+          "NVIDIA H100 80GB HBM3",
+          "NVIDIA H100 80GB HBM3"
+        ],
+        "torch": "2.10.0+cu129",
+        "cuda": "12.9",
+        "source_payload_sha256": "97058931c19372a29bb7be6357432e36fdf832a108dde2de8b178f5278a393bb"
+      },
+      "app_id": "ap-FrhyKxWF5okqdGnbyDZi63",
+      "evidence_directory": "evidence-same-full-attempt/topk_tail_kl",
+      "evidence_sha256": {
+        "driver.log": "823e3fb73be5053db6dd8d5542e5aa45eb42180809fb15be90503b7514f4cf0a",
+        "effective.yaml": "4902e44ad5b792d4b9c3c31b49650b240a28a2e72331bf7094f7d039967b6e8c",
+        "process-exit.json": "c96ca955a366fbac81810c123d32e0a53b7e80d78e40efb1b1f86da270485d2f",
+        "result.json": "c1a2e078437114c9294938f69e08d49f844a4937f0b6869ea3ca90da25a92190"
+      }
+    },
+    {
+      "arm": "same",
+      "mode": "dpca",
+      "success": true,
+      "steps": [
+        {
+          "step": 1,
+          "loss": 0.015622035833075643,
+          "grad_norm": 21.25,
+          "lr": 5e-05,
+          "retained_mass": {}
+        },
+        {
+          "step": 2,
+          "loss": 1.538554772734642,
+          "grad_norm": 274.0,
+          "lr": 5e-05,
+          "retained_mass": {}
+        }
+      ],
+      "rollouts": [
+        {
+          "backend": "nemo_gym",
+          "policy_version": 0,
+          "rollout_id": 1,
+          "training": true,
+          "batch_size": 4,
+          "response_tokens": 128,
+          "valid_samples": 4,
+          "gym_reward_mean": 0.0,
+          "gym_reward_sample_count": 4,
+          "gym_code_qa_scores_excluded": 0,
+          "reward_used_in_loss": false
+        },
+        {
+          "backend": "nemo_gym",
+          "policy_version": 1,
+          "rollout_id": 2,
+          "training": true,
+          "batch_size": 4,
+          "response_tokens": 51,
+          "valid_samples": 4,
+          "gym_reward_mean": 0.0,
+          "gym_reward_sample_count": 4,
+          "gym_code_qa_scores_excluded": 0,
+          "reward_used_in_loss": false
+        }
+      ],
+      "teacher_score_receipts": 8,
+      "checkpoints": [
+        {
+          "step": 1,
+          "success": true,
+          "reasons": [],
+          "scope": "finalized metadata/file closure; no load or resume-parity claim"
+        },
+        {
+          "step": 2,
+          "success": true,
+          "reasons": [],
+          "scope": "finalized metadata/file closure; no load or resume-parity claim"
+        }
+      ],
+      "hardware": {
+        "count": 2,
+        "gpu_names": [
+          "NVIDIA H100 80GB HBM3",
+          "NVIDIA H100 80GB HBM3"
+        ],
+        "torch": "2.10.0+cu129",
+        "cuda": "12.9",
+        "source_payload_sha256": "97058931c19372a29bb7be6357432e36fdf832a108dde2de8b178f5278a393bb"
+      },
+      "app_id": "ap-FrhyKxWF5okqdGnbyDZi63",
+      "evidence_directory": "evidence-same-full-attempt/dpca",
+      "evidence_sha256": {
+        "driver.log": "aee9ef23d342e37a2267a63f200cc46a0b3297cc7be22eea245731d7ccd7edab",
+        "effective.yaml": "e21ce9d92b69787bb6fa87508cd9847890cdaba66d737a7e14d451915a8761af",
+        "process-exit.json": "c96ca955a366fbac81810c123d32e0a53b7e80d78e40efb1b1f86da270485d2f",
+        "result.json": "4b7ecb7d1f49531cb459770b59ad440a21d209cf9a4ef50f20829d868de17da2"
+      }
+    },
+    {
+      "arm": "same",
+      "mode": "ctopd_topk",
+      "success": true,
+      "steps": [
+        {
+          "step": 1,
+          "loss": 0.058786129811778665,
+          "grad_norm": 9.125,
+          "lr": 5e-05,
+          "retained_mass": {}
+        },
+        {
+          "step": 2,
+          "loss": 1.079317256808281,
+          "grad_norm": 36.25,
+          "lr": 5e-05,
+          "retained_mass": {}
+        }
+      ],
+      "rollouts": [
+        {
+          "backend": "nemo_gym",
+          "policy_version": 0,
+          "rollout_id": 1,
+          "training": true,
+          "batch_size": 4,
+          "response_tokens": 128,
+          "valid_samples": 4,
+          "gym_reward_mean": 0.0,
+          "gym_reward_sample_count": 4,
+          "gym_code_qa_scores_excluded": 0,
+          "reward_used_in_loss": false
+        },
+        {
+          "backend": "nemo_gym",
+          "policy_version": 1,
+          "rollout_id": 2,
+          "training": true,
+          "batch_size": 4,
+          "response_tokens": 128,
+          "valid_samples": 4,
+          "gym_reward_mean": 0.0,
+          "gym_reward_sample_count": 4,
+          "gym_code_qa_scores_excluded": 0,
+          "reward_used_in_loss": false
+        }
+      ],
+      "teacher_score_receipts": 8,
+      "checkpoints": [
+        {
+          "step": 1,
+          "success": true,
+          "reasons": [],
+          "scope": "finalized metadata/file closure; no load or resume-parity claim"
+        },
+        {
+          "step": 2,
+          "success": true,
+          "reasons": [],
+          "scope": "finalized metadata/file closure; no load or resume-parity claim"
+        }
+      ],
+      "hardware": {
+        "count": 2,
+        "gpu_names": [
+          "NVIDIA H100 80GB HBM3",
+          "NVIDIA H100 80GB HBM3"
+        ],
+        "torch": "2.10.0+cu129",
+        "cuda": "12.9",
+        "source_payload_sha256": "97058931c19372a29bb7be6357432e36fdf832a108dde2de8b178f5278a393bb"
+      },
+      "app_id": "ap-FrhyKxWF5okqdGnbyDZi63",
+      "evidence_directory": "evidence-same-full-attempt/ctopd_topk",
+      "evidence_sha256": {
+        "driver.log": "ae2ba4ccf4370f1e21d1e2b9189c1b73c52d70f6f450448ffd6379b3b356e7fd",
+        "effective.yaml": "4621a62ddf297b62890cffca766113d072826665ed625a4bcbe39cbc74fe5804",
+        "process-exit.json": "c96ca955a366fbac81810c123d32e0a53b7e80d78e40efb1b1f86da270485d2f",
+        "result.json": "4cbbde710c3a1085e9174d81c6e51e12bd89e18f9d63583c515c5386acab9c5d"
+      }
+    },
+    {
+      "arm": "same",
+      "mode": "simct_topk",
+      "success": true,
+      "steps": [
+        {
+          "step": 1,
+          "loss": 0.06706347269937396,
+          "grad_norm": 10.125,
+          "lr": 5e-05,
+          "retained_mass": {}
+        },
+        {
+          "step": 2,
+          "loss": 0.8530222922563553,
+          "grad_norm": 36.0,
+          "lr": 5e-05,
+          "retained_mass": {}
+        }
+      ],
+      "rollouts": [
+        {
+          "backend": "nemo_gym",
+          "policy_version": 0,
+          "rollout_id": 1,
+          "training": true,
+          "batch_size": 4,
+          "response_tokens": 128,
+          "valid_samples": 4,
+          "gym_reward_mean": 0.0,
+          "gym_reward_sample_count": 4,
+          "gym_code_qa_scores_excluded": 0,
+          "reward_used_in_loss": false
+        },
+        {
+          "backend": "nemo_gym",
+          "policy_version": 1,
+          "rollout_id": 2,
+          "training": true,
+          "batch_size": 4,
+          "response_tokens": 128,
+          "valid_samples": 4,
+          "gym_reward_mean": 0.0,
+          "gym_reward_sample_count": 4,
+          "gym_code_qa_scores_excluded": 0,
+          "reward_used_in_loss": false
+        }
+      ],
+      "teacher_score_receipts": 8,
+      "checkpoints": [
+        {
+          "step": 1,
+          "success": true,
+          "reasons": [],
+          "scope": "finalized metadata/file closure; no load or resume-parity claim"
+        },
+        {
+          "step": 2,
+          "success": true,
+          "reasons": [],
+          "scope": "finalized metadata/file closure; no load or resume-parity claim"
+        }
+      ],
+      "hardware": {
+        "count": 2,
+        "gpu_names": [
+          "NVIDIA H100 80GB HBM3",
+          "NVIDIA H100 80GB HBM3"
+        ],
+        "torch": "2.10.0+cu129",
+        "cuda": "12.9",
+        "source_payload_sha256": "97058931c19372a29bb7be6357432e36fdf832a108dde2de8b178f5278a393bb"
+      },
+      "app_id": "ap-FrhyKxWF5okqdGnbyDZi63",
+      "evidence_directory": "evidence-same-full-attempt/simct_topk",
+      "evidence_sha256": {
+        "driver.log": "f522903e01b5c6e75748f2c8de370f758dab17bbfc323e42933e6d0cefc16905",
+        "effective.yaml": "bbd112b696834546eabc404bdda4cfda85eb500bc2fec404425c19a35f222128",
+        "process-exit.json": "c96ca955a366fbac81810c123d32e0a53b7e80d78e40efb1b1f86da270485d2f",
+        "result.json": "7b326e0a9e7ab4cffe7da976bda2c7b751a66145235bbd2551ea86b0c5435aa2"
+      }
+    },
+    {
+      "arm": "same",
+      "mode": "grass_chunk_fixed_sigma",
+      "success": true,
+      "steps": [
+        {
+          "step": 1,
+          "loss": 0.11074866150738671,
+          "grad_norm": 23.625,
+          "lr": 5e-05,
+          "retained_mass": {}
+        },
+        {
+          "step": 2,
+          "loss": -2.1415549693629146,
+          "grad_norm": 127.0,
+          "lr": 5e-05,
+          "retained_mass": {}
+        }
+      ],
+      "rollouts": [
+        {
+          "backend": "nemo_gym",
+          "policy_version": 0,
+          "rollout_id": 1,
+          "training": true,
+          "batch_size": 4,
+          "response_tokens": 128,
+          "valid_samples": 4,
+          "gym_reward_mean": 0.0,
+          "gym_reward_sample_count": 4,
+          "gym_code_qa_scores_excluded": 0,
+          "reward_used_in_loss": false
+        },
+        {
+          "backend": "nemo_gym",
+          "policy_version": 1,
+          "rollout_id": 2,
+          "training": true,
+          "batch_size": 4,
+          "response_tokens": 74,
+          "valid_samples": 4,
+          "gym_reward_mean": 0.0,
+          "gym_reward_sample_count": 4,
+          "gym_code_qa_scores_excluded": 0,
+          "reward_used_in_loss": false
+        }
+      ],
+      "teacher_score_receipts": 8,
+      "checkpoints": [
+        {
+          "step": 1,
+          "success": true,
+          "reasons": [],
+          "scope": "finalized metadata/file closure; no load or resume-parity claim"
+        },
+        {
+          "step": 2,
+          "success": true,
+          "reasons": [],
+          "scope": "finalized metadata/file closure; no load or resume-parity claim"
+        }
+      ],
+      "hardware": {
+        "count": 2,
+        "gpu_names": [
+          "NVIDIA H100 80GB HBM3",
+          "NVIDIA H100 80GB HBM3"
+        ],
+        "torch": "2.10.0+cu129",
+        "cuda": "12.9",
+        "source_payload_sha256": "fb9c26f073f0d48be5e568a264492e3997d4d04b53b0eebcebac5a03377e3115"
+      },
+      "app_id": "ap-FPMz6NmgZO66dYsVRVWwdl",
+      "evidence_directory": "evidence-same-final/grass_chunk_fixed_sigma",
+      "evidence_sha256": {
+        "driver.log": "a3cd3dbc06e933d03cb6da3e03523aba22f8de3c5e71f6d15ceb50877e37a501",
+        "effective.yaml": "1841149fc475715c4ac88c114b60804042911738399687ac1c3b81c66d465452",
+        "process-exit.json": "c96ca955a366fbac81810c123d32e0a53b7e80d78e40efb1b1f86da270485d2f",
+        "result.json": "4f12f4b4dfe4e7f64de0af7af77e5849500ed23736a84cd20c35d02559a52c68"
+      }
+    }
+  ]
+}

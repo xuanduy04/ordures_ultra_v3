@@ -4,6 +4,7 @@ from decimal import Decimal, ROUND_CEILING
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -231,14 +232,16 @@ def teacher_server(arm, key, ready, control):
 
 @app.function(image=IMAGE, volumes={"/cache": VOLUME}, cpu=(16, 16), memory=(131072, 131072),
               timeout=1500, startup_timeout=180, scaledown_window=2, retries=0)
-def student_pipeline(arm, url, key, ready):
+def student_pipeline(arm, url, key, ready, selected, execution_limit):
     ready.put({"state": "student_allocated"})
     VOLUME.reload()
     env = environment()
     env.update(XTOKEN_TEACHER_URL=url, XTOKEN_TEACHER_API_KEY=key)
+    env.update(XTOKEN_GYM_SELECTED_MODES=json.dumps(selected),
+               XTOKEN_GYM_SUITE_SECONDS=str(execution_limit - (40 if len(selected) == 1 else 130)))
     command = [PYTHON, "-B", "/work/source/tools/xtoken_all/gym_real_worker.py", "--phase", "canary", "--arm", arm]
     try:
-        result = execute_worker(command, env, 1430, key)
+        result = execute_worker(command, env, execution_limit - (20 if len(selected) == 1 else 70), key)
     finally:
         root = Path("/tmp/xtoken-real") / arm
         if root.is_dir():
@@ -280,10 +283,43 @@ def cumulative_upper(reported, baseline, reservations):
     return max(Decimal(reported), Decimal(baseline) + sum((Decimal(row["upper_bound_usd"]) for row in reservations), Decimal(0)))
 
 
-def run_arm(arm, accelerator):
+def cpu_elapsed_bound(seconds):
+    elapsed = Decimal(str(seconds))
+    if not elapsed.is_finite() or elapsed < 0:
+        raise ValueError("Invalid completed CPU duration")
+    rate = 8 * Decimal("0.0000131") + 32 * Decimal("0.00000222")
+    return ((elapsed + 30) * rate + Decimal("0.03")).quantize(Decimal("0.01"), rounding=ROUND_CEILING)
+
+
+def settle_cpu_history(ledger, output, profile):
+    """Tighten completed CPU reservations from retained duration evidence only."""
+    if not ledger.is_file():
+        return
+    with locked(ledger):
+        records = json.loads(ledger.read_text())
+        for row in records:
+            if row["phase"] == "gpu" or "id" not in row:
+                continue
+            receipt = output / (profile + "-" + row["arm"] + "-" + row["phase"] + "-" + row["id"] + ".json")
+            if not receipt.is_file():
+                continue
+            raw = receipt.read_bytes()
+            result = json.loads(raw)
+            if result["profile"] != profile or result["arm"] != row["arm"] or "exit_code" not in result:
+                raise ValueError("CPU settlement receipt differs from the reserved call")
+            bound = min(Decimal(row["upper_bound_usd"]), cpu_elapsed_bound(result["elapsed_seconds"]))
+            if "initial_upper_bound_usd" not in row:
+                row["initial_upper_bound_usd"] = row["upper_bound_usd"]
+            row.update(upper_bound_usd=str(bound), elapsed_seconds=result["elapsed_seconds"],
+                       settlement="completed CPU8/32GiB submit-to-result plus30s; never billed actual",
+                       settlement_receipt_sha256=hashlib.sha256(raw).hexdigest())
+        ledger.write_text(json.dumps(records, indent=2))
+
+
+def run_arm(arm, accelerator, selected, teacher_limit, student_limit):
     key = secrets.token_urlsafe(32)
     with modal.Queue.ephemeral() as ready, modal.Queue.ephemeral() as control:
-        teacher = teacher_server.with_options(gpu=accelerator).spawn(arm, key, ready, control)
+        teacher = teacher_server.with_options(gpu=accelerator, timeout=teacher_limit).spawn(arm, key, ready, control)
         student = None
         teacher_result = None
         result = {"exit_code": 1, "summary": None}
@@ -317,12 +353,13 @@ def run_arm(arm, accelerator):
                 raise RuntimeError("Missing teacher readiness receipt")
             student_seconds = time.monotonic()
             count = CONFIG["canary"]["gpu_count"]
-            student = student_pipeline.with_options(gpu=accelerator + ":" + str(count)).spawn(arm, connection["url"], key, ready)
+            student = student_pipeline.with_options(gpu=accelerator + ":" + str(count), timeout=student_limit).spawn(
+                arm, connection["url"], key, ready, selected, student_limit)
             student_allocation = ready.get(timeout=120)
             if student_allocation["state"] != "student_allocated":
                 raise RuntimeError("Missing student allocation receipt")
             print("GYM_ALLOCATION=" + json.dumps({"role": "student", "accelerator": accelerator, "count": count}), flush=True)
-            result = student.get(timeout=1700)
+            result = student.get(timeout=student_limit + 200)
         except Exception as error:
             result = {"exit_code": 1, "summary": None, "error_type": type(error).__name__,
                       "error": str(error).replace(key, "[redacted]")[-12000:]}
@@ -342,7 +379,7 @@ def run_arm(arm, accelerator):
 
 
 @app.local_entrypoint()
-def main(phase: str, arm: str, output_dir: str, accelerator: str | None = None):
+def main(phase: str, arm: str, output_dir: str, accelerator: str | None = None, only_mode: str | None = None):
     if accelerator is None:
         accelerator = CONFIG["accelerator"]
     profile = os.environ["MODAL_PROFILE"]
@@ -350,6 +387,12 @@ def main(phase: str, arm: str, output_dir: str, accelerator: str | None = None):
         raise ValueError("Use an authorized profile and explicit cross/same arm")
     if phase not in ("stage", "imports", "gpu") or accelerator not in ("B200", "H100"):
         raise ValueError("Unknown phase")
+    if only_mode is not None and (phase != "gpu" or only_mode not in CONFIG["modes"]):
+        raise ValueError("Single-mode retry requires an explicit configured GPU mode")
+    selected = CONFIG["modes"] if only_mode is None else [only_mode]
+    limits = CONFIG["qualification_limits"]
+    teacher_limit = limits["teacher_s"] if only_mode is None else limits["single_teacher_s"]
+    student_limit = limits["student_s"] if only_mode is None else limits["single_student_s"]
     count = CONFIG["canary"]["gpu_count"]
     if count not in (2, 3, 4):
         raise ValueError("Use an explicit two-, three-, or four-GPU student topology")
@@ -377,9 +420,12 @@ def main(phase: str, arm: str, output_dir: str, accelerator: str | None = None):
     # are separate and must be made together before either role starts.
     rate = Decimal("0.001736") if accelerator == "B200" else Decimal("0.001097")
     host_rate = 16 * Decimal("0.0000131") + 128 * Decimal("0.00000222")
-    gpu_bound = (2312 * (rate + host_rate) + 1712 * (count * rate + host_rate) + Decimal("0.5")).quantize(Decimal("0.1"), rounding=ROUND_CEILING)
+    overhead = limits["startup_s"] + limits["teardown_s"]
+    gpu_bound = ((teacher_limit + overhead) * (rate + host_rate) + (student_limit + overhead) * (count * rate + host_rate)
+                 + Decimal("0.5")).quantize(Decimal("0.1"), rounding=ROUND_CEILING)
     bound = gpu_bound if phase == "gpu" else Decimal("0.35")
     ledger = output / (profile + "-cpu-reservations.json")
+    settle_cpu_history(ledger, output, profile)
     prior = json.loads(ledger.read_text()) if ledger.is_file() else []
     usage_upper = cumulative_upper(reported, CONFIG["billing_baseline_usd"][profile], prior)
     guard = {"reported_month_usage_usd": str(reported), "cumulative_usage_upper_usd": str(usage_upper), "next_call_bound_usd": str(bound),
@@ -395,14 +441,15 @@ def main(phase: str, arm: str, output_dir: str, accelerator: str | None = None):
         current_upper = cumulative_upper(reported, CONFIG["billing_baseline_usd"][profile], current)
         if current_upper + bound + Decimal(str(CONFIG["billing_lag_reserve_usd"])) > Decimal(str(CONFIG["budget_usd"])):
             raise RuntimeError("Concurrent reservation exhausted the cumulative profile budget")
-        current.append({"id": label, "phase": phase, "arm": arm, "upper_bound_usd": str(bound)})
+        current.append({"id": label, "phase": phase, "arm": arm, "upper_bound_usd": str(bound), "app_id": app.app_id})
         ledger.write_text(json.dumps(current, indent=2))
     (output / (profile + "-" + phase + "-billing.json")).write_text(json.dumps(rows, indent=2))
     started = time.monotonic()
-    result = run_arm(arm, accelerator) if phase == "gpu" else stage.remote(arm, phase)
+    result = run_arm(arm, accelerator, selected, teacher_limit, student_limit) if phase == "gpu" else stage.remote(arm, phase)
     if phase == "imports" and result["exit_code"] == 0:
         result["teacher_runtime"] = teacher_inventory.remote()
-    result.update(profile=profile, arm=arm, elapsed_seconds=time.monotonic() - started, guard=guard)
+    result.update(profile=profile, arm=arm, elapsed_seconds=time.monotonic() - started, guard=guard,
+                  app_id=app.app_id, selected_modes=selected, teacher_limit_s=teacher_limit, student_limit_s=student_limit)
     (output / (profile + "-" + arm + "-" + phase + "-" + label + ".json")).write_text(json.dumps(result, indent=2))
     (output / (profile + "-" + arm + "-" + phase + ".json")).write_text(json.dumps(result, indent=2))
     if phase == "gpu":

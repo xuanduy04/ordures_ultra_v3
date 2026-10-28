@@ -33,6 +33,13 @@ supplement:
     - mlflow-tracing==3.12.0
     - uvicorn==0.37.0
 modes: [topk_tail_kl, dpca, ctopd_topk, simct_topk, grass_chunk_fixed_sigma]
+qualification_limits:
+  teacher_s: 2100
+  student_s: 1500
+  single_teacher_s: 1050
+  single_student_s: 540
+  startup_s: 180
+  teardown_s: 32
 variant:
   score_mode: topk
   adv_clamp: 10.0

@@ -283,8 +283,13 @@ def canaries(config, arm, teacher_url):
     reports = []
     persistent = Path("/cache/evidence") / arm
     persistent.mkdir(parents=True, exist_ok=True)
-    suite_deadline = time.monotonic() + 1370
-    for mode in config["modes"]:
+    selected = json.loads(os.environ["XTOKEN_GYM_SELECTED_MODES"])
+    if not selected or len(set(selected)) != len(selected) or not set(selected).issubset(config["modes"]):
+        raise ValueError("Unknown or duplicated explicit mode selection")
+    suite_seconds = int(os.environ["XTOKEN_GYM_SUITE_SECONDS"])
+    cleanup_seconds = 15 if len(selected) == 1 else 65
+    suite_deadline = time.monotonic() + suite_seconds
+    for mode in selected:
         remaining = suite_deadline - time.monotonic()
         if remaining < 90:
             break
@@ -307,7 +312,7 @@ def canaries(config, arm, teacher_url):
         print("GYM_CANARY=" + json.dumps({"arm": arm, "mode": mode, "state": "starting"}), flush=True)
         try:
             code = run_process([sys.executable, "-B", "examples/run_xtoken_on_policy_distillation.py", "--config", str(run / "effective.yaml")],
-                               env, min(config["canary"]["mode_timeout_s"], max(1, suite_deadline - time.monotonic() - 65)), run / "driver.log", key)
+                               env, min(config["canary"]["mode_timeout_s"], max(1, suite_deadline - time.monotonic() - cleanup_seconds)), run / "driver.log", key)
             (run / "process-exit.json").write_text(json.dumps({"driver_exit_code": code, "tee_exit_code": 0}))
             report = assess(run, "on")
             report.update(mode=mode, arm=arm, hardware=hardware)
@@ -332,8 +337,8 @@ def canaries(config, arm, teacher_url):
         shutil.rmtree(resolved)
         if mode == "topk_tail_kl" and not report["success"]:
             break
-    result = {"arm": arm, "reports": reports, "requested_modes": config["modes"],
-              "success": len(reports) == len(config["modes"]) and all(item["success"] for item in reports)}
+    result = {"arm": arm, "reports": reports, "requested_modes": selected, "campaign_modes": config["modes"],
+              "success": len(reports) == len(selected) and all(item["success"] for item in reports)}
     (persistent / "summary.json").write_text(json.dumps(result, indent=2))
     print("GYM_SUITE_RESULT=" + json.dumps(result), flush=True)
 
