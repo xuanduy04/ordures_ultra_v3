@@ -7,7 +7,7 @@ import os
 import aiohttp
 import torch
 
-from nemo_rl.algorithms.opd_outsource import VLLMTeacherLogprobClient
+from nemo_rl.algorithms.opd import VLLMTeacherLogprobClient
 
 
 class TeacherCapabilityError(RuntimeError):

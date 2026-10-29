@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from nemo_rl.algorithms.utils import get_tokenizer
+from nemo_rl.algorithms.x_token.data import get_tokenizer
 from nemo_rl.algorithms.xtoken_off_policy_distillation import MasterConfig
 from nemo_rl.utils.config import load_config, register_omegaconf_resolvers
 from omegaconf import OmegaConf

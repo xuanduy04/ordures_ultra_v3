@@ -1,5 +1,7 @@
 import asyncio
+import importlib
 import json
+import pickle
 import threading
 import urllib.error
 
@@ -7,6 +9,7 @@ import pytest
 import torch
 
 from nemo_rl.algorithms import opd_outsource as opd_module
+from nemo_rl.algorithms import opd as canonical_opd
 from nemo_rl.algorithms.opd_outsource import (
     TeacherContextLengthError,
     VLLMTeacherLogprobClient,
@@ -16,6 +19,31 @@ from nemo_rl.algorithms.opd_outsource import (
     resolve_teacher_specs,
     validate_teacher_serves,
 )
+
+
+def test_legacy_module_alias_preserves_identity_and_private_helpers():
+    assert opd_module is canonical_opd
+    assert importlib.import_module("nemo_rl.algorithms.opd_outsource") is canonical_opd
+    assert VLLMTeacherLogprobClient is canonical_opd.VLLMTeacherLogprobClient
+    assert TeacherContextLengthError is canonical_opd.TeacherContextLengthError
+    assert opd_module._TeacherServerError is canonical_opd._TeacherServerError
+    assert opd_module._retry_delay.__globals__ is canonical_opd.__dict__
+
+
+@pytest.mark.parametrize("symbol", ["VLLMTeacherLogprobClient", "TeacherContextLengthError"])
+def test_legacy_pickled_global_resolves_to_canonical_symbol(symbol):
+    legacy_global = ("cnemo_rl.algorithms.opd_outsource\n" + symbol + "\n.").encode()
+    assert pickle.loads(legacy_global) is getattr(canonical_opd, symbol)
+
+
+def test_legacy_monkeypatch_reaches_function_globals(monkeypatch):
+    monkeypatch.setattr(opd_module, "_RETRY_BACKOFF_BASE_S", 0.0)
+    assert canonical_opd._retry_delay(2) == 0.0
+    calls = []
+    monkeypatch.setattr(opd_module, "probe_teacher_serve", lambda url, models: calls.append((url, models)))
+    canonical_opd.validate_teacher_serves({"on_policy_distillation": {
+        "teacher_model_by_agent_name": {"math": {"url": "http://teacher", "model": "fixture"}}}})
+    assert calls == [("http://teacher", {"fixture"})]
 
 
 # ---------------------------------------------------------------------------

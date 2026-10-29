@@ -22,8 +22,29 @@ These eight files match that baseline (normalizing only LF/CRLF):
 All eight are restored, including the original external-teacher OPD module
 name and its corresponding GRPO entrypoint. Old
 GRPO field names, advantage/reward rules and logging in those files are retained.
-The independent `opd_outsource.py` used by the X-Token client is still present;
-restoring company OPD does not replace the X-Token remote-teacher transport.
+X-Token imports `VLLMTeacherLogprobClient` directly from the protected `opd.py`.
+`opd_outsource.py` remains an import-compatible module alias to `opd`, so old
+imports, exception identities and module-level monkeypatches resolve to the same
+implementation. Both names now share mutable globals; a monkeypatch through
+either name affects both, so it must remain scoped to isolated tests. Legacy
+pickled global references remain resolvable through the alias. Deploy this
+change in fresh processes, not by hot-reloading modules in a running job.
+Only the HTTP worker/session/future lifecycle is shared. X-Token retains its
+full/top-k parsers, API-key handling, finite retry count, request timeout, score
+element cap and declared/streamed response-byte limits. It does not use the
+legacy client's unlimited scoring-request retry policy. The protected OPD
+module and its old callers are unchanged.
+
+The client consolidation was checked with 238 passing CPU tests and 14 skips
+in the pinned NeMo image on Modal (`ap-3SUldoMei8WqM1KM2FkaUW`), including
+the legacy client suite, X-Token HTTP/parser/loss tests and the protected-file
+checks. Local launcher/boundary tests reported 274 passes and 15 skips.
+Coverage includes legacy pickled global lookup, private-global monkeypatches,
+API-key forwarding and bounded full/top-k retry/timeout/response-size handling.
+The expanded run also corrected a stale tokenizer test to call the X-Token
+adapter instead of expecting X-Token kwargs from the company loader. No
+tokenizer implementation changed. These are CPU regressions, not a new GPU
+training or deployed-company qualification.
 Imported Super GRPO behavior remains available in the previous branch rather
 than silently becoming the default behavior of this company-baseline branch.
 
