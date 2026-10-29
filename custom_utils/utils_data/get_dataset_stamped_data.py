@@ -157,7 +157,7 @@ def main() -> None:
         "--output",
         type=Path,
         default=None,
-        help="Path to the output JSONL file (default: './output/<dataset field name>.jsonl').",
+        help="Path to the output JSONL file. If omitted, input files are stamped in place.",
     )
     parser.add_argument(
         "--yes",
@@ -171,12 +171,6 @@ def main() -> None:
         required=True,
         help="Value assigned to the 'dataset' field of every row.",
     )
-    parser.add_argument(
-        "--in-place",
-        action="store_true",
-        default=False,
-        help="Stamp the input file(s) in place instead of writing to an output file (default: false).",
-    )
 
     args = parser.parse_args()
 
@@ -189,18 +183,13 @@ def main() -> None:
     except FileNotFoundError as exc:
         parser.error(str(exc))
 
-    if args.in_place:
-        if args.output is not None:
-            parser.error(f"--output and --in-place are mutually exclusive, got: {args.output}")
-
+    if args.output is None:
         logger.info(f"Stamping {len(input_files)} input file(s) in place with dataset '{dataset}'")
         stats = _stamp_in_place_pass(input_files, dataset)
         logger.info(f"Done - in-place stamping complete:\n{pprint.pformat(stats)}.")
         return
 
-    output_path: Path = (
-        args.output.resolve() if args.output is not None else (Path("./output") / f"{dataset}.jsonl").resolve()
-    )
+    output_path: Path = args.output.resolve()
 
     if output_path in [f.resolve() for f in input_files]:
         parser.error(f"Input and output paths must differ, got: {output_path}")
