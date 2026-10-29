@@ -44,6 +44,10 @@ class Tokenizer:
     all_special_ids = [0, 1]
     is_fast = True
 
+    def convert_ids_to_tokens(self, ids):
+        pieces = {0: "<pad>", 1: "<eos>", 6: "<think>", 7: "</think>"}
+        return [pieces[index] if index in pieces else str(index) for index in ids]
+
     def decode(self, ids, **kwargs):
         return "\ufffd" if 3 in ids else "ok"
 
@@ -123,9 +127,33 @@ def test_all_bad_samples_make_no_empty_optimizer_update(collator):
         collator(batch(), bad, [[9], [9]], 0, 1)
 
 
-def test_structural_errors_still_fail_instead_of_being_masked(collator):
+def test_structural_control_masks_bad_sample_but_prompt_corruption_fails(collator):
     bad = generation(0)
-    with pytest.raises(ValueError, match="control"):
-        collator(batch(), bad, [[9], [9]], 0, 1)
+    output = collator(batch(), bad, [[9], [9]], 0, 1)
+    assert output["input_ids"].tolist() == bad["output_ids"].tolist()
+    assert output["sample_mask"].tolist() == [0., 1.]
     with pytest.raises(ValueError, match="changed"):
         collator(batch(), generation(2), [[8], [9]], 0, 1)
+
+
+@pytest.mark.parametrize("cross", [False, True])
+def test_unknown_control_has_position_and_identity_in_log(collator, capsys, cross):
+    if not cross:
+        collator.aligners = [None]
+    output = collator(batch(), generation(0), [[9], [9]], 102, 103)
+    logs = capsys.readouterr().out.splitlines()
+    report = json.loads(next(line.split("=", 1)[1] for line in logs if line.startswith("XTOKEN_CONTROL_TOKENS=")))
+    assert report["policy_version"] == 102 and report["rollout_id"] == 103
+    assert report["sampled_ids_preserved"]
+    assert report["tokens"] == [{"response_position": 0, "sequence_position": 1,
+        "token_id": 0, "token": "<pad>", "action": "mask_sample", "batch_index": 0,
+        "source_index": 7, "side": "student", "teacher_index": None}]
+    assert not output["token_mask"][0].any()
+
+
+def test_reasoning_markers_are_classified_without_decoding_content():
+    tokenizer = Tokenizer()
+    tokenizer.all_special_ids = [0, 1, 6, 7]
+    events = text_module.response_control_tokens(tokenizer, [6, 2, 7, 0])
+    assert [event["action"] for event in events] == ["retain_reasoning", "retain_reasoning", "mask_sample"]
+    assert [event["response_position"] for event in events] == [0, 2, 3]

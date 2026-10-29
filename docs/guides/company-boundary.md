@@ -91,6 +91,36 @@ the X-Token adapter; old callers without it keep the SDK's existing behavior.
 
 ## Remaining integration and verification limits
 
+The X-Token rollout collator retains sampled `<think>` and `</think>` delimiters
+as response content, including an open or closing delimiter in a truncated
+rollout. Cross-tokenizer scoring encodes their literal text in the teacher's
+own tokenizer; the existing exact-alignment gate still applies. No reasoning
+text, delimiter or sampled student ID is stripped from model context. The
+terminal stop-token suffix stays in context but has zero loss, including
+repeated terminal tokens. Sampling and thinking YAML settings are unchanged.
+
+An unexpected structural control token masks the whole sample across all
+teachers instead of aborting a batch that still contains valid samples.
+Prompt-ID corruption and a batch without any valid response still fail before
+an optimizer update. This excludes invalid trajectories from the objective;
+it does not train through arbitrary role/padding controls. Monitor the masked
+sample rate rather than interpreting this as unconditional rollout coverage.
+`XTOKEN_CONTROL_TOKENS` reports the token ID/string, zero-based response and
+sequence positions, source row, student/teacher side, teacher index, policy
+version, rollout ID and retain/mask decision without logging full prompts or
+answers. `XTOKEN_RESPONSE_MASK.masked_count` counts unique affected samples,
+even when several teachers reject the same sample. Both sampled IDs and
+behavior-logprob positions remain unchanged. The company GRPO/OPD path does
+not use this collator and is unchanged.
+
+Thinking/control-token regression coverage passed 273 CPU tests with 14 skips
+in the pinned Modal image (`ap-e04eMUsoPoYb5AD4pIwc8f`); local launcher/helper
+coverage passed 277 tests with 15 skips. Cases include same/cross tokenizer,
+atomic/split teacher reasoning delimiters, truncated reasoning, repeated EOS,
+mixed and all-invalid batches, multi-teacher masking, preserved behavior
+logprobs and real loss backward with zero gradient on masked samples. No new
+GPU generation, company-node run or 200-step thinking pilot is claimed.
+
 This branch does not claim that every company file is byte-identical. Worker
 logit/head-input hooks, collators, additive processor/registry entries, the two
 optional data/tokenizer callbacks, refit allocation logs and Automodel API/backend compatibility

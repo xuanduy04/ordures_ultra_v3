@@ -6,7 +6,7 @@ import json
 import torch
 
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
-from nemo_rl.data.xtoken_response_text import response_for_alignment
+from nemo_rl.data.xtoken_response_text import response_control_tokens, response_for_alignment
 
 
 class PromptCollator:
@@ -79,6 +79,16 @@ class RolloutCrossTokenizerCollator:
     def __call__(self, prompt_batch, generation, prompt_ids, policy_version, rollout_id):
         rows, responses, texts, prompt_lengths = [], [], [], []
         masked_responses = []
+        control_tokens = []
+
+        def inspect_controls(tokenizer, response, index, start, side, teacher_index):
+            events = response_control_tokens(tokenizer, response)
+            for event in events:
+                control_tokens.append({**event, "batch_index": index,
+                    "source_index": int(prompt_batch["idx"][index]), "side": side,
+                    "teacher_index": teacher_index, "sequence_position": start + event["response_position"]})
+            return any(event["action"] == "mask_sample" for event in events)
+
         for index, prompt in enumerate(prompt_ids):
             total = int(generation["unpadded_sequence_lengths"][index])
             if total < len(prompt) or total > generation["output_ids"].shape[1]:
@@ -87,13 +97,14 @@ class RolloutCrossTokenizerCollator:
             if row[:len(prompt)] != prompt:
                 raise ValueError("Generation output changed the sampled student prompt IDs")
             response = row[len(prompt):]
-            if response and response[-1] in self.stop_token_ids:
+            while response and response[-1] in self.stop_token_ids:
                 response = response[:-1]
-            if any(token in self.student_tokenizer.all_special_ids for token in response):
-                raise ValueError("A non-terminal control token appeared in the response")
             sampled_response_length = len(response)
-            response, text, reason = response_for_alignment(
-                self.student_tokenizer, response, any(aligner is not None for aligner in self.aligners))
+            if inspect_controls(self.student_tokenizer, response, index, len(prompt), "student", None):
+                response, text, reason = [], "", "unexpected_student_control_token"
+            else:
+                response, text, reason = response_for_alignment(
+                    self.student_tokenizer, response, any(aligner is not None for aligner in self.aligners))
             if reason is not None:
                 masked_responses.append({"batch_index": index, "source_index": int(prompt_batch["idx"][index]),
                     "sampled_response_tokens": sampled_response_length, "reason": reason})
@@ -101,6 +112,44 @@ class RolloutCrossTokenizerCollator:
             responses.append(response)
             texts.append(text)
             prompt_lengths.append(len(prompt))
+
+        # Inspect all teacher views before masks/alignment are built. A bad
+        # teacher view excludes that sample consistently across every teacher.
+        teacher_views = {}
+        invalid_teacher_samples = set()
+        for teacher_index, aligner in enumerate(self.aligners):
+            if aligner is None:
+                continue
+            tokenizer = self.teacher_tokenizers[teacher_index]
+            if not tokenizer.is_fast:
+                raise ValueError("On-policy teacher alignment requires a fast tokenizer with offset mappings")
+            teacher_rows, teacher_responses, teacher_starts = [], [], []
+            for index, messages in enumerate(prompt_batch["prompts"]):
+                prefix = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+                encoded = tokenizer(prefix + texts[index], add_special_tokens=False, return_offsets_mapping=True)
+                ids = list(encoded["input_ids"])
+                offsets = encoded["offset_mapping"]
+                eligible = [position for position, (lo, hi) in enumerate(offsets)
+                            if lo >= len(prefix) and hi > lo]
+                start = eligible[0] if eligible else len(ids)
+                response = ids[start:]
+                if inspect_controls(tokenizer, response, index, start, "teacher", teacher_index):
+                    invalid_teacher_samples.add(index)
+                    masked_responses.append({"batch_index": index, "source_index": int(prompt_batch["idx"][index]),
+                        "sampled_response_tokens": len(responses[index]),
+                        "reason": "unexpected_teacher_control_token", "teacher_index": teacher_index})
+                teacher_rows.append(ids)
+                teacher_responses.append(response)
+                teacher_starts.append(start)
+            teacher_views[teacher_index] = (teacher_rows, teacher_responses, teacher_starts)
+        for index in invalid_teacher_samples:
+            responses[index] = []
+            for _, teacher_responses, _ in teacher_views.values():
+                teacher_responses[index] = []
+        if control_tokens:
+            print("XTOKEN_CONTROL_TOKENS=" + json.dumps({"policy_version": policy_version,
+                "rollout_id": rollout_id, "sampled_ids_preserved": True, "tokens": control_tokens}), flush=True)
+
         student_ids = _pad_ids(rows, self.student_tokenizer, self.student_limit, self.student_divisor)
         token_mask = torch.zeros_like(student_ids)
         for index, response in enumerate(responses):
@@ -108,13 +157,15 @@ class RolloutCrossTokenizerCollator:
             token_mask[index, start:start + len(response)] = 1
         sample_mask = prompt_batch["sample_mask"].clone()
         sample_mask *= torch.tensor([bool(response) for response in responses], dtype=sample_mask.dtype)
+        masked_count = len({item["batch_index"] for item in masked_responses})
         if masked_responses:
             print("XTOKEN_RESPONSE_MASK=" + json.dumps({"policy_version": policy_version,
-                "rollout_id": rollout_id, "masked_count": len(masked_responses), "batch_size": len(rows),
+                "rollout_id": rollout_id, "masked_count": masked_count, "batch_size": len(rows),
                 "sampled_ids_preserved": True, "samples": masked_responses}), flush=True)
         if not bool((sample_mask > 0).any()):
             raise ValueError("No non-empty valid response in this rollout batch; "
-                             f"replacement-character masked samples={len(masked_responses)}; no optimizer update was made")
+                             f"masked samples={masked_count}, "
+                             f"reasons={sorted({item['reason'] for item in masked_responses})}; no optimizer update was made")
         out = BatchedDataDict(
             input_ids=student_ids,
             input_lengths=torch.tensor(list(map(len, rows)), dtype=torch.long),
@@ -145,23 +196,7 @@ class RolloutCrossTokenizerCollator:
             if aligner is None:
                 continue
             tokenizer = self.teacher_tokenizers[teacher_index]
-            if not tokenizer.is_fast:
-                raise ValueError("On-policy teacher alignment requires a fast tokenizer with offset mappings")
-            teacher_rows, teacher_responses, teacher_starts = [], [], []
-            for index, messages in enumerate(prompt_batch["prompts"]):
-                prefix = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-                encoded = tokenizer(prefix + texts[index], add_special_tokens=False, return_offsets_mapping=True)
-                ids = list(encoded["input_ids"])
-                offsets = encoded["offset_mapping"]
-                eligible = [position for position, (lo, hi) in enumerate(offsets)
-                            if lo >= len(prefix) and hi > lo]
-                start = eligible[0] if eligible else len(ids)
-                response = ids[start:]
-                if any(token in tokenizer.all_special_ids for token in response):
-                    raise ValueError("Teacher response text produced a control token")
-                teacher_rows.append(ids)
-                teacher_responses.append(response)
-                teacher_starts.append(start)
+            teacher_rows, teacher_responses, teacher_starts = teacher_views.pop(teacher_index)
             teacher_ids = _pad_ids(
                 teacher_rows, tokenizer, self.teacher_limits[teacher_index], self.teacher_divisors[teacher_index],
             )
