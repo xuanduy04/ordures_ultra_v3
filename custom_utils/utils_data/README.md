@@ -62,15 +62,16 @@ Implemented NeMo-Gym converters:
 
 1. `convert_to_general_qa.py`
 
-Writes rows with `agent_ref`, `responses_create_params`, `question`, `expected_answer`, `should_use_judge`, and optional `dataset`. Extra flags:
+Writes rows with `agent_ref`, `responses_create_params` (`parallel_tool_calls: false`), `question`, `expected_answer`, `should_use_judge`, `dataset`, and optional `answer_is_tool_call`. Extra flags:
 
-- `--answer-field`: Default `expected_answer`
+- `--answer-field`: Default `ground_truth`
+- `--answer-is-tool-call-field`: Default `answer_is_tool_call`
 - `--should-use-judge`
 - `--instruction-prefix`: prepended to plain-string prompts only
 
 2. `convert_to_genrm_compare.py`
 
-Writes rows with `agent_ref` (type `responses_api_agents`) `responses_create_params` (`parallel_tool_calls: false`), and optional `dataset` and `principle`. The principle comes from exactly one of:
+Writes rows with `agent_ref`, `responses_create_params` (`parallel_tool_calls: false`), and optional `dataset` and `principle`. The principle comes from exactly one of:
 
 - `--principle-string TEXT`: a literal principle
 - `--principle-file PATH`: a text file whose content is the principle
@@ -83,7 +84,7 @@ Implemented other converters:
 
 1. `convert_sft_data_to_rl_qa.py`:
 
-All turns of `messages` except the last become `question`, the last turn's content becomes `ground_truth`. Default for `--output` is `<input stem>-RL_QA.jsonl`
+All turns of `messages` except the last become `question`, the last turn's content becomes `ground_truth`. If the last turn has a tool call, `ground_truth` becomes a tool dict (`name`/`arguments`), `answer_is_tool_call: true` is stamped, and the row must have a `tools` field. The row's `tools` field is carried over to the output whenever the input row has one. `--output` defaults to `<input stem>-RL_QA.jsonl`. Extra flags: `--skip-on-error` skips invalid rows instead of aborting.
 
 
 ## Dataset Functions
@@ -106,7 +107,7 @@ Extracts the untrained subset of dataset(s) `A` by excluding samples seen in tra
 
 3. `get_dataset_stamped_data.py`:
 
-Uniformly assigns the `dataset` field of all input datasets to be the same value. `--output` defaults to `./output/<dataset field name>.jsonl`. Extra flag: `--dataset` (required, must be non-empty), `--in-place` (optional, assignment is done in-place if set and `--output` is ignored)
+Uniformly assigns the `dataset` field of all input datasets to be the same value. It does so **inplace** unless `--output` is specified (`--output` does not have a default). Extra flag: `--dataset` (required, must be non-empty)
 
 
 ## Sample Scripts
@@ -136,7 +137,7 @@ Scripts used to maintain filename standards.
 
 Implemented scripts:
 
-1. `rename_data_to_follow_standard.py`: 
+1. `rename_data_to_follow_standard.py`:
 
 Renames **inplace** the json file into one that follows the Filename Standard.
 
@@ -144,12 +145,12 @@ Reads the current filename right-to-left to determine its `len` metadata (if pre
 
 Valid data types are `SFT`, `RL_QA`, `nemo_gym`, or a NeMo-Gym environment name (discovered from the environment folder names and the `configs/*.yaml` stems under `3rdparty/Gym-workspace/Gym/resources_servers/`). If the filename has no valid data type, the script errors out and asks the user to specify `--data-type`. 
 
-Extra flags: 
+Extra flags:
 
 - `--data-type`: replaces the `data type` parsed from the filename when given
 - `--tokenizer`: path to local HuggingFace tokenizer directory, used to compute the `len` metadata only when the filename has none
 
-2. `filter_overlong_token.py`: 
+2. `filter_overlong_token.py`:
 
 Filters the input data's main field (according to `data_type`) to be at most `max-token` tokens according to the `tokenizer`. Extra flags: `--max-token`, `--tokenizer`, `--data-type`. Default for `--output` is `<input stem>-len<resolved max token in thousands>k.jsonl`
 

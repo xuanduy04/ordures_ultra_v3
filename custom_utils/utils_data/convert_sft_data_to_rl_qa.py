@@ -31,6 +31,38 @@ def _preprocess_underscore_args(argv: list[str]) -> list[str]:
     return out
 
 
+def _coerce_tools(tools):
+    """Coerce *tools* into a list of dicts, json-loading string layers before validating.
+
+    The 'tools' field may arrive as a list of JSON strings, a JSON string of a
+    list, or a plain list of dicts.
+    """
+    if tools is None:
+        return None
+
+    if isinstance(tools, str):
+        try:
+            tools = json.loads(tools)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Entry has invalid 'tools' field: not valid JSON") from exc
+
+    if not isinstance(tools, list):
+        raise ValueError("Entry has invalid 'tools' field: expected a list")
+
+    coerced = []
+    for idx, tool in enumerate(tools):
+        if isinstance(tool, str):
+            try:
+                tool = json.loads(tool)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Entry has invalid 'tools' entry at index {idx}: not valid JSON") from exc
+        if not isinstance(tool, dict):
+            raise ValueError(f"Entry has invalid 'tools' entry at index {idx}: expected a dict")
+        coerced.append(tool)
+
+    return coerced
+
+
 def _validate_output_path(output_path: Path) -> None:
     """Ensure *output_path* ends with ``.jsonl``, parent dir exists, and file does not already exist."""
     if output_path.suffix.lower() != ".jsonl":
@@ -42,9 +74,10 @@ def _validate_output_path(output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
 
-def _convert_pass(input_path: Path, output_path: Path) -> int:
+def _convert_pass(input_path: Path, output_path: Path, skip_on_error: bool) -> int:
     """Convert SFT-format records from *input_path* into RL-style question/answer records."""
     processed = 0
+    skipped = 0
 
     with input_path.open("r", encoding="utf-8") as infile, \
          output_path.open("w", encoding="utf-8") as outfile:
@@ -56,37 +89,71 @@ def _convert_pass(input_path: Path, output_path: Path) -> int:
 
             try:
                 data = json.loads(line)
-                record_id = data.get("id")
                 messages = data.get("messages", [])
 
                 if not messages:
                     continue
 
-                # Split: all turns except last -> question, last turn content -> ground_truth
+                tools = _coerce_tools(data.get("tools"))
+
+                # Split: all turns except last -> question, last turn -> ground_truth
                 question = messages[:-1]
                 last_message = messages[-1]
-                ground_truth = (
-                    last_message.get("content", "").strip()
-                    if isinstance(last_message, dict)
-                    else ""
-                )
+
+                if not isinstance(last_message, dict):
+                    continue
+
+                tool_calls = last_message.get("tool_calls") or []
+                if tool_calls:
+                    if not tools:
+                        raise ValueError("Entry has a tool-call answer but no 'tools' field")
+                    if len(tool_calls) > 1:
+                        raise ValueError("Entry has a tool-call answer with multiple tool calls: expected exactly 1")
+                    tool_call = tool_calls[0]
+                    if not isinstance(tool_call, dict):
+                        raise ValueError("Entry has invalid tool call: expected a dict")
+                    function = tool_call.get("function", tool_call)
+                    if not isinstance(function, dict):
+                        raise ValueError("Entry has invalid tool call: expected a dict")
+                    name = function.get("name")
+                    if not isinstance(name, str) or not name.strip():
+                        raise ValueError("Entry has invalid tool call 'name': expected a non-empty string")
+                    arguments = function.get("arguments")
+                    if arguments is None:
+                        raise ValueError("Entry has invalid tool call: missing 'arguments' field")
+                    if not isinstance(arguments, (str, dict)):
+                        raise ValueError("Entry has invalid tool call 'arguments': expected a string or a dict")
+                    ground_truth = {"name": name, "arguments": arguments}
+                    answer_is_tool_call = True
+                else:
+                    ground_truth = last_message.get("content", "").strip()
+                    answer_is_tool_call = False
 
                 if not question or not ground_truth:
                     continue
 
                 transformed_data = {
-                    "id": record_id,
                     "question": question,
                     "ground_truth": ground_truth,
                 }
+                if answer_is_tool_call:
+                    transformed_data["answer_is_tool_call"] = True
+                if tools:
+                    transformed_data["tools"] = tools
 
                 json.dump(transformed_data, outfile, ensure_ascii=False)
                 outfile.write("\n")
                 processed += 1
 
-            except (json.JSONDecodeError, KeyError, IndexError):
-                logger.info(f"Skipping malformed line {idx+1} (numbered from 1)")
-                continue
+            except Exception as exc:
+                if skip_on_error:
+                    logger.warning(f"Skipping line {idx+1} (numbered from 1): {exc}")
+                    skipped += 1
+                    continue
+                raise
+
+    if skipped:
+        logger.info(f"Skipped {skipped} invalid entries.")
 
     return processed
 
@@ -115,6 +182,12 @@ def main() -> None:
         default=False,
         help="Preemptively confirm overwrite of the output file (default: false).",
     )
+    parser.add_argument(
+        "--skip-on-error",
+        action="store_true",
+        default=False,
+        help="Skip invalid entries with a warning instead of aborting (default: false).",
+    )
 
     args = parser.parse_args()
 
@@ -124,6 +197,7 @@ def main() -> None:
         if args.output is not None
         else input_path.with_name(input_path.stem + "-RL_QA.jsonl")
     )
+    skip_on_error: bool = args.skip_on_error
 
     if not input_path.is_file():
         parser.error(f"Input file does not exist: {input_path}")
@@ -142,7 +216,7 @@ def main() -> None:
 
     logger.info(f"Converting {input_path} -> {output_path}")
 
-    processed = _convert_pass(input_path, output_path)
+    processed = _convert_pass(input_path, output_path, skip_on_error)
 
     logger.info(f"Done - wrote {processed} entries to {output_path}.")
 

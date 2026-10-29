@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 import logging
 import multiprocessing
@@ -428,76 +429,53 @@ def _round_to_thousands(value: int, round_up: bool = False) -> int:
     return max(1, (value + 500) // 1000)
 
 
-def main() -> None:
-    sys.argv = _preprocess_underscore_args(sys.argv)
-
-    parser = argparse.ArgumentParser(
-        description="Rename a JSONL file inplace to follow the dataset filename standard.",
-    )
-    parser.add_argument(
-        "input",
-        type=Path,
-        help="Path to the input JSONL file (must end with .jsonl).",
-    )
-    parser.add_argument(
-        "--data-type",
-        default=None,
-        help="Data type for the renamed file (e.g. SFT, RL_QA, nemo_gym, or a NeMo-Gym "
-        "environment name). Overrides the data type parsed from the filename, and is "
-        "required when the filename has none (default: parse from the filename).",
-    )
-    parser.add_argument(
-        "--tokenizer",
-        type=Path,
-        help="Path to a local HuggingFace tokenizer directory. Only used to compute "
-        "the len metadata when the filename has none (default: omit `len` metadata).",
-    )
-    parser.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        default=False,
-        help="Preemptively confirm overwrite of the target file (default: false).",
-    )
-
-    args = parser.parse_args()
-
-    input_path: Path = args.input.resolve()
-    data_type_arg: str | None = args.data_type
+def _process_file(
+    input_path: Path,
+    data_type_arg: str | None,
+    tokenizer_dir: Path | None,
+    retokenize: bool,
+    yes: bool,
+    valid_data_types: set[str] | None,
+) -> bool:
+    """Rename *input_path* inplace to the dataset filename standard; return success."""
+    input_path = input_path.resolve()
 
     if not input_path.is_file():
-        parser.error(f"Input file does not exist: {input_path}")
+        logger.error(f"Input file does not exist: {input_path}")
+        return False
 
     if input_path.suffix.lower() != ".jsonl":
-        parser.error(f"Input path must end with .jsonl, got: {input_path}")
+        logger.error(f"Input path must end with .jsonl, got: {input_path}")
+        return False
 
+    parse_stem = input_path.stem
     if data_type_arg is not None:
-        data_type_arg = data_type_arg.strip()
-        if not data_type_arg:
-            parser.error("--data-type is empty after stripping")
-        if "-" in data_type_arg:
-            parser.error(f"--data-type must not contain '-', got: {data_type_arg}")
+        parse_stem = parse_stem.removesuffix(data_type_arg).rstrip("-")
 
-    valid_data_types = _load_valid_data_types()
     content, len_field, filename_data_type = _parse_filename_right_to_left(
-        input_path.stem, valid_data_types
+        parse_stem, valid_data_types
     )
 
     if not content:
-        parser.error(
+        logger.error(
             f"Could not determine a content segment from filename '{input_path.name}'; "
             "expected '<content>[-<metadata>]-<data type>'."
         )
+        return False
 
     if data_type_arg is not None:
         data_type = data_type_arg
     elif filename_data_type is not None:
         data_type = filename_data_type
     else:
-        parser.error(
+        logger.error(
             f"Could not determine the data type from filename '{input_path.name}'; "
             "pass --data-type to specify it (e.g. --data-type SFT)."
         )
+        return False
+
+    if retokenize:
+        len_field = None
 
     logger.info(
         f"Parsed '{input_path.name}': content='{content}', "
@@ -506,26 +484,20 @@ def main() -> None:
 
     line_count = _count_lines(input_path)
     if line_count == 0:
-        parser.error("Empty input file.")
+        logger.error(f"Empty input file: {input_path.name}")
+        return False
 
     sample_count = _round_to_thousands(line_count)
     logger.info(f"Counted {line_count} line(s) -> sam{sample_count}k.")
 
     if len_field is None:
-        if args.tokenizer is not None:
-            tokenizer_dir: Path = args.tokenizer.resolve()
-            if not tokenizer_dir.is_dir():
-                parser.error(f"Tokenizer directory does not exist: {tokenizer_dir}")
-            try:
-                AutoTokenizer.from_pretrained(str(tokenizer_dir))
-            except Exception as exc:
-                parser.error(f"Failed to load tokenizer from {tokenizer_dir}: {exc}")
-
+        if tokenizer_dir is not None:
             max_tokens, n_errors = _max_token_pass(input_path, line_count, tokenizer_dir, data_type)
             if max_tokens == 0:
-                parser.error(
+                logger.error(
                     f"Could not tokenize any entry in '{input_path.name}' ({n_errors} error(s))."
                 )
+                return False
 
             len_field = f"len{_round_to_thousands(max_tokens, round_up=True)}k"
             logger.info(f"Counted max main-field token length {max_tokens} -> {len_field}.")
@@ -543,16 +515,119 @@ def main() -> None:
 
     if target_path == input_path:
         logger.info(f"'{input_path.name}' already follows the filename standard; nothing to do.")
-        return
+        return True
 
-    if target_path.exists() and not args.yes:
+    if target_path.exists() and not yes:
         response = input(f"{target_path} already exists. Override? Type [y]es/[n]o: ").strip().lower()
         if response not in ("y", "yes"):
-            logger.info("Existing target file will not be overridden; exiting.")
-            sys.exit(0)
+            logger.info("Existing target file will not be overridden; skipping.")
+            return True
 
     input_path.rename(target_path)
     logger.info(f"Done - renamed '{input_path.name}' -> '{target_path.name}'.")
+    return True
+
+
+def main() -> None:
+    sys.argv = _preprocess_underscore_args(sys.argv)
+
+    parser = argparse.ArgumentParser(
+        description="Rename JSONL files inplace to follow the dataset filename standard.",
+    )
+    parser.add_argument(
+        "input",
+        nargs="+",
+        help="Path(s) to the input JSONL file(s) (must end with .jsonl). Wildcard patterns are supported.",
+    )
+    parser.add_argument(
+        "--data-type",
+        default=None,
+        help="Data type for the renamed file (e.g. SFT, RL_QA, nemo_gym, or a NeMo-Gym "
+        "environment name). Overrides the data type parsed from the filename, and is "
+        "required when the filename has none (default: parse from the filename).",
+    )
+    parser.add_argument(
+        "--tokenizer",
+        type=Path,
+        help="Path to a local HuggingFace tokenizer directory. Only used to compute "
+        "the len metadata when the filename has none (default: omit `len` metadata).",
+    )
+    parser.add_argument(
+        "--always-tokenize",
+        "--always-retokenize",
+        "--retokenize",
+        dest="retokenize",
+        action="store_true",
+        default=False,
+        help="Always recompute the len metadata via --tokenizer, ignoring any len "
+        "metadata parsed from the filename. Requires --tokenizer.",
+    )
+    parser.add_argument(
+        "--yes",
+        "-y",
+        action="store_true",
+        default=False,
+        help="Preemptively confirm overwrite of the target file (default: false).",
+    )
+
+    args = parser.parse_args()
+
+    data_type_arg: str | None = args.data_type
+
+    if data_type_arg is not None:
+        data_type_arg = data_type_arg.strip()
+        if not data_type_arg:
+            parser.error("--data-type is empty after stripping")
+        if "-" in data_type_arg:
+            parser.error(f"--data-type must not contain '-', got: {data_type_arg}")
+
+    if args.retokenize and args.tokenizer is None:
+        parser.error("--always-tokenize/--always-retokenize/--retokenize requires --tokenizer.")
+
+    tokenizer_dir: Path | None = None
+    if args.tokenizer is not None:
+        tokenizer_dir = args.tokenizer.resolve()
+        if not tokenizer_dir.is_dir():
+            parser.error(f"Tokenizer directory does not exist: {tokenizer_dir}")
+        try:
+            AutoTokenizer.from_pretrained(str(tokenizer_dir))
+        except Exception as exc:
+            parser.error(f"Failed to load tokenizer from {tokenizer_dir}: {exc}")
+
+    input_paths: list[Path] = []
+    for pattern in args.input:
+        if glob.has_magic(pattern):
+            matches = sorted(glob.glob(pattern))
+            if not matches:
+                logger.error(f"Pattern '{pattern}' matched no files; skipping.")
+                continue
+        else:
+            matches = [pattern]
+        input_paths.extend(Path(match) for match in matches)
+
+    if not input_paths:
+        parser.error("No input files to process.")
+
+    valid_data_types = _load_valid_data_types()
+
+    failures = 0
+    for input_path in input_paths:
+        try:
+            if not _process_file(
+                input_path,
+                data_type_arg,
+                tokenizer_dir,
+                args.retokenize,
+                args.yes,
+                valid_data_types,
+            ):
+                failures += 1
+        except Exception as exc:
+            failures += 1
+            logger.error(f"Failed to process '{input_path}': {exc}")
+
+    if failures:
+        sys.exit(1)
 
 
 if __name__ == "__main__":
