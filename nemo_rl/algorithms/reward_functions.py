@@ -92,16 +92,16 @@ def _compute_n_gram_repetition_penalty(
 
 
 def apply_reward_shaping(
-    batch: BatchedDataDict, cfg: RewardShapingConfig, verbose: bool = True
-) -> BatchedDataDict:
+    batch: BatchedDataDict, cfg: RewardShapingConfig, dry_run: bool = False, verbose: bool = True
+) -> BatchedDataDict | dict[str, list[float]]:
     """Process rewards by applying custom reward shaping penalties.
 
-    Currently supports N-gram repetition penalties, overlong (DAPO-style) penalties, and
-    stop-properly penalties.
+    Currently supports N-gram repetition penalties, overlong (DAPO-style) penalties, and stop-properly penalties.
     """
     if not cfg["enabled"]:
-        return batch
+        return {} if dry_run else batch
     rewards = batch["total_reward"]
+    penalties = dict() if dry_run else None
 
     # Apply N-gram repetition penalty and/or overlong (DAPO) penalty if configured
     use_n_gram_penalty = (
@@ -119,6 +119,8 @@ def apply_reward_shaping(
             n_gram_repetition_weight = abs(cfg["n_gram_repetition_weight"])
             n_gram_size = cfg["n_gram_size"]
             n_gram_threshold = cfg["n_gram_threshold"]
+            if dry_run:
+                penalties["n_gram_penalty"] = [0.0] * len(rewards)
 
         if use_overlong_penalty:
             overlong_buffer_penalty = abs(cfg["overlong_buffer_penalty"])
@@ -126,6 +128,8 @@ def apply_reward_shaping(
             max_response_length = cfg["max_response_length"]
             # Calculate the expected response length
             expected_response_length = max_response_length - overlong_buffer_length
+            if dry_run:
+                penalties["overlong_penalty"] = [0.0] * len(rewards)
 
         assert len(batch["message_log"]) == len(rewards), "The number of messages in the batch must match the number of rewards"
 
@@ -150,20 +154,27 @@ def apply_reward_shaping(
                 n_gram_penalty = _compute_n_gram_repetition_penalty(
                     assistant_token_ids, n_gram_size, n_gram_threshold
                 )
-                rewards[i] = rewards[i] - n_gram_repetition_weight * n_gram_penalty
+                if dry_run:
+                    penalties["n_gram_penalty"][i] = float(n_gram_repetition_weight * n_gram_penalty)
+                else:
+                    rewards[i] = rewards[i] - n_gram_repetition_weight * n_gram_penalty
                 if verbose:
-                    print("[INFO] n_gram_penalty: Applied successfully")
+                    print("[INFO] n_gram_penalty: Successful")
 
             if use_overlong_penalty:
                 response_length = assistant_token_ids.shape[0]
                 exceed_length = response_length - expected_response_length
                 overlong_penalty = min(max(exceed_length / overlong_buffer_length, 0.0), 1.0)
-                rewards[i] = rewards[i] - overlong_buffer_penalty * overlong_penalty
+                if dry_run:
+                    penalties["overlong_penalty"][i] = float(overlong_buffer_penalty * overlong_penalty)
+                else:
+                    rewards[i] = rewards[i] - overlong_buffer_penalty * overlong_penalty
                 if verbose:
-                    print("[INFO] overlong_penalty: Applied successfully")
+                    print("[INFO] overlong_penalty: Successful")
 
         # Update the rewards in the batch
-        batch["total_reward"] = rewards
+        if not dry_run:
+            batch["total_reward"] = rewards
 
     # Apply stop properly penalty if configured
     stop_properly_penalty_coef = cfg.get("stop_properly_penalty_coef", None)
@@ -177,7 +188,9 @@ def apply_reward_shaping(
             truncated = truncated.to(device=rewards.device)
 
         num_truncated = truncated.sum().item()
-        if num_truncated > 0:
+        if dry_run:
+            penalties["stop_properly_penalty"] = [float(stop_properly_penalty_coef) if t else 0.0 for t in truncated.tolist()]
+        if num_truncated > 0 and not dry_run:
             original_rewards = rewards.clone()
             # For truncated samples, shift the reward by stop_properly_penalty_coef
             rewards = rewards - truncated.to(rewards.dtype) * stop_properly_penalty_coef
@@ -190,8 +203,11 @@ def apply_reward_shaping(
                     f"shaped_reward_mean={rewards[truncated].mean().item():.4f}",
                     flush=True,
                 )
-        else:
+        elif num_truncated == 0:
             if verbose:
-                print("[INFO] stop properly penalty: no truncated samples (truncation_rate=0)", flush=True,)
+                print("[INFO] stop properly penalty: no truncated samples (truncation_rate=0)", flush=True)
+
+    if dry_run:
+        return penalties
 
     return batch
