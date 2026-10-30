@@ -21,9 +21,9 @@ from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 from nemo_rl.algorithms import opd_outsource as opd_module
 from nemo_rl.algorithms.advantage_estimator import (
-    GRPOAdvantageEstimator,
+    ADVANTAGE_ESTIMATOR_MAPPING,
+    BaseAdvantageEstimator,
     OPDAdvantageEstimator,
-    ReinforcePlusPlusAdvantageEstimator,
 )
 from nemo_rl.algorithms.interfaces import LossFunction
 from nemo_rl.algorithms.loss_functions import (
@@ -44,9 +44,7 @@ from nemo_rl.algorithms.utils import (
 from nemo_rl.data import DataConfig
 from nemo_rl.data.collate_fn import rl_collate_fn
 from nemo_rl.data.datasets import AllTaskProcessedDataset
-from nemo_rl.data.llm_message_utils import (
-    batched_message_log_to_flat_message,
-)
+from nemo_rl.data.llm_message_utils import batched_message_log_to_flat_message
 from nemo_rl.data.utils import extract_necessary_env_names
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.distributed.ray_actor_environment_registry import get_actor_python_env
@@ -74,10 +72,7 @@ from nemo_rl.models.policy.interfaces import ColocatablePolicyInterface
 from nemo_rl.models.policy.lm_policy import Policy
 from nemo_rl.utils.checkpoint import CheckpointingConfig, CheckpointManager
 from nemo_rl.utils.hash import get_user_turns, hash_list_dicts
-from nemo_rl.utils.logger import (
-    Logger,
-    LoggerConfig,
-)
+from nemo_rl.utils.logger import Logger, LoggerConfig
 from nemo_rl.utils.nsys import maybe_gpu_profile_step
 from nemo_rl.utils.timer import TimeoutChecker, Timer
 from nemo_rl.utils.venvs import create_local_venv_on_each_node
@@ -175,31 +170,28 @@ class GRPOConfig(TypedDict):
     # Note that this is slightly different than Masked Importance Sampling (MIS) because this uses the absolute value of the difference between the training and generation logprobs, whereas MIS just uses the difference between the training and generation logprobs.
     seq_logprob_error_threshold: float | None
     # ---- Advantage penalties ----
-    # Each penalty is enabled by a `penalize_*` flag and assigns a fixed
-    # negative advantage (default: -5.0) via the paired `*_advantage` value.
-
+    # max_advantage_penalization: value bounding the per-token advantage reduction.
+    max_advantage_penalization: NotRequired[float]
     # 1. Invalid tool call tokens
-    penalize_invalid_tool_call: bool
-    invalid_tool_call_advantage: NotRequired[float]
+    penalize_invalid_tool_call: NotRequired[bool]
+    invalid_tool_call_weight: NotRequired[float]
     # 2. Messages with malformed thinking
-    penalize_malformed_thinking: bool
-    malformed_thinking_advantage: NotRequired[float]
+    penalize_malformed_thinking: NotRequired[bool]
+    malformed_thinking_weight: NotRequired[float]
     # 3. From the first EOS token in a generation to the final token (assistant turns only)
     penalize_eos_token: NotRequired[bool]
-    eos_token_advantage: NotRequired[float]
+    eos_token_weight: NotRequired[float]
     # 4. Final assistant message when the final answer is empty
     penalize_empty_final_answer: NotRequired[bool]
-    empty_final_answer_advantage: NotRequired[float]
+    empty_final_answer_weight: NotRequired[float]
     # 5. N-gram repetition, subtracted from token advantages.
     # n_gram_repetition_size: the N-gram size
     # n_gram_repetition_threshold: occurrence count at which an N-gram is counted as a repeated phrase
     # n_gram_repetition_weight: scale factor for the penalty magnitude.
-    # n_gram_repetition_penalty_cap: negative value bounding the per-token advantage reduction.
     penalize_n_gram_repetition: NotRequired[bool]
     n_gram_repetition_size: NotRequired[int]
     n_gram_repetition_threshold: NotRequired[int]
     n_gram_repetition_weight: NotRequired[float]
-    n_gram_repetition_penalty_cap: NotRequired[float]
 
     # Advantage estimator configuration (grpo or reinforce_plus_plus)
     adv_estimator: NotRequired[AdvEstimatorConfig]
@@ -1056,14 +1048,14 @@ def _should_log_hashed_nemo_gym_responses(master_config: MasterConfig) -> bool:
     return should_log_hashed_nemo_gym_responses
 
 
-def _create_advantage_estimator(master_config: MasterConfig):
+def _create_advantage_estimator(master_config: MasterConfig) -> BaseAdvantageEstimator:
     """Create and return an advantage estimator based on configuration.
 
     Args:
         master_config: The master configuration dictionary.
 
     Returns:
-        An advantage estimator instance (GRPOAdvantageEstimator or ReinforcePlusPlusAdvantageEstimator).
+        An advantage estimator instance.
 
     Raises:
         ValueError: If the advantage estimator name is not recognized.
@@ -1076,26 +1068,16 @@ def _create_advantage_estimator(master_config: MasterConfig):
     # which older configs still use.
     adv_estimator_config = grpo_config.get(
         "adv_estimator",
-        {
+        default={
             "name": "grpo",
             "normalize_rewards": grpo_config.get("normalize_rewards", True),
-            "use_leave_one_out_baseline": grpo_config.get(
-                "use_leave_one_out_baseline", False
-            ),
+            "use_leave_one_out_baseline": grpo_config.get("use_leave_one_out_baseline", False),
             "minus_baseline": True,
         },
     )
 
     adv_estimator_name = adv_estimator_config["name"]
-    if adv_estimator_name == "grpo":
-        adv_estimator = GRPOAdvantageEstimator(adv_estimator_config, loss_config)
-        print("  ✓ Using GRPO advantage estimator")
-    elif adv_estimator_name == "reinforce_plus_plus":
-        adv_estimator = ReinforcePlusPlusAdvantageEstimator(
-            adv_estimator_config, loss_config
-        )
-        print("  ✓ Using Reinforce++ advantage estimator")
-    elif adv_estimator_name == "opd":
+    if adv_estimator_name == "opd":
         opd_cfg = master_config.get("on_policy_distillation", {})
         opd_estimator_config = {
             "name": "opd",
@@ -1124,11 +1106,16 @@ def _create_advantage_estimator(master_config: MasterConfig):
             )
         if loss_config.get("truncated_importance_sampling_type", "default") != "icepop":
             warnings.warn(
-                "OPD recommends loss_fn.truncated_importance_sampling_type: 'icepop' "
-                "(hard gate, MOPD Eq. 8)"
+                "OPD recommends loss_fn.truncated_importance_sampling_type: 'icepop' (hard gate, MOPD Eq. 8)"
             )
     else:
-        raise ValueError(f"Invalid adv_estimator name: {adv_estimator_name}")
+        if adv_estimator_name not in ADVANTAGE_ESTIMATOR_MAPPING:
+            raise ValueError(
+                f"Invalid adv_estimator name: {adv_estimator_name}. "
+                f"Supported estimators are: {sorted(ADVANTAGE_ESTIMATOR_MAPPING.keys())}"
+            )
+        adv_estimator = ADVANTAGE_ESTIMATOR_MAPPING[adv_estimator_name](adv_estimator_config, loss_config)
+        print(f"  ✓ Using {adv_estimator.name} advantage estimator")
 
     return adv_estimator
 
@@ -2013,7 +2000,7 @@ def async_grpo_train(
 
                     if master_config["grpo"]["reward_shaping"]["enabled"]:
                         repeated_batch = apply_reward_shaping(
-                            repeated_batch, master_config["grpo"]["reward_shaping"], verbose=False
+                            repeated_batch, master_config["grpo"]["reward_shaping"], dry_run=False, verbose=False
                         )
                         rewards = repeated_batch["total_reward"]
                         print(
@@ -2229,48 +2216,85 @@ def async_grpo_train(
                     )
 
                     # Apply advantage penalizations
-                    # invalid_tool_call
-                    penalize_invalid_tool_call = master_config["grpo"].get("penalize_invalid_tool_call", False)
-                    penalize_malformed_thinking = master_config["grpo"].get("penalize_malformed_thinking", False)
-                    # malformed_thinking
-                    invalid_neg_adv = master_config["grpo"].get("invalid_tool_call_advantage", -5.0)
-                    malformed_neg_adv = master_config["grpo"].get("malformed_thinking_advantage", -5.0)
-                    # eos_token in generation
-                    penalize_eos_token = master_config["grpo"].get("penalize_eos_token", False)
-                    eos_neg_adv = master_config["grpo"].get("eos_token_advantage", -5.0)
-                    # empty_final_answer
-                    penalize_empty_final_answer = master_config["grpo"].get("penalize_empty_final_answer", False)
-                    empty_neg_adv = master_config["grpo"].get("empty_final_answer_advantage", -5.0)
-                    # n_gram_repetition (n-gram repetition)
-                    penalize_n_gram_repetition = master_config["grpo"].get("penalize_n_gram_repetition", False)
-                    n_gram_repetition_weight = master_config["grpo"].get("n_gram_repetition_weight", 0.1)
-                    n_gram_repetition_penalty_cap = abs(master_config["grpo"].get("n_gram_repetition_penalty_cap", 0.0))
-                    # Main loop
+                    max_advantage_penalization = -abs(master_config["grpo"].get("max_advantage_penalization", 6767))
+                    # 1. Flag based penalties
+                    # Channel labels: (enabled, message key, assistant-only penalization, weight)
+                    flag_channels: dict[str, tuple[bool, str, bool, float]] = {
+                        "invalid_tool_call":  (master_config["grpo"].get("penalize_invalid_tool_call", False), "is_invalid_tool_call", False, master_config["grpo"].get("invalid_tool_call_weight", 0.15)),
+                        "malformed_thinking": (master_config["grpo"].get("penalize_malformed_thinking", False), "has_malformed_thinking", True, master_config["grpo"].get("malformed_thinking_weight", 0.15)),
+                        "generate_eos_token": (master_config["grpo"].get("penalize_eos_token", False), "has_eos_token", True, master_config["grpo"].get("eos_token_weight", 0.15)),
+                        "empty_final_answer": (master_config["grpo"].get("penalize_empty_final_answer", False), "has_empty_final_answer", True, master_config["grpo"].get("empty_final_answer_weight", 0.15)),
+                    }
+                    flag_channels = {k: v for k, v in flag_channels.items() if v[0]}  # remove channels that aren't enabled
+
+                    # First pass for baselines
+                    flag_penalties = {k: torch.zeros(len(repeated_batch["message_log"]), dtype=torch.float64) for k in flag_channels}
+                    for i, message_log in enumerate(repeated_batch["message_log"]):
+                        for message in message_log:
+                            is_assistant = message["role"] == "assistant" and "generation_logprobs" in message
+                            for k, (_, key, assistant_only, _) in flag_channels.items():
+                                if message.get(key, False) and (is_assistant or not assistant_only):
+                                    flag_penalties[k][i] = 1.0
+
+                    # Norm over the batch: flagged -> -B / (2 * sqrt(m(B-m))), clean -> 0
+                    for k, flags in flag_penalties.items():
+                        std = flags.std(unbiased=False)
+                        if std > 0:
+                            # norm, shift so max = 0, halve, floor: -(f - mean)/std - mean/std = -f/std
+                            flag_penalties[k] = (-flags / (2 * std)).clamp(min=max_advantage_penalization)
+                        else:  # nobody flagged (or everybody): no signal to learn from this anyways
+                            flag_penalties[k] = torch.zeros_like(flags)
+
+                    # Second pass: add each flag's normalized value
                     for i, message_log in enumerate(repeated_batch["message_log"]):
                         token_offset = 0
                         for j, message in enumerate(message_log):
                             msg_len = len(message["token_ids"])
                             is_assistant = message["role"] == "assistant" and "generation_logprobs" in message
-                            if penalize_invalid_tool_call and message.get("is_invalid_tool_call", False):
-                                print(f"Setting negative advantage ({invalid_neg_adv}) for invalid tool call in assistant message {i} turn {j}", flush=True)
-                                train_data["advantages"][i, token_offset:token_offset + msg_len].add_(invalid_neg_adv).clamp_(max=invalid_neg_adv)
-                            if penalize_malformed_thinking and is_assistant and message.get("has_malformed_thinking", False):
-                                print(f"Setting negative advantage ({malformed_neg_adv}) for malformed thinking in assistant message {i} turn {j}", flush=True)
-                                train_data["advantages"][i, token_offset:token_offset + msg_len].add_(malformed_neg_adv).clamp_(max=malformed_neg_adv)
-                            if penalize_eos_token and is_assistant and message.get("has_eos_token", False):
-                                print(f"Setting negative advantage ({eos_neg_adv}) for EOS token in assistant message {i} turn {j}", flush=True)
-                                train_data["advantages"][i, token_offset:token_offset + msg_len].add_(eos_neg_adv).clamp_(max=eos_neg_adv)
-                            if penalize_empty_final_answer and is_assistant and message.get("has_empty_final_answer", False):
-                                print(f"Setting negative advantage ({empty_neg_adv}) for empty final answer in assistant message {i} turn {j}", flush=True)
-                                train_data["advantages"][i, token_offset:token_offset + msg_len].add_(empty_neg_adv).clamp_(max=empty_neg_adv)
-                            if penalize_n_gram_repetition and is_assistant and "n_gram_repetition_mask" in message:
-                                repeat_mask = message["n_gram_repetition_mask"].to(device=train_data["advantages"].device, dtype=train_data["advantages"].dtype)
-                                repeat_penalty = repeat_mask * n_gram_repetition_weight
-                                if n_gram_repetition_penalty_cap > 0:
-                                    repeat_penalty.clamp_(max=n_gram_repetition_penalty_cap)
-                                train_data["advantages"][i, token_offset:token_offset + msg_len].sub_(repeat_penalty)
+                            # Flag-based penalties
+                            for k, (_, key, assistant_only, weight) in flag_channels.items():
+                                penalty = weight * flag_penalties[k][i].item()
+                                if penalty < 0 and message.get(key, False) and (is_assistant or not assistant_only):
+                                    print(f"Setting negative advantage ({penalty:.3f}) for {k} in assistant message {i} turn {j}", flush=True)
+                                    train_data["advantages"][i, token_offset:token_offset + msg_len].add_(penalty)
                             token_offset += msg_len
 
+                    # 2. N-gram repetition penalty
+                    if master_config["grpo"].get("penalize_n_gram_repetition", False):
+                        n_gram_repetition_weight = master_config["grpo"].get("n_gram_repetition_weight", 0.1)
+                        n_gram_repetition_degree = torch.tensor(apply_reward_shaping(
+                            repeated_batch,
+                            cfg={
+                                "enabled": True,
+                                "n_gram_repetition_weight": 1.0,
+                                "n_gram_size": master_config["grpo"].get("n_gram_repetition_size", 20),
+                                "n_gram_threshold": master_config["grpo"].get("n_gram_repetition_threshold", 4),
+                            },
+                            dry_run=True,
+                            verbose=False,
+                        )["n_gram_penalty"], dtype=torch.float64).abs()  # abs: higher = more repetition
+
+                        # Norm over the batch, same as the flags: least repetitive -> 0, the rest pushed down
+                        std = n_gram_repetition_degree.std(unbiased=False)
+                        if std > 0:
+                            n_gram_penalties = (-(n_gram_repetition_degree - n_gram_repetition_degree.min()) / (2 * std)).clamp(min=max_advantage_penalization)
+                        else:  # everyone repeats equally: no signal to learn from this anyways
+                            n_gram_penalties = torch.zeros_like(n_gram_repetition_degree)
+
+                        # Spread each rollout's penalty over its repeated tokens, in proportion to their repetition degree
+                        for i, message_log in enumerate(repeated_batch["message_log"]):
+                            token_offset = 0
+                            for j, message in enumerate(message_log):
+                                msg_len = len(message["token_ids"])
+                                is_assistant = message["role"] == "assistant" and "generation_logprobs" in message
+                                if is_assistant and "n_gram_repetition_mask" in message:
+                                    repeat_mask = message["n_gram_repetition_mask"].to(device=train_data["advantages"].device, dtype=train_data["advantages"].dtype)
+                                    if repeat_mask.max() > 0:
+                                        penalty = n_gram_repetition_weight * n_gram_penalties[i].item()
+                                        train_data["advantages"][i, token_offset:token_offset + msg_len].add_(penalty * repeat_mask / repeat_mask.max())
+                                token_offset += msg_len
+
+                    # Calibrate advantages
                     empty_gen_sample_idxs = [
                         i
                         for i, message_log in enumerate(repeated_batch["message_log"])
@@ -2280,8 +2304,7 @@ def async_grpo_train(
                         max_abs_adv = train_data["advantages"].abs().max().item()
                         train_data["advantages"][empty_gen_sample_idxs] = -max_abs_adv
                         print(
-                            f"⚖️ Advantage calibration: {len(empty_gen_sample_idxs)} empty-generation sample(s) set to -max|adv| = {-max_abs_adv:.4f}",
-                            flush=True,
+                            f"⚖️ Advantage calibration: {len(empty_gen_sample_idxs)} empty-generation sample(s) set to -max|adv| = {-max_abs_adv:.4f}", flush=True,
                         )
                     del empty_gen_sample_idxs
 

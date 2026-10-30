@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 
 
 class BaseAdvantageEstimator(ABC):
+    name: str = "[Unknown Name]"
     def __init__(self, estimator_config: dict | None = None, loss_config: dict | None = None):
         pass
 
@@ -50,6 +51,7 @@ class BaseAdvantageEstimator(ABC):
 
 
 class GRPOAdvantageEstimator(BaseAdvantageEstimator):
+    name = "GRPO"
     """GRPO-style advantage estimator with leave-one-out baseline.
 
     Note: GRPO computes advantages over all responses for each prompt.
@@ -92,6 +94,7 @@ class GRPOAdvantageEstimator(BaseAdvantageEstimator):
 
 
 class ReinforceAdvantageEstimator(BaseAdvantageEstimator):
+    name = "REINFORCE (plain)"
     """Traditional REINFORCE advantage estimator.
 
     Args:
@@ -154,6 +157,7 @@ class ReinforceAdvantageEstimator(BaseAdvantageEstimator):
 
 
 class ReinforcePlusPlusAdvantageEstimator(BaseAdvantageEstimator):
+    name = "REINFORCE++"
     """REINFORCE++ advantage estimator with optional baseline subtraction and KL penalty in reward.
 
     Args:
@@ -166,6 +170,9 @@ class ReinforcePlusPlusAdvantageEstimator(BaseAdvantageEstimator):
         self.use_kl_in_reward = loss_config["use_kl_in_reward"]
         self.kl_coef = loss_config["reference_policy_kl_penalty"]
         self.kl_type = loss_config["reference_policy_kl_type"]
+
+        if self.minus_baseline:
+            self.name += " w/ baseline"
 
     def compute_advantage(
         self,
@@ -229,6 +236,7 @@ class ReinforcePlusPlusAdvantageEstimator(BaseAdvantageEstimator):
 
 
 class OPDAdvantageEstimator(BaseAdvantageEstimator):
+    name = "OPD"
     """On-Policy Distillation advantage estimator (MOPD, arXiv:2601.02780).
 
     Computes token-level distillation advantages:
@@ -254,13 +262,6 @@ class OPDAdvantageEstimator(BaseAdvantageEstimator):
         prev_logprobs: [B, S] student training-engine log probabilities
     """
 
-    ORM_ESTIMATOR_MAPPING: dict[str, type[BaseAdvantageEstimator]] = {
-        "grpo": GRPOAdvantageEstimator,
-        "reinforce": ReinforceAdvantageEstimator,
-        "reinforceplusplus": ReinforcePlusPlusAdvantageEstimator,
-        "reinforce++": ReinforcePlusPlusAdvantageEstimator,
-    }
-
     def __init__(self, estimator_config: dict, loss_config: dict):
         self.opd_advantage_weight = float(estimator_config["opd_advantage_weight"])
         self.opd_advantage_clip_low = float(estimator_config.get("opd_advantage_clip_low", -6767))
@@ -278,14 +279,15 @@ class OPDAdvantageEstimator(BaseAdvantageEstimator):
                     "when orm_advantage_weight > 0."
                 )
             self.orm_estimator_name: str = orm_estimator_cfg["orm_estimator_name"]
-            if self.orm_estimator_name not in self.ORM_ESTIMATOR_MAPPING:
+            if self.orm_estimator_name not in ADVANTAGE_ESTIMATOR_MAPPING:
                 raise ValueError(
                     f"Unsupported ORM advantage estimator: {self.orm_estimator_name!r}. "
-                    f"Supported estimators are: {sorted(self.ORM_ESTIMATOR_MAPPING.keys())}"
+                    f"Supported estimators are: {sorted(ADVANTAGE_ESTIMATOR_MAPPING.keys())}"
                 )
-            self.orm_estimator = self.ORM_ESTIMATOR_MAPPING[self.orm_estimator_name](
+            self.orm_estimator = ADVANTAGE_ESTIMATOR_MAPPING[self.orm_estimator_name](
                 orm_estimator_cfg, loss_config
             )
+            self.name += f"with {self.orm_estimator.name}"
 
         self.last_metrics: dict[str, float] = {}
 
@@ -384,3 +386,12 @@ class OPDAdvantageEstimator(BaseAdvantageEstimator):
             self.last_metrics[f"on_policy_distillation/{self.orm_estimator_name}_adv_std"] = (
                 orm_valid.std().item() if orm_valid.numel() > 1 else 0.0
             )
+
+
+ADVANTAGE_ESTIMATOR_MAPPING: dict[str, type[BaseAdvantageEstimator]] = {
+    "grpo": GRPOAdvantageEstimator,
+    "reinforce": ReinforceAdvantageEstimator,
+    "reinforce++": ReinforcePlusPlusAdvantageEstimator,
+    "reinforceplusplus": ReinforcePlusPlusAdvantageEstimator,
+    "reinforce_plus_plus": ReinforcePlusPlusAdvantageEstimator,
+}
