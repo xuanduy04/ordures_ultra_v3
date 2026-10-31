@@ -85,12 +85,13 @@ def test_reward_shaping_with_penalties():
     result_batch = apply_reward_shaping(batch, config)
 
     # Calculate expected rewards manually
-    # Response 0: length=10, exceed_length=10-20=-10 (no penalty, reward stays 1.0)
-    # Response 1: length=22, exceed_length=22-20=2, penalty=min(-2/5*0.5, 0)=-0.2, reward=0.8-0.2=0.6
-    # Response 2: length=25, exceed_length=25-20=5, penalty=min(-5/5*0.5, 0)=-0.5, reward=0.6-0.5=0.1
-    # Response 3: length=30, exceed_length=30-20=10, penalty=min(-10/5*0.5, 0)=-1.0, reward=0.4-1.0=-0.6
+    # overlong_penalty = min(max(exceed_length / overlong_buffer_length, 0.0), 1.0), capped at 1.0
+    # Response 0: length=10, exceed_length=10-20=-10, penalty=0.0, reward=1.0
+    # Response 1: length=22, exceed_length=22-20=2, penalty=2/5=0.4, reward=0.8-0.5*0.4=0.6
+    # Response 2: length=25, exceed_length=25-20=5, penalty=5/5=1.0, reward=0.6-0.5*1.0=0.1
+    # Response 3: length=30, exceed_length=30-20=10, penalty=min(10/5, 1.0)=1.0, reward=0.4-0.5*1.0=-0.1
 
-    expected_rewards = torch.tensor([1.0, 0.6, 0.1, -0.6])
+    expected_rewards = torch.tensor([1.0, 0.6, 0.1, -0.1])
     assert torch.allclose(result_batch["total_reward"], expected_rewards, atol=1e-6)
 
 
@@ -288,8 +289,8 @@ def test_n_gram_repetition_penalty_all_same():
     penalty = _compute_n_gram_repetition_penalty(token_ids, n=5, threshold=2)
     # total_n_grams = 4, one unique over-repeated 5-gram, freq=4
     # fraction_over = 1/4 = 0.25, normalized_max = 4/(8/5) = 2.5
-    # penalty = max(0.25, 2.5) = 2.5
-    assert abs(penalty - 2.5) < 1e-6
+    # penalty = min(max(0.25, 2.5), 1.0) = 1.0
+    assert abs(penalty - 1.0) < 1e-6
 
 
 def test_n_gram_repetition_penalty_high_threshold():

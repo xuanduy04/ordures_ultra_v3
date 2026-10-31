@@ -944,10 +944,7 @@ def setup(
 # ===============================================================================
 
 
-def extract_initial_prompt_messages(
-    message_logs: list,
-    original_prompt_lengths: torch.Tensor,
-) -> list:
+def extract_initial_prompt_messages(message_logs: list, original_prompt_lengths: torch.Tensor) -> list:
     """Extract the original prompt messages from message logs using token length.
 
     This function correctly identifies original prompt messages even when the prompt
@@ -1068,7 +1065,8 @@ def _create_advantage_estimator(master_config: MasterConfig) -> BaseAdvantageEst
     # which older configs still use.
     adv_estimator_config = grpo_config.get(
         "adv_estimator",
-        default={
+        # default = 
+        {
             "name": "grpo",
             "normalize_rewards": grpo_config.get("normalize_rewards", True),
             "use_leave_one_out_baseline": grpo_config.get("use_leave_one_out_baseline", False),
@@ -1082,15 +1080,13 @@ def _create_advantage_estimator(master_config: MasterConfig) -> BaseAdvantageEst
         opd_estimator_config = {
             "name": "opd",
             "opd_advantage_weight": opd_cfg.get("opd_advantage_weight", 1.0),
-            "orm_advantage_weight": opd_cfg.get("orm_advantage_weight", 0.0),
             "opd_advantage_clip_low": opd_cfg.get("opd_advantage_clip_low", -6767),
             "opd_advantage_clip_high": opd_cfg.get("opd_advantage_clip_high", 6767),
+            "orm_advantage_estimator": opd_cfg.get("orm_advantage_estimator", {}),
+            "orm_advantage_weight": opd_cfg.get("orm_advantage_weight", 0.0),
             "orm_advantage_clip_low": opd_cfg.get("orm_advantage_clip_low", -6767),
             "orm_advantage_clip_high": opd_cfg.get("orm_advantage_clip_high", 6767),
-            "zero_out_of_bounds_advantages": opd_cfg.get(
-                "zero_out_of_bounds_advantages", False
-            ),
-            "orm_advantage_estimator": opd_cfg.get("orm_advantage_estimator", {}),
+            "zero_out_of_bounds_advantages": opd_cfg.get("zero_out_of_bounds_advantages", False),
         }
         adv_estimator = OPDAdvantageEstimator(opd_estimator_config, loss_config)
         print("  ✓ Using OPD advantage estimator")
@@ -1112,7 +1108,7 @@ def _create_advantage_estimator(master_config: MasterConfig) -> BaseAdvantageEst
         if adv_estimator_name not in ADVANTAGE_ESTIMATOR_MAPPING:
             raise ValueError(
                 f"Invalid adv_estimator name: {adv_estimator_name}. "
-                f"Supported estimators are: {sorted(ADVANTAGE_ESTIMATOR_MAPPING.keys())}"
+                f"Supported estimators are: {sorted(ADVANTAGE_ESTIMATOR_MAPPING.keys())} and 'opd'"
             )
         adv_estimator = ADVANTAGE_ESTIMATOR_MAPPING[adv_estimator_name](adv_estimator_config, loss_config)
         print(f"  ✓ Using {adv_estimator.name} advantage estimator")
@@ -1153,9 +1149,7 @@ def _log_rss(tag: str) -> None:
         pass
 
 
-def _distribution_stats(
-    values: torch.Tensor, mask: torch.Tensor
-) -> dict[str, Any]:
+def _distribution_stats(values: torch.Tensor, mask: torch.Tensor) -> dict[str, Any]:
     """Compute distribution statistics for masked values.
 
     Args:
@@ -1168,12 +1162,7 @@ def _distribution_stats(
         over the finite masked values. Returns counts-only dict if there are
         no masked or finite values.
     """
-    arr = (
-        torch.masked_select(values, mask.bool())
-        .detach()
-        .float()
-        .cpu()
-    )
+    arr = torch.masked_select(values, mask.bool()).detach().float().cpu()
     stats: dict[str, Any] = {
         "count": int(arr.numel()),
         "num_nan": int(torch.isnan(arr).sum()),
@@ -1193,9 +1182,7 @@ def _distribution_stats(
             dtype=torch.float32,
         ),
     )
-    p1, p5, p10, p25, p50, p75, p90, p95, p99 = (
-        float(v) for v in quantiles
-    )
+    p1, p5, p10, p25, p50, p75, p90, p95, p99 = (float(v) for v in quantiles)
     centered = finite - mean
     skewness: float | None = None
     kurtosis: float | None = None
@@ -1221,9 +1208,7 @@ def _distribution_stats(
     if hist_high <= hist_low:
         hist_low -= 0.5
         hist_high += 0.5
-    hist_counts, hist_edges = torch.histogram(
-        finite, bins=20, range=(hist_low, hist_high)
-    )
+    hist_counts, hist_edges = torch.histogram(finite, bins=20, range=(hist_low, hist_high))
 
     stats.update(
         {
@@ -1260,6 +1245,9 @@ def _distribution_stats(
         }
     )
     return stats
+
+def _distribution_stats_str(values: torch.Tensor) -> str:
+    return f"min={values.min():.4f}, max={values.max():.4f}, mean={values.mean():.4f}, median={values.median():.4f}, std={values.std():.4f}"
 
 
 def refit_policy_generation(
@@ -1434,9 +1422,7 @@ def compute_and_apply_seq_logprob_error_masking(
 
         if num_masked_seqs > 0:
             diff_mask_bool = diff_mask.bool()
-            masked_correct_count = int(
-                (rewards.view(-1)[diff_mask_bool] == 1).sum().item()
-            )
+            masked_correct_count = int((rewards.view(-1)[diff_mask_bool] == 1).sum().item())
             masked_correct_pct = masked_correct_count / num_masked_seqs
 
         updated_sample_mask = seq_error_mask
@@ -1463,8 +1449,7 @@ def compute_and_apply_seq_logprob_error_masking(
         )
         if num_masked_seqs > 0:
             print(
-                f"  • {masked_correct_count}/{num_masked_seqs} masked sequences were correct (reward=1)"
-                f" → {masked_correct_pct:.2%}",
+                f"  • {masked_correct_count}/{num_masked_seqs} masked sequences were correct (reward=1) → {masked_correct_pct:.2%}",
                 flush=True,
             )
 
@@ -1566,18 +1551,13 @@ def async_grpo_train(
         or master_config["grpo"]["val_at_start"]
         or master_config["grpo"]["val_at_end"]
     ):
-        print(
-            "⚠️ Validation is not supported by this codebase; skipping validation and continuing training.",
-            flush=True,
-        )
+        print("⚠️ Validation is not supported by this codebase; skipping validation and continuing training.", flush=True)
     colocated_inference = master_config["policy"]["generation"]["colocated"]["enabled"]
 
     # Initialize advantage estimator
     adv_estimator = _create_advantage_estimator(master_config)
 
-    assert not colocated_inference, (
-        "Colocated inference is not supported for async GRPO. Please use non-colocated inference."
-    )
+    assert not colocated_inference, "Colocated inference is not supported for async GRPO. Please use non-colocated inference."
 
     # Calculate minimum buffer size from training requirements
     # In per-prompt buffer mode, one buffer entry is 1 prompt * num_generations_per_prompt
@@ -1752,9 +1732,7 @@ def async_grpo_train(
         policy_generation.clear_logger_metrics()
 
     # Wait for initial buffer fill and current step to have complete batch
-    print(
-        f"⏳ Waiting for replay buffer to have sufficient trajectories for step {step}..."
-    )
+    print(f"⏳ Waiting for replay buffer to have sufficient trajectories for step {step}...")
     wait_iterations = 0
     while True:
         buffer_size_current = ray.get(replay_buffer.size.remote())
@@ -1765,8 +1743,7 @@ def async_grpo_train(
         )
 
         print(
-            f"  Wait iteration {wait_iterations}: buffer_size={buffer_size_current}, "
-            f"{step=}, ready={current_step_ready}",
+            f"  Wait iteration {wait_iterations}: buffer_size={buffer_size_current}, {step=}, ready={current_step_ready}",
             flush=True
         )
 
@@ -1994,18 +1971,14 @@ def async_grpo_train(
                     del initial_prompt_message_logs, prompt_batched_flat
 
                     rewards = repeated_batch["total_reward"]
-                    print(
-                        f"  📊 Rewards stats (from the environment): min={rewards.min():.4f}, max={rewards.max():.4f}, mean={rewards.mean():.4f}, std={rewards.std():.4f}"
-                    )
+                    print(f"  📊 Rewards stats (from the environment): {_distribution_stats_str(rewards)}", flush=True)
 
                     if master_config["grpo"]["reward_shaping"]["enabled"]:
                         repeated_batch = apply_reward_shaping(
                             repeated_batch, master_config["grpo"]["reward_shaping"], dry_run=False, verbose=False
                         )
                         rewards = repeated_batch["total_reward"]
-                        print(
-                            f"  📊 Rewards stats (after reward_shaping): min={rewards.min():.4f}, max={rewards.max():.4f}, mean={rewards.mean():.4f}, std={rewards.std():.4f}"
-                        )
+                        print(f"  📊 Rewards stats (after reward_shaping): {_distribution_stats_str(rewards)}", flush=True)
 
                 # Prepare training data (same as sync version)
                 with timer.time("data_processing"):
@@ -2211,12 +2184,12 @@ def async_grpo_train(
 
                     # Log advantages stats
                     advantages = train_data["advantages"]
-                    print(
-                        f"  📊 Advantages stats (from estimator): min={advantages.min():.4f}, max={advantages.max():.4f}, mean={advantages.mean():.4f}, std={advantages.std():.4f}"
-                    )
+                    print(f"  📊 Advantages stats (from estimator): {_distribution_stats_str(advantages)}", flush=True)
 
-                    # Apply advantage penalizations
+                    # Apply advantage-level penalizations (GDPO-style)
+
                     max_advantage_penalization = -abs(master_config["grpo"].get("max_advantage_penalization", 6767))
+
                     # 1. Flag based penalties
                     # Channel labels: (enabled, message key, assistant-only penalization, weight)
                     flag_channels: dict[str, tuple[bool, str, bool, float]] = {
@@ -2227,49 +2200,53 @@ def async_grpo_train(
                     }
                     flag_channels = {k: v for k, v in flag_channels.items() if v[0]}  # remove channels that aren't enabled
 
-                    # First pass for baselines
-                    flag_penalties = {k: torch.zeros(len(repeated_batch["message_log"]), dtype=torch.float64) for k in flag_channels}
-                    for i, message_log in enumerate(repeated_batch["message_log"]):
-                        for message in message_log:
-                            is_assistant = message["role"] == "assistant" and "generation_logprobs" in message
-                            for k, (_, key, assistant_only, _) in flag_channels.items():
-                                if message.get(key, False) and (is_assistant or not assistant_only):
-                                    flag_penalties[k][i] = 1.0
+                    # adv_penalties serves as a helper variable for penality assignment and logging
+                    adv_penalties: dict[str, torch.Tensor] = {k: torch.zeros(len(repeated_batch["message_log"]), dtype=torch.float64) for k in flag_channels}
 
-                    # Norm over the batch: flagged -> -B / (2 * sqrt(m(B-m))), clean -> 0
-                    for k, flags in flag_penalties.items():
-                        std = flags.std(unbiased=False)
-                        if std > 0:
-                            # norm, shift so max = 0, halve, floor: -(f - mean)/std - mean/std = -f/std
-                            flag_penalties[k] = (-flags / (2 * std)).clamp(min=max_advantage_penalization)
-                        else:  # nobody flagged (or everybody): no signal to learn from this anyways
-                            flag_penalties[k] = torch.zeros_like(flags)
+                    if flag_channels:
+                        # First pass for baselines
+                        for i, message_log in enumerate(repeated_batch["message_log"]):
+                            for message in message_log:
+                                is_assistant = message["role"] == "assistant" and "generation_logprobs" in message
+                                for k, (_, key, assistant_only, _) in flag_channels.items():
+                                    if message.get(key, False) and (is_assistant or not assistant_only):
+                                        adv_penalties[k][i] = 1.0
 
-                    # Second pass: add each flag's normalized value
-                    for i, message_log in enumerate(repeated_batch["message_log"]):
-                        token_offset = 0
-                        for j, message in enumerate(message_log):
-                            msg_len = len(message["token_ids"])
-                            is_assistant = message["role"] == "assistant" and "generation_logprobs" in message
-                            # Flag-based penalties
-                            for k, (_, key, assistant_only, weight) in flag_channels.items():
-                                penalty = weight * flag_penalties[k][i].item()
-                                if penalty < 0 and message.get(key, False) and (is_assistant or not assistant_only):
-                                    print(f"Setting negative advantage ({penalty:.3f}) for {k} in assistant message {i} turn {j}", flush=True)
-                                    train_data["advantages"][i, token_offset:token_offset + msg_len].add_(penalty)
-                            token_offset += msg_len
+                        # Norm over the batch: flagged -> -B / (2 * sqrt(m(B-m))), clean -> 0
+                        for k, flags in adv_penalties.items():
+                            std = flags.std(unbiased=False)
+                            if std > 0:
+                                # norm, shift so max = 0, halve, floor: -(f - mean)/std - mean/std = -f/std
+                                adv_penalties[k] = (-flags / (2 * std)).clamp(min=max_advantage_penalization)
+                            else:  # nobody flagged (or everybody): no signal to learn from this anyways
+                                adv_penalties[k] = torch.zeros_like(flags)
+
+                        # Second pass: add each flag's normalized value
+                        for i, message_log in enumerate(repeated_batch["message_log"]):
+                            token_offset = 0
+                            for j, message in enumerate(message_log):
+                                msg_len = len(message["token_ids"])
+                                is_assistant = message["role"] == "assistant" and "generation_logprobs" in message
+                                # Flag-based penalties
+                                for k, (_, key, assistant_only, weight) in flag_channels.items():
+                                    penalty = weight * adv_penalties[k][i].item()
+                                    if penalty < 0 and message.get(key, False) and (is_assistant or not assistant_only):
+                                        print(f"Setting negative advantage ({penalty:.3f}) for {k} in assistant message {i} turn {j}", flush=True)
+                                        train_data["advantages"][i, token_offset:token_offset + msg_len].add_(penalty)
+                                token_offset += msg_len
 
                     # 2. N-gram repetition penalty
                     if master_config["grpo"].get("penalize_n_gram_repetition", False):
                         n_gram_repetition_weight = master_config["grpo"].get("n_gram_repetition_weight", 0.1)
+                        n_gram_repetition_size = master_config["grpo"].get("n_gram_repetition_size", 20)
                         n_gram_repetition_degree = torch.tensor(apply_reward_shaping(
                             repeated_batch,
-                            cfg={
+                            cfg=cast(RewardShapingConfig, {
                                 "enabled": True,
                                 "n_gram_repetition_weight": 1.0,
-                                "n_gram_size": master_config["grpo"].get("n_gram_repetition_size", 20),
+                                "n_gram_size": n_gram_repetition_size,
                                 "n_gram_threshold": master_config["grpo"].get("n_gram_repetition_threshold", 4),
-                            },
+                            }),
                             dry_run=True,
                             verbose=False,
                         )["n_gram_penalty"], dtype=torch.float64).abs()  # abs: higher = more repetition
@@ -2280,6 +2257,8 @@ def async_grpo_train(
                             n_gram_penalties = (-(n_gram_repetition_degree - n_gram_repetition_degree.min()) / (2 * std)).clamp(min=max_advantage_penalization)
                         else:  # everyone repeats equally: no signal to learn from this anyways
                             n_gram_penalties = torch.zeros_like(n_gram_repetition_degree)
+                        # Add to adv_penalties for logging
+                        adv_penalties[f"{n_gram_repetition_size}-gram repetition (max penality of sequence)"] = n_gram_penalties
 
                         # Spread each rollout's penalty over its repeated tokens, in proportion to their repetition degree
                         for i, message_log in enumerate(repeated_batch["message_log"]):
@@ -2291,8 +2270,11 @@ def async_grpo_train(
                                     repeat_mask = message["n_gram_repetition_mask"].to(device=train_data["advantages"].device, dtype=train_data["advantages"].dtype)
                                     if repeat_mask.max() > 0:
                                         penalty = n_gram_repetition_weight * n_gram_penalties[i].item()
-                                        train_data["advantages"][i, token_offset:token_offset + msg_len].add_(penalty * repeat_mask / repeat_mask.max())
+                                        print(f"Setting negative advantage (max_penalty={penalty:.3f}) for {n_gram_repetition_size}-gram repetition in assistant message {i} turn {j}", flush=True)
+                                        train_data["advantages"][i, token_offset:token_offset + msg_len].add_(repeat_mask / repeat_mask.max() * penalty)
                                 token_offset += msg_len
+                    if adv_penalties:
+                        print("  📊 Advantage penalties stats:\n" + "\n".join(f"    - {k}: {_distribution_stats_str(p)}" for k, p in adv_penalties.items()), flush=True)
 
                     # Calibrate advantages
                     empty_gen_sample_idxs = [
@@ -2304,7 +2286,7 @@ def async_grpo_train(
                         max_abs_adv = train_data["advantages"].abs().max().item()
                         train_data["advantages"][empty_gen_sample_idxs] = -max_abs_adv
                         print(
-                            f"⚖️ Advantage calibration: {len(empty_gen_sample_idxs)} empty-generation sample(s) set to -max|adv| = {-max_abs_adv:.4f}", flush=True,
+                            f"⚖️ Advantage calibration: {len(empty_gen_sample_idxs)} empty-generation sample(s) set to -max|adv| = {-max_abs_adv:.4f}", flush=True
                         )
                     del empty_gen_sample_idxs
 
@@ -2317,9 +2299,7 @@ def async_grpo_train(
                         train_data["advantages"] = train_data["advantages"].clamp(max=clip_high)
                     del clip_low, clip_high
 
-                    print(
-                        f"  📊 Advantages stats (post-penalties): min={advantages.min():.4f}, max={advantages.max():.4f}, mean={advantages.mean():.4f}, std={advantages.std():.4f}"
-                    )
+                    print(f"  📊 Advantages stats (post-penalties): {_distribution_stats_str(advantages)}", flush=True)
                 del trajectory_teacher_logprobs
                 gc.collect()
                 _malloc_trim()
@@ -2506,10 +2486,7 @@ def async_grpo_train(
                         )
                         prefix, metric_name = full_metric_name.split(":", 1)
                         if prefix == "val":
-                            print(
-                                f"⚠️ Validation is not supported by this codebase; skipping checkpoint metric {full_metric_name}.",
-                                flush=True,
-                            )
+                            print(f"⚠️ Validation is not supported by this codebase; skipping checkpoint metric {full_metric_name}.", flush=True)
                             if full_metric_name in grpo_save_state:
                                 del grpo_save_state[full_metric_name]
                         else:
@@ -2744,9 +2721,7 @@ def async_grpo_train(
             logger.log_metrics(metrics, step + 1, prefix="train")
             logger.log_metrics(timing_metrics, step + 1, prefix="timing/train")
             # step_finished=True here since this is the final log of our current step.
-            logger.log_metrics(
-                efficiency_loggable, step + 1, prefix="", step_finished=True
-            )
+            logger.log_metrics(efficiency_loggable, step + 1, prefix="", step_finished=True)
 
             del metrics, timing_metrics, performance_metrics, efficiency_loggable
             del rewards
@@ -2762,10 +2737,7 @@ def async_grpo_train(
                 return
             if step >= master_config["grpo"]["max_num_steps"]:
                 checkpointer.shutdown()
-                print(
-                    "Max number of steps has been reached, stopping training early",
-                    flush=True,
-                )
+                print("Max number of steps has been reached, stopping training early", flush=True)
                 return
 
     except Exception as e:

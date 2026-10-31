@@ -1,9 +1,5 @@
 from collections import defaultdict
-from typing import (
-    NotRequired,
-    TypedDict,
-    TypeVar,
-)
+from typing import Literal, NotRequired, TypedDict, TypeVar, overload
 
 import torch
 
@@ -47,9 +43,7 @@ class RewardShapingConfig(TypedDict):
     n_gram_repetition_weight: NotRequired[float]
 
 
-def _compute_n_gram_repetition_penalty(
-    token_ids: torch.Tensor, n: int, threshold: int
-) -> float:
+def _compute_n_gram_repetition_penalty(token_ids: torch.Tensor, n: int, threshold: int) -> float:
     """Compute N-gram repetition penalty for a single response sequence.
 
     Given a sequence of token IDs, constructs the multiset of n-grams and
@@ -91,6 +85,18 @@ def _compute_n_gram_repetition_penalty(
     return min(max(fraction_over, normalized_max), 1.0)
 
 
+@overload
+def apply_reward_shaping(
+    batch: BatchedDataDict, cfg: RewardShapingConfig, dry_run: Literal[True], verbose: bool = True
+) -> dict[str, list[float]]: ...
+
+
+@overload
+def apply_reward_shaping(
+    batch: BatchedDataDict, cfg: RewardShapingConfig, dry_run: Literal[False] = False, verbose: bool = True
+) -> BatchedDataDict: ...
+
+
 def apply_reward_shaping(
     batch: BatchedDataDict, cfg: RewardShapingConfig, dry_run: bool = False, verbose: bool = True
 ) -> BatchedDataDict | dict[str, list[float]]:
@@ -101,7 +107,7 @@ def apply_reward_shaping(
     if not cfg["enabled"]:
         return {} if dry_run else batch
     rewards = batch["total_reward"]
-    penalties = dict() if dry_run else None
+    penalties: dict[str, list[float]] = {}
 
     # Apply N-gram repetition penalty and/or overlong (DAPO) penalty if configured
     use_n_gram_penalty = (
@@ -131,7 +137,9 @@ def apply_reward_shaping(
             if dry_run:
                 penalties["overlong_penalty"] = [0.0] * len(rewards)
 
-        assert len(batch["message_log"]) == len(rewards), "The number of messages in the batch must match the number of rewards"
+        assert len(batch["message_log"]) == len(rewards), (
+            "The number of messages in the batch must match the number of rewards"
+        )
 
         for i, message_log in enumerate(batch["message_log"]):
             if not message_log or len(message_log) == 1:
@@ -151,9 +159,7 @@ def apply_reward_shaping(
                 continue
 
             if use_n_gram_penalty:
-                n_gram_penalty = _compute_n_gram_repetition_penalty(
-                    assistant_token_ids, n_gram_size, n_gram_threshold
-                )
+                n_gram_penalty = _compute_n_gram_repetition_penalty(assistant_token_ids, n_gram_size, n_gram_threshold)
                 if dry_run:
                     penalties["n_gram_penalty"][i] = float(n_gram_repetition_weight * n_gram_penalty)
                 else:
@@ -179,7 +185,7 @@ def apply_reward_shaping(
     # Apply stop properly penalty if configured
     stop_properly_penalty_coef = cfg.get("stop_properly_penalty_coef", None)
     if stop_properly_penalty_coef is not None:
-        stop_properly_penalty_coef = abs(stop_properly_penalty_coef)  # normalize coefficient to ensure penalization
+        stop_properly_penalty_coef = abs(stop_properly_penalty_coef)  # normalize coefficient to ensure a penalty
         truncated = batch.get("truncated")
         assert truncated is not None, "truncated field not found in batch"
         if isinstance(truncated, list):
@@ -189,8 +195,10 @@ def apply_reward_shaping(
 
         num_truncated = truncated.sum().item()
         if dry_run:
-            penalties["stop_properly_penalty"] = [float(stop_properly_penalty_coef) if t else 0.0 for t in truncated.tolist()]
-        if num_truncated > 0 and not dry_run:
+            penalties["stop_properly_penalty"] = [
+                float(stop_properly_penalty_coef) if t else 0.0 for t in truncated.tolist()
+            ]
+        elif num_truncated > 0:
             original_rewards = rewards.clone()
             # For truncated samples, shift the reward by stop_properly_penalty_coef
             rewards = rewards - truncated.to(rewards.dtype) * stop_properly_penalty_coef
@@ -203,9 +211,8 @@ def apply_reward_shaping(
                     f"shaped_reward_mean={rewards[truncated].mean().item():.4f}",
                     flush=True,
                 )
-        elif num_truncated == 0:
-            if verbose:
-                print("[INFO] stop properly penalty: no truncated samples (truncation_rate=0)", flush=True)
+        if verbose and num_truncated == 0:
+            print("[INFO] stop properly penalty: no truncated samples (truncation_rate=0)", flush=True)
 
     if dry_run:
         return penalties

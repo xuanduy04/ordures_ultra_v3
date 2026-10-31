@@ -1,5 +1,3 @@
-
-
 import math
 import os
 import random
@@ -174,9 +172,7 @@ def calculate_batch_level_baseline(
         return rewards.clone()
 
     if leave_one_out_baseline:
-        baseline = (valid_rewards.sum() - valid_rewards) / (
-            num_valid - valid_mask
-        ).clamp(min=1.0)
+        baseline = (valid_rewards.sum() - valid_rewards) / (num_valid - valid_mask).clamp(min=1.0)
         if num_valid.item() <= 1:
             baseline = torch.where(valid_mask.bool(), rewards, baseline)
     else:

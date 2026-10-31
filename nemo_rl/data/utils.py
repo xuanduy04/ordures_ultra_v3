@@ -11,11 +11,7 @@ from nemo_rl.data.datasets import (
     load_response_dataset,
     update_single_dataset_config,
 )
-from nemo_rl.data.processors import (
-    filter_overlong_nemo_gym_dataset,
-    nemo_gym_data_processor,
-    preference_preprocessor,
-)
+from nemo_rl.data.processors import filter_overlong_nemo_gym_dataset, nemo_gym_data_processor, preference_preprocessor
 from nemo_rl.environments.interfaces import EnvironmentInterface
 from nemo_rl.environments.utils import create_env
 
@@ -67,9 +63,7 @@ def setup_response_data(
         envs = {}
         for env_name in env_name_list:
             registered_env_name = "vlm" if is_vlm else env_name
-            envs[env_name] = create_env(
-                env_name=registered_env_name, env_config=env_configs[env_name]
-            )
+            envs[env_name] = create_env(env_name=registered_env_name, env_config=env_configs[env_name])
 
     print("\n▶ Setting up data...")
     # setup train dataset
@@ -85,14 +79,9 @@ def setup_response_data(
         if "default" in data_config and data_config["default"] is not None:
             update_single_dataset_config(cfg, data_config["default"])
         data = load_response_dataset(cfg)
-        if (
-            data_config["max_input_seq_length"] is not None
-            and data.processor is nemo_gym_data_processor
-        ):
+        if data_config["max_input_seq_length"] is not None and data.processor is nemo_gym_data_processor:
             data.dataset = filter_overlong_nemo_gym_dataset(
-                data.dataset,
-                cast(PreTrainedTokenizerBase, tokenizer),
-                data_config["max_input_seq_length"],
+                data.dataset, cast(PreTrainedTokenizerBase, tokenizer), data_config["max_input_seq_length"]
             )
         data_list.append(data)
         # bind task_name to task_data_processors and task_to_env
@@ -103,11 +92,7 @@ def setup_response_data(
 
     merged_data = concatenate_datasets([data.dataset for data in data_list])
     dataset = AllTaskProcessedDataset(
-        merged_data,
-        tokenizer,
-        None,
-        task_data_processors,
-        max_seq_length=data_config["max_input_seq_length"],
+        merged_data, tokenizer, None, task_data_processors, max_seq_length=data_config["max_input_seq_length"]
     )
     print(f"  ✓ Training dataset loaded with {len(dataset)} samples.")
 
@@ -136,22 +121,14 @@ def setup_response_data(
             if "default" in data_config and data_config["default"] is not None:
                 update_single_dataset_config(cfg, data_config["default"])
             val_data = load_response_dataset(cfg)
-            if (
-                data_config["max_input_seq_length"] is not None
-                and val_data.processor is nemo_gym_data_processor
-            ):
+            if data_config["max_input_seq_length"] is not None and val_data.processor is nemo_gym_data_processor:
                 val_data.dataset = filter_overlong_nemo_gym_dataset(
-                    val_data.dataset,
-                    cast(PreTrainedTokenizerBase, tokenizer),
-                    data_config["max_input_seq_length"],
+                    val_data.dataset, cast(PreTrainedTokenizerBase, tokenizer), data_config["max_input_seq_length"]
                 )
             val_data_list.append(val_data.dataset)
             # bind task_name to task_data_processors and task_to_env
             task_name = val_data.task_name
-            val_task_data_processors[task_name] = (
-                val_data.task_spec,
-                val_data.processor,
-            )
+            val_task_data_processors[task_name] = (val_data.task_spec, val_data.processor)
             if has_envs:
                 val_task_to_env[task_name] = envs[cfg["env_name"]]
 
@@ -199,11 +176,7 @@ def setup_preference_data(tokenizer: AutoTokenizer, data_config: DataConfig):
     task_data_processors = {data.task_name: (data.task_spec, preference_preprocessor)}
 
     dataset = AllTaskProcessedDataset(
-        data.dataset,
-        tokenizer,
-        None,
-        task_data_processors,
-        max_seq_length=data_config["max_input_seq_length"],
+        data.dataset, tokenizer, None, task_data_processors, max_seq_length=data_config["max_input_seq_length"]
     )
     print(f"  ✓ Training dataset loaded with {len(dataset)} samples.")
 
@@ -219,12 +192,8 @@ def setup_preference_data(tokenizer: AutoTokenizer, data_config: DataConfig):
         for val_dataset_name, val_dataset_path in val_data_paths.items():
             assert val_dataset_name not in val_dataset
 
-            val_data = load_preference_dataset(
-                {"dataset_name": "PreferenceDataset", "data_path": val_dataset_path}
-            )
-            val_task_data_processors = {
-                val_data.task_name: (val_data.task_spec, preference_preprocessor)
-            }
+            val_data = load_preference_dataset({"dataset_name": "PreferenceDataset", "data_path": val_dataset_path})
+            val_task_data_processors = {val_data.task_name: (val_data.task_spec, preference_preprocessor)}
 
             val_dataset[val_dataset_name] = AllTaskProcessedDataset(
                 val_data.dataset,
@@ -239,13 +208,9 @@ def setup_preference_data(tokenizer: AutoTokenizer, data_config: DataConfig):
 
     elif "validation" in data_config and data_config["validation"] is not None:
         if "default" in data_config:
-            update_single_dataset_config(
-                data_config["validation"], data_config["default"]
-            )
+            update_single_dataset_config(data_config["validation"], data_config["default"])
         val_data = load_preference_dataset(data_config["validation"])
-        val_task_data_processors = {
-            val_data.task_name: (val_data.task_spec, preference_preprocessor)
-        }
+        val_task_data_processors = {val_data.task_name: (val_data.task_spec, preference_preprocessor)}
 
         val_dataset["default"] = AllTaskProcessedDataset(
             val_data.dataset,
@@ -254,8 +219,6 @@ def setup_preference_data(tokenizer: AutoTokenizer, data_config: DataConfig):
             val_task_data_processors,
             max_seq_length=data_config["max_input_seq_length"],
         )
-        print(
-            f"  ✓ Validation dataset loaded with {len(val_dataset['default'])} samples."
-        )
+        print(f"  ✓ Validation dataset loaded with {len(val_dataset['default'])} samples.")
 
     return dataset, val_dataset
