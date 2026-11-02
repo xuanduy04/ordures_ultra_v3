@@ -393,13 +393,24 @@ omit = ["/tmp/*"]
 [tool.coverage.paths]
 source = ["nemo_rl/", "/opt/nemo-rl/nemo_rl/"]
 
+[tool.docwrap]
+line-length = 120
+reflow = "full"
+style = "google"
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.format]
+# Collapse short multiline calls, collections, and expressions even with trailing commas.
+skip-magic-trailing-comma = true
+
 [tool.ruff.lint]
 # Enable all `pydocstyle` rules, limiting to those that adhere to the
 # Google convention via `convention = "google"`, below.
 select = ["D", "F"]
 
-# - On top of the Google convention, disable `D417`, which requires
-#   documentation for every function parameter.
+# - On top of the Google convention, disable `D417`, which requires documentation for every function parameter.
 # - F841: local variable assigned but never used (exluced to favor readability)
 # TODO: Remove D10 once we are about to release to get all the docstrings written
 ignore = ["D417", "D10", "F841"]

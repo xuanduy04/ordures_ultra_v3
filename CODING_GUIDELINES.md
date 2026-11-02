@@ -1,4 +1,3 @@
-
 # NeMo-RL Coding Guidelines
 
 Note: This repository is Python-first. Prefer the Python guidelines in this document.
@@ -8,33 +7,12 @@ Note: This repository is Python-first. Prefer the Python guidelines in this docu
 - Python: [Google Python Style Guide](https://google.github.io/styleguide/pyguide.html)
 - Shell: [Google Shell Style Guide](https://google.github.io/styleguide/shellguide.html)
 
-## uv Guidelines
-
-### Use uv run instead of python
-
-Use `uv run` to execute scripts, rather than activating a virtual environment and calling `python` directly.
-
-Don't:
-
-```bash
-source .venv/bin/activate
-python examples/run_grpo.py
-```
-
-Do:
-
-```bash
-uv run examples/run_grpo.py
-```
-
-Exception: `Dockerfile.ngc_pytorch` is exempt from this rule.
-
 ## Python Coding Guidelines
 ### Python Standard
-1. The code developed for NeMo RL should conform to Python 3.12+.
+The code developed should conform to Python 3.12+.
 
 ### Indentation
-1. Indent code with 4 spaces. Do not use tabs.
+Indent code with 4 spaces. Do not use tabs.
 
 ### Naming
 
@@ -65,12 +43,15 @@ Exception: `Dockerfile.ngc_pytorch` is exempt from this rule.
 ### Comments
 
 1. For interfaces that may be used outside a file, prefer docstrings over comments.
-2. Comments should be reserved for code within a function, or interfaces that are local to a file.
-3. If a piece of code is commented out, there should be a comment around that piece of code describing it's usage and why it's commented out. Otherwise that is a debug comment and it should be removed before merging
+2. Comments should be KEPT TO A MINIMUM, at most reserved for code within a function, or interfaces that are local to a file.
+3. Ignore commented out pieces of code.
 
 ### Docstring Syntax
 #### Classes and Functions
 Use the [Google style](https://google.github.io/styleguide/pyguide.html), which can be parsed by Sphinx.
+
+#### Files
+NEVER add file-level or module-level docstrings. Files start directly with `from __future__ import annotations` (or a shebang) followed by imports; no module docstring is allowed.
 
 ### Avoid Reflection
 Avoid using reflection when functionality can be easily achieved without reflection.
@@ -143,8 +124,6 @@ else:
 - **Express optionality via `TypedDict`.** Use `typing.NotRequired` to mark optional attributes. Optional attributes may be absent/`None`; code may check for their presence.
 - **Where defaults live.** Exemplar configs under `examples/configs/*.yaml` include documented defaults. Recipe YAMLs under `examples/configs/recipes/**/*.yaml` are runnable snapshots and may omit documentation.
 - **Additions must be documented.** When adding a new config key to a `TypedDict` subclass, document the key’s purpose, valid values/types, and recommended default (if applicable), and reflect the default in the exemplar YAMLs under `examples/configs/*.yaml`.
-- **Rationale.** Centralizing defaults in YAML avoids surprising behavior and makes value provenance clear.
-
 Forbidden patterns:
 
 ```python

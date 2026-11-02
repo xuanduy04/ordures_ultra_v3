@@ -1,5 +1,3 @@
-
-
 # Generate rollouts for arbitrary environments
 # Supports multi-turn rollouts and many simultaneous environments (E.g. you can train on math, code, multi-turn games and more at once)
 
@@ -16,20 +14,10 @@ import torch
 from transformers import PreTrainedTokenizerBase
 from wandb import Histogram
 
-from nemo_rl.data.interfaces import (
-    DatumSpec,
-    FlatMessagesType,
-    LLMMessageLogType,
-)
-from nemo_rl.data.llm_message_utils import (
-    batched_message_log_to_flat_message,
-    get_keys_from_message_log,
-)
+from nemo_rl.data.interfaces import DatumSpec, FlatMessagesType, LLMMessageLogType
+from nemo_rl.data.llm_message_utils import batched_message_log_to_flat_message, get_keys_from_message_log
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
-from nemo_rl.environments.interfaces import (
-    EnvironmentInterface,
-    EnvironmentReturn,
-)
+from nemo_rl.environments.interfaces import EnvironmentInterface, EnvironmentReturn
 from nemo_rl.models.generation.interfaces import (
     GenerationConfig,
     GenerationDatumSpec,
@@ -60,9 +48,7 @@ def generate_responses(
         generation_input_data["stop_strings"] = [None] * len(input_lengths)
 
     # Always use synchronous generation
-    generation_outputs = policy_generation.generate(
-        generation_input_data, greedy=greedy
-    )
+    generation_outputs = policy_generation.generate(generation_input_data, greedy=greedy)
 
     # Extract everything we need from the generation outputs
     output_ids = generation_outputs["output_ids"]
@@ -94,9 +80,7 @@ def generate_responses(
         }
 
         if include_logprobs and "logprobs" in generation_outputs:
-            assistant_message["generation_logprobs"] = generation_outputs["logprobs"][
-                i, input_length:total_length
-            ]
+            assistant_message["generation_logprobs"] = generation_outputs["logprobs"][i, input_length:total_length]
 
         batch["message_log"][i].append(assistant_message)
 
@@ -143,9 +127,7 @@ async def generate_responses_async(
     )
 
     # Use async generation with per-sample streaming
-    collected_indexed_outputs: list[
-        tuple[int, BatchedDataDict[GenerationOutputSpec]]
-    ] = []
+    collected_indexed_outputs: list[tuple[int, BatchedDataDict[GenerationOutputSpec]]] = []
     async for original_idx, single_item_output in policy_generation.generate_async(
         generation_input_data, greedy=greedy
     ):
@@ -157,13 +139,10 @@ async def generate_responses_async(
     # Extract in correct order
     ordered_batched_data_dicts = [item for _, item in collected_indexed_outputs]
 
-    assert ordered_batched_data_dicts, (
-        "Generation returned no outputs for a non-empty batch."
-    )
+    assert ordered_batched_data_dicts, "Generation returned no outputs for a non-empty batch."
 
     generation_outputs = BatchedDataDict.from_batches(
-        ordered_batched_data_dicts,
-        pad_value_dict={"output_ids": tokenizer.pad_token_id, "logprobs": 0.0},
+        ordered_batched_data_dicts, pad_value_dict={"output_ids": tokenizer.pad_token_id, "logprobs": 0.0}
     )
 
     # Extract everything we need from the generation outputs
@@ -196,9 +175,7 @@ async def generate_responses_async(
         }
 
         if include_logprobs and "logprobs" in generation_outputs:
-            assistant_message["generation_logprobs"] = generation_outputs["logprobs"][
-                i, input_length:total_length
-            ]
+            assistant_message["generation_logprobs"] = generation_outputs["logprobs"][i, input_length:total_length]
 
         batch["message_log"][i].append(assistant_message)
 
@@ -212,9 +189,7 @@ async def generate_responses_async(
         # generation_outputs carries this as a 1-length list per row; convert to int
         v = generation_outputs["gen_leader_worker_idx"][0]
         try:
-            gen_metrics["gen_leader_worker_idx"] = (
-                int(v[0]) if isinstance(v, list) else int(v)
-            )
+            gen_metrics["gen_leader_worker_idx"] = int(v[0]) if isinstance(v, list) else int(v)
         except Exception as e:
             print(f"Error occurred while extracting gen_leader_worker_idx: {e}")
 
@@ -226,8 +201,7 @@ async def generate_responses_async(
 
 
 def calculate_rewards(
-    batch: BatchedDataDict[DatumSpec],
-    task_to_env: dict[str, EnvironmentInterface],
+    batch: BatchedDataDict[DatumSpec], task_to_env: dict[str, EnvironmentInterface]
 ) -> EnvironmentReturn:
     """Calculate rewards for generated responses and get environment feedback.
 
@@ -288,14 +262,7 @@ def calculate_rewards(
     for future, result in zip(futures, results):
         indices = future_to_indices[future]
         # Environment step returns: EnvironmentReturn
-        (
-            env_observations,
-            metadata,
-            next_stop_strings,
-            task_rewards,
-            terminateds,
-            answers,
-        ) = result
+        (env_observations, metadata, next_stop_strings, task_rewards, terminateds, answers) = result
         if next_stop_strings is None:
             next_stop_strings = [None] * len(task_rewards)
         if answers is None:
@@ -312,9 +279,7 @@ def calculate_rewards(
             all_answers.append(answers[i])
 
     # Sort results by original index to maintain order
-    sorted_indices = sorted(
-        range(len(all_indices_order)), key=lambda k: all_indices_order[k]
-    )
+    sorted_indices = sorted(range(len(all_indices_order)), key=lambda k: all_indices_order[k])
     rewards = torch.tensor([all_rewards[i] for i in sorted_indices])
     env_observations = [all_env_observations[i] for i in sorted_indices]
     terminateds = torch.tensor([all_terminateds[i] for i in sorted_indices])
@@ -389,11 +354,8 @@ def run_multi_turn_rollout(
         active_stop_strings = [current_stop_strings[i] for i in active_indices.tolist()]
 
         active_flat_messages: BatchedDataDict[FlatMessagesType]
-        active_flat_messages, active_input_lengths = (
-            batched_message_log_to_flat_message(
-                active_batch["message_log"],
-                pad_value_dict={"token_ids": tokenizer.pad_token_id},
-            )
+        active_flat_messages, active_input_lengths = batched_message_log_to_flat_message(
+            active_batch["message_log"], pad_value_dict={"token_ids": tokenizer.pad_token_id}
         )
 
         # Extract input_ids and lengths from the flat messages
@@ -401,11 +363,7 @@ def run_multi_turn_rollout(
 
         # Prepare generation input data
         generation_input_data = BatchedDataDict[GenerationDatumSpec](
-            {
-                "input_ids": active_input_ids,
-                "input_lengths": active_input_lengths,
-                "stop_strings": active_stop_strings,
-            }
+            {"input_ids": active_input_ids, "input_lengths": active_input_lengths, "stop_strings": active_stop_strings}
         )
         # add the multimodal data to the generation input data
         multimodal_data = active_flat_messages.get_multimodal_dict(as_tensors=False)
@@ -456,20 +414,13 @@ def run_multi_turn_rollout(
             env_obs_content = env_output.observations[i]["content"]
             # Tokenize the raw content from the environment
             # TODO @sahilj: handle if we want these subsequent messages to have a chat template
-            tokenized_obs = tokenizer(
-                env_obs_content, return_tensors="pt", add_special_tokens=False
-            ).input_ids[0]
+            tokenized_obs = tokenizer(env_obs_content, return_tensors="pt", add_special_tokens=False).input_ids[0]
             # tokenizer returns torch.float32 when env_obs_content is empty
             tokenized_obs = tokenized_obs.to(dtype=torch.int64)
 
             # check if new message overflows max_seq_len
-            if (
-                len(tokenized_obs) + len(generated_ids[i]) + active_input_lengths[i]
-                >= max_seq_len
-            ):
-                tokens_left_for_obs = max_seq_len - (
-                    len(generated_ids[i]) + active_input_lengths[i]
-                )
+            if len(tokenized_obs) + len(generated_ids[i]) + active_input_lengths[i] >= max_seq_len:
+                tokens_left_for_obs = max_seq_len - (len(generated_ids[i]) + active_input_lengths[i])
                 assert tokens_left_for_obs >= 0, (
                     f"tokens_left_for_obs={tokens_left_for_obs} should not be negative. This should not happen if the inference engine respects the max sequence length."
                 )
@@ -503,13 +454,9 @@ def run_multi_turn_rollout(
         active_indices = active_indices[active_indices_local_next]
         continuing_indices_global = active_indices  # Indices relative to original batch
         # Get next stop strings and infos corresponding to the indices that are *continuing*
-        continuing_next_stops = [
-            env_output.next_stop_strings[i] for i in active_indices_local_next.tolist()
-        ]
+        continuing_next_stops = [env_output.next_stop_strings[i] for i in active_indices_local_next.tolist()]
         # Get metadata corresponding to continuing indices, using the correct field name
-        continuing_metadata = [
-            env_output.metadata[i] for i in active_indices_local_next.tolist()
-        ]
+        continuing_metadata = [env_output.metadata[i] for i in active_indices_local_next.tolist()]
 
         for i, global_idx in enumerate(continuing_indices_global.tolist()):
             # Update stop strings for the next turn
@@ -535,18 +482,10 @@ def run_multi_turn_rollout(
         "truncation_rate": float(sample_truncated.float().mean().item()),
         "max_turns_reached_rate": float(sample_max_turns_reached.float().mean().item()),
         # Token usage metrics
-        "mean_total_tokens_per_sample": float(
-            sample_token_counts.float().mean().item()
-        ),
-        "mean_gen_tokens_per_sample": float(
-            sample_assistant_token_counts.float().mean().item()
-        ),
-        "max_gen_tokens_per_sample": float(
-            sample_assistant_token_counts.float().max().item()
-        ),
-        "mean_env_tokens_per_sample": float(
-            sample_env_token_counts.float().mean().item()
-        ),
+        "mean_total_tokens_per_sample": float(sample_token_counts.float().mean().item()),
+        "mean_gen_tokens_per_sample": float(sample_assistant_token_counts.float().mean().item()),
+        "max_gen_tokens_per_sample": float(sample_assistant_token_counts.float().max().item()),
+        "mean_env_tokens_per_sample": float(sample_env_token_counts.float().mean().item()),
     }
     return current_batch, rollout_metrics
 
@@ -579,26 +518,16 @@ async def async_generate_response_for_sample_turn(
 
     # Convert to flat format for generation
     flat_messages, input_lengths = batched_message_log_to_flat_message(
-        batch_message_logs,
-        pad_value_dict={"token_ids": tokenizer.pad_token_id},
+        batch_message_logs, pad_value_dict={"token_ids": tokenizer.pad_token_id}
     )
 
     # Create generation input
     generation_input_data = BatchedDataDict[GenerationDatumSpec](
-        {
-            "input_ids": flat_messages["token_ids"],
-            "input_lengths": input_lengths,
-            "stop_strings": [sample_stop_strings],
-        }
+        {"input_ids": flat_messages["token_ids"], "input_lengths": input_lengths, "stop_strings": [sample_stop_strings]}
     )
 
     # Create a dummy batch for generate_responses_async
-    dummy_batch = BatchedDataDict[DatumSpec](
-        {
-            "message_log": batch_message_logs,
-            "stop_strings": [sample_stop_strings],
-        }
-    )
+    dummy_batch = BatchedDataDict[DatumSpec]({"message_log": batch_message_logs, "stop_strings": [sample_stop_strings]})
 
     # Generate response using the async version
     updated_batch, generated_ids, gen_metrics = await generate_responses_async(
@@ -630,8 +559,8 @@ async def run_sample_multi_turn_rollout(
 ) -> tuple[dict, dict[str, Any]]:
     """Run a multi-turn rollout for a single sample.
 
-    This function manages the complete lifecycle of one sample's interaction.
-    Async generation is used internally when available.
+    This function manages the complete lifecycle of one sample's interaction. Async generation is used internally when
+    available.
 
     Args:
         sample_idx: Index of this sample in the original batch
@@ -683,12 +612,7 @@ async def run_sample_multi_turn_rollout(
                 input_lengths,
                 gen_metrics,
             ) = await async_generate_response_for_sample_turn(
-                policy_generation,
-                current_message_log,
-                current_stop_strings,
-                tokenizer,
-                max_seq_len,
-                greedy=greedy,
+                policy_generation, current_message_log, current_stop_strings, tokenizer, max_seq_len, greedy=greedy
             )
             current_message_log = updated_message_log
 
@@ -707,9 +631,7 @@ async def run_sample_multi_turn_rollout(
             # Per-worker load accounting
             if "gen_leader_worker_idx" in gen_metrics:
                 worker_idx = int(gen_metrics["gen_leader_worker_idx"])
-                per_worker_token_counts[worker_idx] = (
-                    per_worker_token_counts.get(worker_idx, 0) + gen_token_count
-                )
+                per_worker_token_counts[worker_idx] = per_worker_token_counts.get(worker_idx, 0) + gen_token_count
 
         except Exception as e:
             print(f"Error generating response for sample {sample_idx}: {e}")
@@ -717,11 +639,7 @@ async def run_sample_multi_turn_rollout(
 
         # Create single-sample batch for environment interaction
         sample_batch = BatchedDataDict[DatumSpec](
-            {
-                "message_log": [current_message_log],
-                "extra_env_info": [current_extra_env_info],
-                "task_name": [task_name],
-            }
+            {"message_log": [current_message_log], "extra_env_info": [current_extra_env_info], "task_name": [task_name]}
         )
 
         # Get environment feedback
@@ -732,9 +650,7 @@ async def run_sample_multi_turn_rollout(
         terminated = env_output.terminateds[0].item()
         env_obs_content = env_output.observations[0]["content"]
         # Tokenize environment response
-        tokenized_obs = tokenizer(
-            env_obs_content, return_tensors="pt", add_special_tokens=False
-        ).input_ids[0]
+        tokenized_obs = tokenizer(env_obs_content, return_tensors="pt", add_special_tokens=False).input_ids[0]
 
         # Check for sequence length overflow
         if input_lengths + gen_token_count + len(tokenized_obs) >= max_seq_len:
@@ -813,8 +729,8 @@ def run_async_multi_turn_rollout(
 ) -> tuple[BatchedDataDict[DatumSpec], dict[str, Any]]:
     """Run multi-turn rollouts with sample-level processing.
 
-    Each sample in the batch proceeds through its interaction independently.
-    Async generation is used internally when available but the function is synchronous.
+    Each sample in the batch proceeds through its interaction independently. Async generation is used internally when
+    available but the function is synchronous.
 
     Args:
         policy_generation: The generation interface (policy)
@@ -887,20 +803,11 @@ def run_async_multi_turn_rollout(
         final_batch = BatchedDataDict[DatumSpec](
             {
                 "message_log": [state["message_log"] for state in final_sample_states],
-                "extra_env_info": [
-                    state["extra_env_info"] for state in final_sample_states
-                ],
+                "extra_env_info": [state["extra_env_info"] for state in final_sample_states],
                 "task_name": [state["task_name"] for state in final_sample_states],
-                "total_reward": torch.stack(
-                    [state["total_reward"] for state in final_sample_states]
-                ),
-                "idx": [
-                    state.get("idx", i) for i, state in enumerate(final_sample_states)
-                ],
-                "truncated": torch.tensor(
-                    [metrics["truncated"] for metrics in all_sample_metrics],
-                    dtype=torch.bool,
-                ),
+                "total_reward": torch.stack([state["total_reward"] for state in final_sample_states]),
+                "idx": [state.get("idx", i) for i, state in enumerate(final_sample_states)],
+                "truncated": torch.tensor([metrics["truncated"] for metrics in all_sample_metrics], dtype=torch.bool),
             }
         )
 
@@ -918,9 +825,7 @@ def run_async_multi_turn_rollout(
             return float(sorted_v[idx])
 
         turn_counts = [m["turn_count"] for m in all_sample_metrics]
-        max_gen_tokens_per_turn_values = [
-            m["max_gen_tokens_per_turn"] for m in all_sample_metrics
-        ]
+        max_gen_tokens_per_turn_values = [m["max_gen_tokens_per_turn"] for m in all_sample_metrics]
 
         # Aggregate metrics across all samples
         rollout_metrics = {
@@ -930,38 +835,20 @@ def run_async_multi_turn_rollout(
             "max_turns_per_sample": max(turn_counts),
             "turns_per_sample/p95": _pct(turn_counts, 95),
             "turns_per_sample/p99": _pct(turn_counts, 99),
-            "natural_termination_rate": sum(m["terminated"] for m in all_sample_metrics)
-            / batch_size,
-            "truncation_rate": sum(m["truncated"] for m in all_sample_metrics)
-            / batch_size,
-            "max_turns_reached_rate": sum(
-                m["max_turns_reached"] for m in all_sample_metrics
-            )
-            / batch_size,
+            "natural_termination_rate": sum(m["terminated"] for m in all_sample_metrics) / batch_size,
+            "truncation_rate": sum(m["truncated"] for m in all_sample_metrics) / batch_size,
+            "max_turns_reached_rate": sum(m["max_turns_reached"] for m in all_sample_metrics) / batch_size,
             # Token usage metrics
-            "mean_total_tokens_per_sample": sum(
-                m["total_tokens"] for m in all_sample_metrics
-            )
-            / batch_size,
-            "mean_gen_tokens_per_sample": sum(
-                m["assistant_tokens"] for m in all_sample_metrics
-            )
-            / batch_size,
-            "max_gen_tokens_per_sample": max(
-                m["assistant_tokens"] for m in all_sample_metrics
-            ),
-            "mean_env_tokens_per_sample": sum(
-                m["env_tokens"] for m in all_sample_metrics
-            )
-            / batch_size,
+            "mean_total_tokens_per_sample": sum(m["total_tokens"] for m in all_sample_metrics) / batch_size,
+            "mean_gen_tokens_per_sample": sum(m["assistant_tokens"] for m in all_sample_metrics) / batch_size,
+            "max_gen_tokens_per_sample": max(m["assistant_tokens"] for m in all_sample_metrics),
+            "mean_env_tokens_per_sample": sum(m["env_tokens"] for m in all_sample_metrics) / batch_size,
             # max_gen_tokens_per_turn: Diagnostic for long single generations
             "max_gen_tokens_per_turn/max": max(max_gen_tokens_per_turn_values),
-            "max_gen_tokens_per_turn/mean": sum(max_gen_tokens_per_turn_values)
-            / batch_size,
+            "max_gen_tokens_per_turn/mean": sum(max_gen_tokens_per_turn_values) / batch_size,
             "max_gen_tokens_per_turn/p95": _pct(max_gen_tokens_per_turn_values, 95),
             # Reward metrics
-            "mean_total_reward": sum(m["total_reward"] for m in all_sample_metrics)
-            / batch_size,
+            "mean_total_reward": sum(m["total_reward"] for m in all_sample_metrics) / batch_size,
             "max_total_reward": max(m["total_reward"] for m in all_sample_metrics),
             "min_total_reward": min(m["total_reward"] for m in all_sample_metrics),
         }
@@ -975,9 +862,7 @@ def run_async_multi_turn_rollout(
             rollout_metrics["per_worker_token_counts"] = per_worker_token_counts
 
         # Collect ISL, OSL, and ISL+OSL metrics for all samples
-        rollout_metrics["histogram/gen_tokens_length"] = [
-            t for m in all_sample_metrics for t in m["turn_gen_tokens"]
-        ]
+        rollout_metrics["histogram/gen_tokens_length"] = [t for m in all_sample_metrics for t in m["turn_gen_tokens"]]
         rollout_metrics["histogram/input_tokens_length"] = [
             t for m in all_sample_metrics for t in m["turn_input_tokens"]
         ]
@@ -1006,9 +891,7 @@ class AsyncNemoGymRolloutResult:
     ng_task_index: Optional[int]
 
 
-def _calculate_single_metric(
-    values: list[float], batch_size: int, key_name: str
-) -> dict:
+def _calculate_single_metric(values: list[float], batch_size: int, key_name: str) -> dict:
     return {
         f"{key_name}/mean": sum(values) / batch_size,
         f"{key_name}/max": max(values),
@@ -1022,15 +905,12 @@ def _calculate_single_metric(
 def apply_empty_generation_gate(results: list[dict], master_config: dict | None) -> int:
     """Treat empty assistant generations as a single EOS token.
 
-    A model that emits EOS as its very first token generates zero output
-    tokens. Such assistant messages carry empty token_ids and empty
-    generation_logprobs, which leaves the sample with zero trainable tokens
-    and makes every per-token advantage penalty a no-op. This gate rewrites
-    empty assistant generations to contain exactly one token — the smallest
-    configured EOS token id (token_ids.eos) — with a 0.0 logprob, so the
-    sample flows through reward shaping, penalties and training like any
-    1-token generation. Gated messages are marked with has_empty_generation
-    so advantage calibration can special-case them later.
+    A model that emits EOS as its very first token generates zero output tokens. Such assistant messages carry empty
+    token_ids and empty generation_logprobs, which leaves the sample with zero trainable tokens and makes every
+    per-token advantage penalty a no-op. This gate rewrites empty assistant generations to contain exactly one token —
+    the smallest configured EOS token id (token_ids.eos) — with a 0.0 logprob, so the sample flows through reward
+    shaping, penalties and training like any 1-token generation. Gated messages are marked with has_empty_generation so
+    advantage calibration can special-case them later.
 
     Args:
         results: List of rollout result dicts with a "message_log".
@@ -1053,20 +933,15 @@ def apply_empty_generation_gate(results: list[dict], master_config: dict | None)
                 eos_token_ids.append(int(part))
             except ValueError:
                 raise ValueError(
-                    f"Invalid token_ids.eos entry {part!r} in {eos_cfg!r}; "
-                    "expected comma-separated integer token IDs."
+                    f"Invalid token_ids.eos entry {part!r} in {eos_cfg!r}; expected comma-separated integer token IDs."
                 ) from None
         if not eos_token_ids:
-            raise ValueError(
-                f"token_ids.eos value {eos_cfg!r} contains no token IDs."
-            )
+            raise ValueError(f"token_ids.eos value {eos_cfg!r} contains no token IDs.")
     else:
         try:
             eos_token_ids = [int(eos_cfg)]
         except ValueError:
-            raise ValueError(
-                f"Invalid token_ids.eos entry '{eos_cfg!r}'; expected integer token IDs."
-            ) from None
+            raise ValueError(f"Invalid token_ids.eos entry '{eos_cfg!r}'; expected integer token IDs.") from None
 
     gate_token_id = min(eos_token_ids)
 
@@ -1077,26 +952,19 @@ def apply_empty_generation_gate(results: list[dict], master_config: dict | None)
                 continue
             if msg["token_ids"].numel() > 0:
                 continue
-            msg["token_ids"] = torch.tensor(
-                [gate_token_id], dtype=msg["token_ids"].dtype
-            )
-            msg["generation_logprobs"] = torch.tensor(
-                [0.0], dtype=msg["generation_logprobs"].dtype
-            )
+            msg["token_ids"] = torch.tensor([gate_token_id], dtype=msg["token_ids"].dtype)
+            msg["generation_logprobs"] = torch.tensor([0.0], dtype=msg["generation_logprobs"].dtype)
             msg["has_empty_generation"] = True
             num_gated += 1
 
     return num_gated
 
 
-def _n_gram_repetition_mask(
-    token_ids: torch.Tensor, n_gram_size: int, repetition_threshold: int
-) -> torch.Tensor:
+def _n_gram_repetition_mask(token_ids: torch.Tensor, n_gram_size: int, repetition_threshold: int) -> torch.Tensor:
     """Per-token overlap-count mask for repeated N-grams via rolling hash.
 
-    Each position holds how many N-gram windows, whose occurrence rank is at
-    least `repetition_threshold`, cover it. The first
-    `repetition_threshold - 1` occurrences of each distinct N-gram are exempt.
+    Each position holds how many N-gram windows, whose occurrence rank is at least `repetition_threshold`, cover it. The
+    first `repetition_threshold - 1` occurrences of each distinct N-gram are exempt.
 
     Uses a single-modulus polynomial hash (2^61 - 1) for O(T) counting.
     """
@@ -1110,26 +978,16 @@ def _n_gram_repetition_mask(
         return repetition_mask
     rolling_hash = 0
     for token_id in token_id_list[:n_gram_size]:
-        rolling_hash = (
-            rolling_hash * _N_GRAM_HASH_BASE + token_id
-        ) % _N_GRAM_HASH_MODULUS
-    oldest_token_multiplier = pow(
-        _N_GRAM_HASH_BASE, n_gram_size - 1, _N_GRAM_HASH_MODULUS
-    )
+        rolling_hash = (rolling_hash * _N_GRAM_HASH_BASE + token_id) % _N_GRAM_HASH_MODULUS
+    oldest_token_multiplier = pow(_N_GRAM_HASH_BASE, n_gram_size - 1, _N_GRAM_HASH_MODULUS)
     occurrence_counts = {}
     for window_end in range(n_gram_size - 1, num_tokens):
         occurrence_counts[rolling_hash] = occurrence_counts.get(rolling_hash, 0) + 1
         if occurrence_counts[rolling_hash] >= repetition_threshold:
-            repetition_mask[
-                window_end - n_gram_size + 1 : window_end + 1
-            ] += 1.0
+            repetition_mask[window_end - n_gram_size + 1 : window_end + 1] += 1.0
         if window_end < num_tokens - 1:
             rolling_hash = (
-                (
-                    rolling_hash
-                    - token_id_list[window_end - n_gram_size + 1]
-                    * oldest_token_multiplier
-                )
+                (rolling_hash - token_id_list[window_end - n_gram_size + 1] * oldest_token_multiplier)
                 * _N_GRAM_HASH_BASE
                 + token_id_list[window_end + 1]
             ) % _N_GRAM_HASH_MODULUS
@@ -1139,65 +997,50 @@ def _n_gram_repetition_mask(
 def apply_reward_penalties(results: list[dict], master_config: dict | None) -> dict[str, int]:
     """Apply reward penalties to results, setting reward to 0.0 when triggered.
 
-    All penalties are gated by master_config flags. Returns a dict of penalty
-    counts keyed by penalty name.
+    All penalties are gated by master_config flags. Returns a dict of penalty counts keyed by penalty name.
 
-    NOTE: These penalties assume Gym-path message_log structure where roles
-    strictly alternate "user" → "assistant". Tool responses are folded into
-    user prompt tokens by _postprocess_nemo_gym_to_nemo_rl_result and never
-    appear as separate message_log entries. Do not call from non-Gym rollout paths.
+    NOTE: These penalties assume Gym-path message_log structure where roles strictly alternate "user" → "assistant".
+    Tool responses are folded into user prompt tokens by _postprocess_nemo_gym_to_nemo_rl_result and never appear as
+    separate message_log entries. Do not call from non-Gym rollout paths.
 
     Penalties:
-      1. penalize_duplicated_reasoning (text-based)
-         Checks response["output"] items. If a "reasoning" item's summary text
-         exactly matches the next item's content text (after strip), the model
-         is copying its thinking into the final answer verbatim.
-         Data: full_result["response"]["output"] — reasoning has summary[0]["text"],
-         message has content[0]["text"].
+      1. penalize_duplicated_reasoning (text-based) Checks response["output"] items. If a "reasoning" item's summary
+         text exactly matches the next item's content text (after strip), the model is copying its thinking into the
+         final answer verbatim. Data: full_result["response"]["output"] — reasoning has summary[0]["text"], message has
+         content[0]["text"].
 
-      2. penalize_empty_final_answer (text-based)
-         Walks response["output"] in reverse to find the last message-type item.
-         If no message item exists or its content text is empty, the model failed
-         to produce a final answer. Skipped when the last output item is a
-         function_call (model was mid-agentic-loop, not producing an empty answer).
-         Data: full_result["response"]["output"] — message items have content[0]["text"].
-         Advantage-level flag (grpo.penalize_empty_final_answer): additionally marks
-         the final assistant message with has_empty_final_answer for the
-         negative-advantage clamp in grpo.py.
+      2. penalize_empty_final_answer (text-based) Walks response["output"] in reverse to find the last message-type
+         item. If no message item exists or its content text is empty, the model failed to produce a final answer.
+         Skipped when the last output item is a function_call (model was mid-agentic-loop, not producing an empty
+         answer). Data: full_result["response"]["output"] — message items have content[0]["text"]. Advantage-level flag
+         (grpo.advantage_penalty.empty_final_answer.enabled): additionally marks the final assistant message with
+         has_empty_final_answer for the negative-advantage clamp in grpo.py.
 
-      3. penalize_eos_token (token-based)
-         The EOS token(s) (default ids "2,11", configurable via token_ids.eos as a 
-         single integer or comma-separated integers, e.g. "2,177") should never
-         appear in any assistant generation. Checks message_log assistant entries.
-         Data: message_log[i]["token_ids"] where role == "assistant".
-         Advantage-level flag (grpo.penalize_eos_token): additionally marks every
-         assistant message from the first EOS-bearing message to the final message
-         with has_eos_token for the negative-advantage clamp in grpo.py.
+      3. penalize_eos_token (token-based) The EOS token(s) (default ids "2,11", configurable via token_ids.eos as a
+         single integer or comma-separated integers, e.g. "2,177") should never appear in any assistant generation.
+         Checks message_log assistant entries. Data: message_log[i]["token_ids"] where role == "assistant".
+         Advantage-level flag (grpo.advantage_penalty.eos_token.enabled): additionally marks every assistant message
+         from the first EOS-bearing message to the final message with has_eos_token for the negative-advantage clamp in
+         grpo.py.
 
-      4. penalize_malformed_thinking (token-based + string-based)
-         Two complementary checks to catch malformed think tags:
-         a) Token ID check: infers thinking mode from prompt token counts.
-            If prompt has open==close: enable_thinking=False, expect 0 open
-            and 0 close in generation. If prompt has open==close+1:
-            enable_thinking=True, expect 0 open and 1 close in generation.
-            Any other prompt pattern or mismatched generation counts is a violation.
-            Token IDs configurable via token_ids.think_open / token_ids.think_close.
-         b) String check: the model can spell out <think>/</think> with piecemeal
-            regular tokens (e.g. "<", "/", "thi", "nk", ">") that bypass special
-            token IDs. Checks generation_str (decoded generation text) per output
-            item: "<think>" count must be 0 (always in prompt, never generated),
-            "</think>" count must be 0 or 1.
-         Data: message_log pairs for token IDs, full_result output items for strings.
-         Advantage-level flag (grpo.penalize_malformed_thinking): additionally marks
-         each violative assistant message with has_malformed_thinking for the
-         negative-advantage clamp in grpo.py
+      4. penalize_malformed_thinking (token-based + string-based) Two complementary checks to catch malformed think
+         tags: a) Token ID check: infers thinking mode from prompt token counts. If prompt has open==close:
+         enable_thinking=False, expect 0 open and 0 close in generation. If prompt has open==close+1:
+         enable_thinking=True, expect 0 open and 1 close in generation. Any other prompt pattern or mismatched
+         generation counts is a violation. Token IDs configurable via token_ids.think_open / token_ids.think_close. b)
+         String check: the model can spell out <think>/</think> with piecemeal regular tokens (e.g. "<", "/", "thi",
+         "nk", ">") that bypass special token IDs. Checks generation_str (decoded generation text) per output item:
+         "<think>" count must be 0 (always in prompt, never generated), "</think>" count must be 0 or 1. Data:
+         message_log pairs for token IDs, full_result output items for strings. Advantage-level flag
+         (grpo.advantage_penalty.malformed_thinking.enabled): additionally marks each violative assistant message with
+         has_malformed_thinking for the negative-advantage clamp in grpo.py
 
-      5. penalize_n_gram_repetition (token-based)
-         Counts repeated N-gram windows (grpo.n_gram_repetition_size / grpo.n_gram_repetition_threshold)
-         within each assistant generation via rolling hash and attaches a per-token overlap-count mask 
-         (n_gram_repetition_mask) to each assistant message. grpo.py subtracts (mask).clamp(min=0) * grpo.n_gram_repetition_weight 
-         from the token advantages.
-         Data: message_log[i]["token_ids"] where role == "assistant".
+      5. penalize_n_gram_repetition (token-based) Counts repeated N-gram windows
+         (grpo.advantage_penalty.n_gram_repetition.size / grpo.advantage_penalty.n_gram_repetition.threshold) within
+         each assistant generation via rolling hash and attaches a per-token overlap-count mask (n_gram_repetition_mask)
+         to each assistant message. grpo.py subtracts (mask).clamp(min=0) *
+         grpo.advantage_penalty.n_gram_repetition.weight from the token advantages. Data: message_log[i]["token_ids"]
+         where role == "assistant".
     """
     counts = {
         "duplicated_reasoning": 0,
@@ -1209,18 +1052,23 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
     if not master_config or not results:
         return counts
 
+    grpo_cfg = master_config.get("grpo") or {}
+    advantage_penalty_cfg = grpo_cfg.get("advantage_penalty") or {}
 
     # Guard: penalties rely on Gym-path message_log (strictly alternating user/assistant roles).
     # Non-Gym paths may have "environment", "tool", or "system" roles which these checks don't handle.
     any_penalty_enabled = any(
         master_config.get(flag, False)
-        for flag in ("penalize_duplicated_reasoning", "penalize_empty_final_answer",
-                     "penalize_eos_token", "penalize_malformed_thinking")
+        for flag in (
+            "penalize_duplicated_reasoning",
+            "penalize_empty_final_answer",
+            "penalize_eos_token",
+            "penalize_malformed_thinking",
+        )
     )
     any_penalty_enabled = any_penalty_enabled or any(
-        bool((master_config.get("grpo") or {}).get(flag, False))
-        for flag in ("penalize_empty_final_answer", "penalize_eos_token",
-                     "penalize_malformed_thinking", "penalize_n_gram_repetition")
+        advantage_penalty_cfg.get(flag, {}).get("enabled", False)
+        for flag in ("empty_final_answer", "eos_token", "malformed_thinking", "n_gram_repetition")
     )
     if any_penalty_enabled:
         for result in results:
@@ -1230,7 +1078,6 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
                 f"but found roles: {roles}. These penalties are not supported for non-Gym rollout paths."
             )
 
-    grpo_cfg = master_config.get("grpo") or {}
     # --- Penalty 1: Duplicated reasoning / final answer ---
     if master_config.get("penalize_duplicated_reasoning", False):
         for result in results:
@@ -1259,7 +1106,9 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
                 counts["duplicated_reasoning"] += 1
 
     # --- Penalty 2: Empty final answer ---
-    if master_config.get("penalize_empty_final_answer", False) or grpo_cfg.get("penalize_empty_final_answer", False):
+    if master_config.get("penalize_empty_final_answer", False) or advantage_penalty_cfg.get(
+        "empty_final_answer", {}
+    ).get("enabled", False):
         for result in results:
             output_items = result["full_result"].get("response", {}).get("output", [])
             # Skip if the last output item is a function_call — it is legit for model to
@@ -1283,14 +1132,16 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
                 if master_config.get("penalize_empty_final_answer", False):
                     result["full_result"]["reward"] = 0.0
 
-                if grpo_cfg.get("penalize_empty_final_answer", False):
+                if advantage_penalty_cfg.get("empty_final_answer", {}).get("enabled", False):
                     for msg in reversed(result["message_log"]):
                         if msg["role"] == "assistant":
                             msg["has_empty_final_answer"] = True
                             break
 
     # --- Penalty 3: EOS token in generation ---
-    if master_config.get("penalize_eos_token", False) or grpo_cfg.get("penalize_eos_token", False):
+    if master_config.get("penalize_eos_token", False) or advantage_penalty_cfg.get("eos_token", {}).get(
+        "enabled", False
+    ):
         token_ids_cfg = master_config.get("token_ids", {})
         eos_cfg = token_ids_cfg.get("eos", "2,11")
         if isinstance(eos_cfg, str):
@@ -1307,28 +1158,26 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
                         "expected comma-separated integer token IDs."
                     ) from None
             if not eos_token_ids:
-                raise ValueError(
-                    f"token_ids.eos value {eos_cfg!r} contains no token IDs."
-                )
+                raise ValueError(f"token_ids.eos value {eos_cfg!r} contains no token IDs.")
         else:
             try:
                 eos_token_ids: set[int] = {int(eos_cfg)}
             except ValueError:
-                raise ValueError(
-                    f"Invalid token_ids.eos entry '{eos_cfg!r}'; expected integer token IDs."
-                ) from None
-            
+                raise ValueError(f"Invalid token_ids.eos entry '{eos_cfg!r}'; expected integer token IDs.") from None
+
         for result in results:
             first_eos_idx = None
             for idx, msg in enumerate(result["message_log"]):
-                if msg["role"] == "assistant" and any(eos_token_id in msg["token_ids"] for eos_token_id in eos_token_ids):
+                if msg["role"] == "assistant" and any(
+                    eos_token_id in msg["token_ids"] for eos_token_id in eos_token_ids
+                ):
                     first_eos_idx = idx
                     counts["eos_token"] += 1
                     break
             if first_eos_idx is not None:
                 if master_config.get("penalize_eos_token", False):
                     result["full_result"]["reward"] = 0.0
-                if grpo_cfg.get("penalize_eos_token", False):
+                if advantage_penalty_cfg.get("eos_token", {}).get("enabled", False):
                     # Advantage-level flag: punish from the literal first EOS token in
                     # generation until the final token, assistant turns only.
                     for msg in result["message_log"][first_eos_idx:]:
@@ -1336,7 +1185,9 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
                             msg["has_eos_token"] = True
 
     # --- Penalty 4: Malformed think tags (token ID + string) ---
-    if master_config.get("penalize_malformed_thinking", False) or grpo_cfg.get("penalize_malformed_thinking", False):
+    if master_config.get("penalize_malformed_thinking", False) or advantage_penalty_cfg.get(
+        "malformed_thinking", {}
+    ).get("enabled", False):
         token_ids_cfg = master_config.get("token_ids", {})
         think_open_token_id = token_ids_cfg.get("think_open", 12)
         think_close_token_id = token_ids_cfg.get("think_close", 13)
@@ -1364,12 +1215,12 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
                     else:
                         # Unexpected prompt pattern — flag as violation
                         has_violation = True
-                        if grpo_cfg.get("penalize_malformed_thinking", False):
+                        if advantage_penalty_cfg.get("malformed_thinking", {}).get("enabled", False):
                             msgs[i + 1]["has_malformed_thinking"] = True
                         continue
                     if asst_open != expected_open or asst_close != expected_close:
                         has_violation = True
-                        if grpo_cfg.get("penalize_malformed_thinking", False):
+                        if advantage_penalty_cfg.get("malformed_thinking", {}).get("enabled", False):
                             msgs[i + 1]["has_malformed_thinking"] = True
             # 4b) String check on generation_str per output item
             output_items = result["full_result"].get("response", {}).get("output", [])
@@ -1381,7 +1232,9 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
                     continue
                 if gen_str.count("<think>") > 0 or gen_str.count("</think>") > 1:
                     has_violation = True
-                    if grpo_cfg.get("penalize_malformed_thinking", False) and gen_item_idx < len(assistant_msgs):
+                    if advantage_penalty_cfg.get("malformed_thinking", {}).get("enabled", False) and gen_item_idx < len(
+                        assistant_msgs
+                    ):
                         assistant_msgs[gen_item_idx]["has_malformed_thinking"] = True
                 gen_item_idx += 1  # increment idx only for generation turns
             if has_violation:
@@ -1390,9 +1243,10 @@ def apply_reward_penalties(results: list[dict], master_config: dict | None) -> d
                     result["full_result"]["reward"] = 0.0
 
     # --- Penalty 5: N-gram repetition (token-based, advantage-level) ---
-    if grpo_cfg.get("penalize_n_gram_repetition", False):
-        n_gram_size = int(grpo_cfg.get("n_gram_repetition_size", 4))
-        n_gram_threshold = int(grpo_cfg.get("n_gram_repetition_threshold", 2))
+    n_gram_cfg = advantage_penalty_cfg.get("n_gram_repetition", {})
+    if n_gram_cfg.get("enabled", False):
+        n_gram_size = int(n_gram_cfg.get("size", 4))
+        n_gram_threshold = int(n_gram_cfg.get("threshold", 2))
         for result in results:
             sample_repeated = False
             for msg in result["message_log"]:
@@ -1418,7 +1272,7 @@ async def run_async_nemo_gym_rollout(
     max_seq_len: Optional[int] = None,
     max_rollout_turns: Optional[int] = None,
     greedy: bool = False,
-    master_config = None,
+    master_config=None,
     group_num: Optional[int] = None,
     returns_entire_batch: bool = False,
 ) -> AsyncGenerator[AsyncNemoGymRolloutResult, None]:
@@ -1429,9 +1283,7 @@ async def run_async_nemo_gym_rollout(
     # Handle generation parameters up front so we don't hide anything inside here to avoid being unintuitive to the user.
     # NeMo-Gym policy is "What you see is what you get".
     assert not greedy, "`greedy` is not supported in NeMo-Gym path!"
-    assert max_rollout_turns is None, (
-        "`max_rollout_turns` is not supported in NeMo-Gym path!"
-    )
+    assert max_rollout_turns is None, "`max_rollout_turns` is not supported in NeMo-Gym path!"
     assert max_seq_len is None, "`max_seq_len` is not supported in NeMo-Gym path!"
     # We don't use these stop criteria
     assert not generation_config["stop_strings"], (
@@ -1441,9 +1293,7 @@ async def run_async_nemo_gym_rollout(
         "Stop strings is not supported in the generation config in NeMo-Gym path!"
     )
     # Top k is not OpenAI compatible, so NeMo-Gym does not guarantee support over it.
-    assert not generation_config["top_k"], (
-        "Top k is not supported in the generation config in NeMo-Gym path!"
-    )
+    assert not generation_config["top_k"], "Top k is not supported in the generation config in NeMo-Gym path!"
 
     assert not returns_entire_batch or len(nemo_gym_rows) == num_generations
 
@@ -1479,9 +1329,7 @@ async def run_async_nemo_gym_rollout(
     groupidx_to_rowidx = defaultdict(list)
     with timer.time(f"{timer_prefix}/run_rollouts"):
         nemo_gym_environment = task_to_env["nemo_gym"]
-        for future in nemo_gym_environment.run_rollouts.remote(
-            nemo_gym_rows, tokenizer, timer_prefix
-        ):
+        for future in nemo_gym_environment.run_rollouts.remote(nemo_gym_rows, tokenizer, timer_prefix):
             rowidx, result, timing_metrics = await future
 
             groupidx = rowidx // num_generations
@@ -1517,18 +1365,17 @@ async def run_async_nemo_gym_rollout(
                 yield async_nemo_gym_rollout_result
 
 
-def _apply_empty_message_log_mask(
-    results: list[dict],
-    loss_multiplier: torch.Tensor,
-) -> torch.Tensor:
+def _apply_empty_message_log_mask(results: list[dict], loss_multiplier: torch.Tensor) -> torch.Tensor:
     """Mask samples whose NeMo-Gym rollout produced an empty message log.
 
-    Returns loss_multiplier with zeroed entries for masked samples.
-    If no samples need masking, returns the original tensor unchanged.
+    Returns loss_multiplier with zeroed entries for masked samples. If no samples need masking, returns the original
+    tensor unchanged.
     """
-    masked = [i for i, result in enumerate(results) 
-              if not result["message_log"] 
-              or (len(result["message_log"]) == len(result["input_message_log"]))]
+    masked = [
+        i
+        for i, result in enumerate(results)
+        if not result["message_log"] or (len(result["message_log"]) == len(result["input_message_log"]))
+    ]
 
     if not masked:
         return loss_multiplier
@@ -1546,39 +1393,42 @@ def _postprocess_single_group(
     policy_generation: GenerationInterface,
     input_batch: BatchedDataDict[DatumSpec],
     tokenizer: TokenizerType,
-    master_config = None,
+    master_config=None,
 ) -> AsyncNemoGymRolloutResult:
     apply_empty_generation_gate(results, master_config)
 
     # for effort level
     len_reward_low = []
     reward_low = []
-    lengths3 = [[],[],[]]
-    if master_config and 'effort_levels' in master_config:
-        low_weight = 0.
-        low_penlty = 1.
-        low_ub     = 64000
+    lengths3 = [[], [], []]
+    if master_config and "effort_levels" in master_config:
+        low_weight = 0.0
+        low_penlty = 1.0
+        low_ub = 64000
         low_string = ""
-        if 'low_weight' in master_config['effort_levels']:
-            low_weight = master_config['effort_levels']['low_weight']
-        if 'low_penalty' in master_config['effort_levels']:
-            low_penlty = master_config['effort_levels']['low_penalty']
-        if 'low_ub' in master_config['effort_levels']:
-            low_ub = master_config['effort_levels']['low_ub']
-        if 'low_string' in master_config['effort_levels']:
-            low_string = master_config['effort_levels']['low_string']
-        if low_weight>0 and low_string:
-            lengths = [len(r["message_log"][-1]["token_ids"]) if r["message_log"][-1]["role"]=="assistant" else 0 for r in results]
+        if "low_weight" in master_config["effort_levels"]:
+            low_weight = master_config["effort_levels"]["low_weight"]
+        if "low_penalty" in master_config["effort_levels"]:
+            low_penlty = master_config["effort_levels"]["low_penalty"]
+        if "low_ub" in master_config["effort_levels"]:
+            low_ub = master_config["effort_levels"]["low_ub"]
+        if "low_string" in master_config["effort_levels"]:
+            low_string = master_config["effort_levels"]["low_string"]
+        if low_weight > 0 and low_string:
+            lengths = [
+                len(r["message_log"][-1]["token_ids"]) if r["message_log"][-1]["role"] == "assistant" else 0
+                for r in results
+            ]
             orig_rewards = [r["full_result"]["reward"] for r in results]
             for i in range(len(results)):
-                prompt = ''
-                for ii in reversed(nemo_gym_rows[i]['responses_create_params']['input']):
-                    if 'role' in ii and ii['role'] == 'user' and 'content' in ii:
-                        prompt = ii['content']
+                prompt = ""
+                for ii in reversed(nemo_gym_rows[i]["responses_create_params"]["input"]):
+                    if "role" in ii and ii["role"] == "user" and "content" in ii:
+                        prompt = ii["content"]
                         break
                 if low_string in prompt:
-                    len_reward = min(1.,low_weight * (1. - lengths[i]/low_ub))
-                    new_r = orig_rewards[i] + orig_rewards[i] * max(len_reward,0.) + low_penlty * min(len_reward,0.)
+                    len_reward = min(1.0, low_weight * (1.0 - lengths[i] / low_ub))
+                    new_r = orig_rewards[i] + orig_rewards[i] * max(len_reward, 0.0) + low_penlty * min(len_reward, 0.0)
                     results[i]["full_result"]["reward"] = new_r
                     len_reward_low.append(len_reward)
                     reward_low.append(new_r)
@@ -1595,23 +1445,13 @@ def _postprocess_single_group(
         all_sample_metrics = [
             {
                 "total_reward": r["full_result"]["reward"],
-                "assistant_tokens": sum(
-                    len(m["token_ids"])
-                    for m in r["message_log"]
-                    if m["role"] == "assistant"
-                ),
+                "assistant_tokens": sum(len(m["token_ids"]) for m in r["message_log"] if m["role"] == "assistant"),
                 "total_tokens": sum(len(m["token_ids"]) for m in r["message_log"]),
                 "turn_count": sum(1 for m in r["message_log"] if m["role"] == "user"),
-                "hit_max_tokens": sum(len(m["token_ids"]) for m in r["message_log"])
-                == max_total_tokens_per_sample,
+                "hit_max_tokens": sum(len(m["token_ids"]) for m in r["message_log"]) == max_total_tokens_per_sample,
                 # max_gen_tokens_per_turn: Diagnostic for long single generations
                 "max_gen_tokens_per_turn": max(
-                    (
-                        len(m["token_ids"])
-                        for m in r["message_log"]
-                        if m["role"] == "assistant"
-                    ),
-                    default=0,
+                    (len(m["token_ids"]) for m in r["message_log"] if m["role"] == "assistant"), default=0
                 ),
             }
             for r in results
@@ -1620,9 +1460,7 @@ def _postprocess_single_group(
     # Aggregate metrics across all samples
     with timer.time(f"{timer_prefix}/aggregate_metrics", should_log=False):
         turn_counts = [m["turn_count"] for m in all_sample_metrics]
-        max_gen_tokens_per_turn_values = [
-            m["max_gen_tokens_per_turn"] for m in all_sample_metrics
-        ]
+        max_gen_tokens_per_turn_values = [m["max_gen_tokens_per_turn"] for m in all_sample_metrics]
 
         def _pct(values: list[float], p: float) -> float:
             if not values:
@@ -1632,40 +1470,20 @@ def _postprocess_single_group(
             return float(sorted_v[idx])
 
         rollout_metrics = {
-            **_calculate_single_metric(
-                turn_counts,
-                batch_size,
-                "turns_per_sample",
-            ),
+            **_calculate_single_metric(turn_counts, batch_size, "turns_per_sample"),
             "turns_per_sample/p95": _pct(turn_counts, 95),
             "turns_per_sample/p99": _pct(turn_counts, 99),
             **_calculate_single_metric(
-                [m["total_tokens"] for m in all_sample_metrics],
-                batch_size,
-                "total_tokens_per_sample",
+                [m["total_tokens"] for m in all_sample_metrics], batch_size, "total_tokens_per_sample"
             ),
             **_calculate_single_metric(
-                [m["assistant_tokens"] for m in all_sample_metrics],
-                batch_size,
-                "gen_tokens_per_sample",
+                [m["assistant_tokens"] for m in all_sample_metrics], batch_size, "gen_tokens_per_sample"
             ),
-            **_calculate_single_metric(
-                max_gen_tokens_per_turn_values,
-                batch_size,
-                "max_gen_tokens_per_turn",
-            ),
+            **_calculate_single_metric(max_gen_tokens_per_turn_values, batch_size, "max_gen_tokens_per_turn"),
             "max_gen_tokens_per_turn/p95": _pct(max_gen_tokens_per_turn_values, 95),
-            **_calculate_single_metric(
-                [m["total_reward"] for m in all_sample_metrics],
-                batch_size,
-                "total_reward",
-            ),
-            "natural_termination_rate": sum(
-                not m["hit_max_tokens"] for m in all_sample_metrics
-            )
-            / batch_size,
-            "truncation_rate": sum(m["hit_max_tokens"] for m in all_sample_metrics)
-            / batch_size,
+            **_calculate_single_metric([m["total_reward"] for m in all_sample_metrics], batch_size, "total_reward"),
+            "natural_termination_rate": sum(not m["hit_max_tokens"] for m in all_sample_metrics) / batch_size,
+            "truncation_rate": sum(m["hit_max_tokens"] for m in all_sample_metrics) / batch_size,
             # TODO enable this metric. We don't have a clear handle on which tokens are user or tool role.
             # We would probably need to re-tokenize the messages post-hoc to kind of figure this out.
             # "mean_env_tokens_per_sample": sum(
@@ -1687,16 +1505,10 @@ def _postprocess_single_group(
         for agent_name, agent_results in agent_to_results.items():
             keys = agent_results[0].keys()
             for key in keys:
-                values = [
-                    float(r[key])
-                    for r in agent_results
-                    if isinstance(r.get(key), (bool, int, float))
-                ]
+                values = [float(r[key]) for r in agent_results if isinstance(r.get(key), (bool, int, float))]
                 if values:
                     per_agent_metrics.update(
-                        _calculate_single_metric(
-                            values, len(agent_results), f"{agent_name}/{key}"
-                        )
+                        _calculate_single_metric(values, len(agent_results), f"{agent_name}/{key}")
                     )
 
             # Full trajectory dumps are too large to log as a wandb Table (single
@@ -1715,19 +1527,12 @@ def _postprocess_single_group(
         rollout_metrics.update(per_agent_metrics)
 
     # Necessary for downstream nemo rl logging/printing.
-    rollout_metrics["mean_gen_tokens_per_sample"] = rollout_metrics[
-        "gen_tokens_per_sample/mean"
-    ]
+    rollout_metrics["mean_gen_tokens_per_sample"] = rollout_metrics["gen_tokens_per_sample/mean"]
 
     # Convert LLMMessageLogType to FlatMessagesType for generation
-    input_batch_for_input_ids = BatchedDataDict[DatumSpec](
-        {
-            "message_log": [r["input_message_log"] for r in results],
-        }
-    )
+    input_batch_for_input_ids = BatchedDataDict[DatumSpec]({"message_log": [r["input_message_log"] for r in results]})
     batched_flat, _ = batched_message_log_to_flat_message(
-        input_batch_for_input_ids["message_log"],
-        pad_value_dict={"token_ids": tokenizer.pad_token_id},
+        input_batch_for_input_ids["message_log"], pad_value_dict={"token_ids": tokenizer.pad_token_id}
     )
     input_ids = batched_flat["token_ids"]
 
@@ -1735,17 +1540,12 @@ def _postprocess_single_group(
         {
             "agent_ref": [r["agent_ref"] for r in results],
             "full_result": [
-                {"responses_create_params": {"input": row["responses_create_params"]["input"]}}
-                for row in nemo_gym_rows
+                {"responses_create_params": {"input": row["responses_create_params"]["input"]}} for row in nemo_gym_rows
             ],
             "message_log": [r["message_log"] for r in results],
             # length is used downstream for mean_prompt_length
-            "length": torch.tensor(
-                [len(r["input_message_log"][0]["token_ids"]) for r in results]
-            ),
-            "loss_multiplier": _apply_empty_message_log_mask(
-                results, input_batch["loss_multiplier"]
-            ),
+            "length": torch.tensor([len(r["input_message_log"][0]["token_ids"]) for r in results]),
+            "loss_multiplier": _apply_empty_message_log_mask(results, input_batch["loss_multiplier"]),
             # Unnecessary parts of the DatumSpec unused by the GRPO algorithm
             # extra_env_info: dict[str, Any]
             # idx: int
@@ -1754,20 +1554,11 @@ def _postprocess_single_group(
             # Extra information not in the DatumSpec used by the GRPO algorithm
             "total_reward": torch.tensor([r["full_result"]["reward"] for r in results]),
             # Add truncated field to match other rollout paths (reusing hit_max_tokens logic)
-            "truncated": torch.tensor(
-                [m["hit_max_tokens"] for m in all_sample_metrics], dtype=torch.bool
-            ),
+            "truncated": torch.tensor([m["hit_max_tokens"] for m in all_sample_metrics], dtype=torch.bool),
             # Agent/env-driven mask flag — True means this sample should be masked
             # from the GRPO gradient (kept for advantage computation).
             "mask_sample": torch.tensor(
-                [
-                    bool(
-                        (r["full_result"].get("instance_config") or {}).get(
-                            "mask_sample", False
-                        )
-                    )
-                    for r in results
-                ],
+                [bool((r["full_result"].get("instance_config") or {}).get("mask_sample", False)) for r in results],
                 dtype=torch.bool,
             ),
         }
@@ -1775,44 +1566,40 @@ def _postprocess_single_group(
 
     # for effort level
     if len_reward_low:
-        rollout_metrics['mean_length_reward_low'] = sum(len_reward_low)/len(len_reward_low)
+        rollout_metrics["mean_length_reward_low"] = sum(len_reward_low) / len(len_reward_low)
     if reward_low:
-        rollout_metrics['mean_reward_low'] = sum(reward_low)/len(reward_low)
+        rollout_metrics["mean_reward_low"] = sum(reward_low) / len(reward_low)
     if lengths3[0]:
-        rollout_metrics['mean_length_low'] = sum(lengths3[0])/len(lengths3[0])
-        rollout_metrics['median_length_low'] = float(np.median(lengths3[0]))
+        rollout_metrics["mean_length_low"] = sum(lengths3[0]) / len(lengths3[0])
+        rollout_metrics["median_length_low"] = float(np.median(lengths3[0]))
     if lengths3[2]:
-        rollout_metrics['mean_length_high'] = sum(lengths3[2])/len(lengths3[2])
-        rollout_metrics['median_length_high'] = float(np.median(lengths3[2]))
+        rollout_metrics["mean_length_high"] = sum(lengths3[2]) / len(lengths3[2])
+        rollout_metrics["median_length_high"] = float(np.median(lengths3[2]))
 
     # Penalty metrics — map count keys to (config flag, metric name)
     _PENALTY_METRICS = {
-        "duplicated_reasoning": ("penalize_duplicated_reasoning", "reasoning_equal_to_final_answer_rate"),
-        "empty_final_answer": ("penalize_empty_final_answer", "empty_final_answer_rate"),
-        "eos_token": ("penalize_eos_token", "eos_token_rate"),
-        "malformed_thinking": ("penalize_malformed_thinking", "malformed_thinking_rate"),
-        "n_gram_repetition": ("penalize_n_gram_repetition", "n_gram_repetition_rate"),
+        "duplicated_reasoning": ("penalize_duplicated_reasoning", None, "reasoning_equal_to_final_answer_rate"),
+        "empty_final_answer": ("penalize_empty_final_answer", "empty_final_answer", "empty_final_answer_rate"),
+        "eos_token": ("penalize_eos_token", "eos_token", "eos_token_rate"),
+        "malformed_thinking": ("penalize_malformed_thinking", "malformed_thinking", "malformed_thinking_rate"),
+        "n_gram_repetition": (None, "n_gram_repetition", "n_gram_repetition_rate"),
     }
     if master_config and results:
         grpo_cfg = master_config.get("grpo") or {}
-        for key, (flag, metric_name) in _PENALTY_METRICS.items():
-            if master_config.get(flag, False) or grpo_cfg.get(flag, False):
+        advantage_penalty_cfg = grpo_cfg.get("advantage_penalty") or {}
+        for key, (top_level_flag, penalty_block_key, metric_name) in _PENALTY_METRICS.items():
+            if (top_level_flag and master_config.get(top_level_flag, False)) or (
+                penalty_block_key and advantage_penalty_cfg.get(penalty_block_key, {}).get("enabled", False)
+            ):
                 rollout_metrics[metric_name] = penalty_counts[key] / len(results)
 
     ng_task_index = None
     if nemo_gym_rows and "_ng_task_index" in nemo_gym_rows[0]:
         ng_task_index = int(nemo_gym_rows[0]["_ng_task_index"])
-        assert all(
-            "_ng_task_index" in row and int(row["_ng_task_index"]) == ng_task_index
-            for row in nemo_gym_rows
-        ), (
-            "Expected a single prompt-group _ng_task_index, got "
-            f"{[row.get('_ng_task_index') for row in nemo_gym_rows]}"
+        assert all("_ng_task_index" in row and int(row["_ng_task_index"]) == ng_task_index for row in nemo_gym_rows), (
+            f"Expected a single prompt-group _ng_task_index, got {[row.get('_ng_task_index') for row in nemo_gym_rows]}"
         )
 
     return AsyncNemoGymRolloutResult(
-        input_ids=input_ids,
-        final_batch=final_batch,
-        rollout_metrics=rollout_metrics,
-        ng_task_index=ng_task_index,
+        input_ids=input_ids, final_batch=final_batch, rollout_metrics=rollout_metrics, ng_task_index=ng_task_index
     )

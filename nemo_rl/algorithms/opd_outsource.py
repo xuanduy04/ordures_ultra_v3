@@ -1,17 +1,13 @@
 """On-policy distillation (OPD) helpers for async GRPO.
 
-Teacher routing, config helpers, and remote teacher serve resolution.
-Advantage computation lives in advantage_estimator.OPDAdvantageEstimator.
-IS truncation lives in loss_functions.ClippedPGLoss (ICE-POP mode).
+Teacher routing, config helpers, and remote teacher serve resolution. Advantage computation lives in
+advantage_estimator.OPDAdvantageEstimator. IS truncation lives in loss_functions.ClippedPGLoss (ICE-POP mode).
 
-The OPD teacher is served by an externally-managed vLLM endpoint (each
-``_teachers.<alias>`` entry carries a ``url`` and a ``model``). This module
-scores trajectories by POSTing the student-generated token sequences to the
-OpenAI-compatible ``/v1/completions`` endpoint with ``echo=true`` and
-``max_tokens=0`` (score-only prefill, no decode). The response carries the
-logprob of the actual next token at every position, which matches the
-convention used by the rest of the training loop: the logprob of input token
-``i`` is stored at position ``i``, and position 0 is 0.
+The OPD teacher is served by an externally-managed vLLM endpoint (each ``_teachers.<alias>`` entry carries a ``url`` and
+a ``model``). This module scores trajectories by POSTing the student-generated token sequences to the OpenAI-compatible
+``/v1/completions`` endpoint with ``echo=true`` and ``max_tokens=0`` (score-only prefill, no decode). The response
+carries the logprob of the actual next token at every position, which matches the convention used by the rest of the
+training loop: the logprob of input token ``i`` is stored at position ``i``, and position 0 is 0.
 """
 
 from __future__ import annotations
@@ -76,18 +72,14 @@ def is_opd_enabled(master_config: dict[str, Any]) -> bool:
 def normalize_teacher_serve(raw: Any) -> dict[str, str]:
     """Validate a ``_teachers`` entry and coerce it into ``{url, model}``.
 
-    The value may be an OmegaConf ``DictConfig`` rather than a plain dict when
-    it comes straight from the YAML config, so no ``isinstance`` checks are
-    made here — bracket access and string conversion handle both.
+    The value may be an OmegaConf ``DictConfig`` rather than a plain dict when it comes straight from the YAML config,
+    so no ``isinstance`` checks are made here — bracket access and string conversion handle both.
     """
     try:
         url = raw["url"]
         model = raw["model"]
     except (KeyError, TypeError) as exc:
-        raise ValueError(
-            "OPD teacher entries must be mappings with 'url' and 'model' "
-            f"fields, got {raw!r}"
-        ) from exc
+        raise ValueError(f"OPD teacher entries must be mappings with 'url' and 'model' fields, got {raw!r}") from exc
     if not isinstance(url, str) or not url.strip():
         raise ValueError(f"OPD teacher 'url' must be a non-empty string, got {url!r}")
     if not isinstance(model, str) or not model.strip():
@@ -98,29 +90,23 @@ def normalize_teacher_serve(raw: Any) -> dict[str, str]:
 def probe_teacher_serve(url: str, models: set[str], timeout_s: float = 30.0) -> None:
     """GET ``{url}/v1/models`` and verify every expected ``model`` is served.
 
-    Called at setup time, before any rollout is collected, so a bad URL or
-    model name fails loudly instead of degrading every trajectory group at
-    collection time.
+    Called at setup time, before any rollout is collected, so a bad URL or model name fails loudly instead of degrading
+    every trajectory group at collection time.
     """
     models_url = f"{url.rstrip('/')}/v1/models"
     ssl_ctx = ssl.create_default_context()
     ssl_ctx.check_hostname = False
     ssl_ctx.verify_mode = ssl.CERT_NONE
     try:
-        with urllib.request.urlopen(
-            models_url, timeout=timeout_s, context=ssl_ctx
-        ) as resp:
+        with urllib.request.urlopen(models_url, timeout=timeout_s, context=ssl_ctx) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, ValueError) as exc:
-        raise RuntimeError(
-            f"OPD teacher serve health check failed for '{url}': {exc}"
-        ) from exc
+        raise RuntimeError(f"OPD teacher serve health check failed for '{url}': {exc}") from exc
     served = {m.get("id") for m in payload.get("data", []) if isinstance(m, dict)}
     missing = models - served
     if missing:
         raise RuntimeError(
-            f"OPD teacher serve at '{url}' does not serve model(s) "
-            f"{sorted(missing)}. Served models: {sorted(served)}"
+            f"OPD teacher serve at '{url}' does not serve model(s) {sorted(missing)}. Served models: {sorted(served)}"
         )
 
 
@@ -137,9 +123,8 @@ def resolve_teacher_specs(
 ) -> list[dict[str, str]]:
     """Resolve agent references to normalized ``{url, model}`` serve specs.
 
-    Each agent reference is mapped to a teacher alias (its own ``name``, or
-    ``default_teacher_alias`` when unmapped), then to the normalized serve
-    spec stored under that alias.
+    Each agent reference is mapped to a teacher alias (its own ``name``, or ``default_teacher_alias`` when unmapped),
+    then to the normalized serve spec stored under that alias.
     """
     specs: list[dict[str, str]] = []
     for ref in agent_refs:
@@ -148,16 +133,13 @@ def resolve_teacher_specs(
             alias = name
         elif strict_agent_name_match:
             raise ValueError(
-                f"No teacher model mapping for agent '{name}'. "
-                f"Available: {sorted(teacher_model_by_agent_name.keys())}"
+                f"No teacher model mapping for agent '{name}'. Available: {sorted(teacher_model_by_agent_name.keys())}"
             )
         elif default_teacher_alias:
             print(f"[OPD] Agent '{name}' not in teacher mapping, falling back to '{default_teacher_alias}'")
             alias = default_teacher_alias
         else:
-            raise ValueError(
-                f"No teacher model mapping for agent '{name}' and no default_teacher_alias set."
-            )
+            raise ValueError(f"No teacher model mapping for agent '{name}' and no default_teacher_alias set.")
         if alias not in teacher_model_by_agent_name:
             raise KeyError(
                 f"Agent alias '{alias}' has no teacher serve mapping. "
@@ -170,8 +152,8 @@ def resolve_teacher_specs(
 def validate_teacher_serves(master_config: dict[str, Any]) -> None:
     """Fail fast if any OPD teacher mapping is not a ``{url, model}`` serve.
 
-    Also probes each unique serve URL (``GET {url}/v1/models``) so a bad URL or
-    model name fails at setup, before any rollout is collected.
+    Also probes each unique serve URL (``GET {url}/v1/models``) so a bad URL or model name fails at setup, before any
+    rollout is collected.
     """
     opd_cfg = master_config["on_policy_distillation"]
     teacher_model_by_agent_name = opd_cfg["teacher_model_by_agent_name"]
@@ -216,10 +198,7 @@ class TeacherContextLengthError(RuntimeError):
     """
 
     def __init__(self, url: str, body: str):
-        super().__init__(
-            f"Teacher serve {url} cannot fit the trajectory group "
-            f"(context-length overflow): {body[:500]}"
-        )
+        super().__init__(f"Teacher serve {url} cannot fit the trajectory group (context-length overflow): {body[:500]}")
         self.url = url
         self.body = body
 
@@ -240,25 +219,20 @@ class _TeacherWorkerDied(RuntimeError):
 def _retry_delay(attempt: int) -> float:
     """Exponential backoff delay for retry ``attempt``, capped at 60s.
 
-    ±20% uniform jitter desynchronizes the concurrently retrying prompt
-    groups so they don't all re-fire on the same 60s tick when the serve
-    recovers (lockstep retries would thundering-herd it straight back into
-    failure).
+    ±20% uniform jitter desynchronizes the concurrently retrying prompt groups so they don't all re-fire on the same 60s
+    tick when the serve recovers (lockstep retries would thundering-herd it straight back into failure).
     """
-    base = min(_RETRY_BACKOFF_BASE_S * (2 ** attempt), _MAX_RETRY_BACKOFF_S)
+    base = min(_RETRY_BACKOFF_BASE_S * (2**attempt), _MAX_RETRY_BACKOFF_S)
     return base * random.uniform(0.8, 1.2)
 
 
 class VLLMTeacherLogprobClient:
     """HTTP client that scores input token sequences on remote teacher serves.
 
-    A single long-lived worker thread owns one asyncio event loop and one
-    aiohttp session for the whole client lifetime. ``score_group`` may be
-    called concurrently from any thread/loop: it hands the scoring coroutine
-    to the worker loop and awaits the result. This gives real connection
-    reuse across all prompt groups and removes the per-loop session cache
-    hazard (a cached session bound to a dead loop raises ``RuntimeError`` on
-    every subsequent retry).
+    A single long-lived worker thread owns one asyncio event loop and one aiohttp session for the whole client lifetime.
+    ``score_group`` may be called concurrently from any thread/loop: it hands the scoring coroutine to the worker loop
+    and awaits the result. This gives real connection reuse across all prompt groups and removes the per-loop session
+    cache hazard (a cached session bound to a dead loop raises ``RuntimeError`` on every subsequent retry).
     """
 
     def __init__(self) -> None:
@@ -278,12 +252,7 @@ class VLLMTeacherLogprobClient:
                     raise RuntimeError("VLLMTeacherLogprobClient is closed")
                 thread = self._thread
                 loop = self._loop
-                if (
-                    thread is not None
-                    and thread.is_alive()
-                    and loop is not None
-                    and not loop.is_closed()
-                ):
+                if thread is not None and thread.is_alive() and loop is not None and not loop.is_closed():
                     return loop
                 if thread is None or not thread.is_alive():
                     # No healthy worker: start a new one. A live thread with a
@@ -291,11 +260,7 @@ class VLLMTeacherLogprobClient:
                     # spawning a duplicate (two workers would clobber the
                     # shared session and serve cross-loop requests).
                     self._ready.clear()
-                    self._thread = threading.Thread(
-                        target=self._worker_main,
-                        daemon=True,
-                        name="opd-teacher-client",
-                    )
+                    self._thread = threading.Thread(target=self._worker_main, daemon=True, name="opd-teacher-client")
                     self._thread.start()
             while self._thread.is_alive() and not self._ready.is_set():
                 self._ready.wait(0.1)
@@ -313,12 +278,9 @@ class VLLMTeacherLogprobClient:
             session_holder: dict[str, aiohttp.ClientSession] = {}
 
             async def _create_session() -> None:
-                connector = aiohttp.TCPConnector(
-                    limit=_MAX_CONCURRENT_REQUESTS, keepalive_timeout=676767.0, ssl=False
-                )
+                connector = aiohttp.TCPConnector(limit=_MAX_CONCURRENT_REQUESTS, keepalive_timeout=676767.0, ssl=False)
                 session_holder["session"] = aiohttp.ClientSession(
-                    connector=connector,
-                    timeout=aiohttp.ClientTimeout(total=_REQUEST_TIMEOUT_S),
+                    connector=connector, timeout=aiohttp.ClientTimeout(total=_REQUEST_TIMEOUT_S)
                 )
 
             loop.run_until_complete(_create_session())
@@ -350,17 +312,14 @@ class VLLMTeacherLogprobClient:
                     self._loop = None
                     self._session = None
                     self._ready.clear()
-                stale = [
-                    entry for entry in self._pending_futures if entry[1] is loop
-                ]
+                stale = [entry for entry in self._pending_futures if entry[1] is loop]
                 for entry in stale:
                     self._pending_futures.discard(entry)
                 for fut, _ in stale:
                     if not fut.done():
                         fut.set_exception(
                             _TeacherWorkerDied(
-                                "vLLM teacher worker thread died; the next "
-                                "score_group call will restart it"
+                                "vLLM teacher worker thread died; the next score_group call will restart it"
                             )
                         )
             tasks = asyncio.all_tasks(loop)
@@ -368,9 +327,7 @@ class VLLMTeacherLogprobClient:
                 task.cancel()
             if tasks:
                 try:
-                    loop.run_until_complete(
-                        asyncio.gather(*tasks, return_exceptions=True)
-                    )
+                    loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
                 except Exception:
                     pass
             try:
@@ -381,27 +338,22 @@ class VLLMTeacherLogprobClient:
             loop.close()
 
     async def score_group(
-        self,
-        teacher: dict[str, str],
-        input_ids: torch.Tensor,
-        input_lengths: torch.Tensor | None = None,
+        self, teacher: dict[str, str], input_ids: torch.Tensor, input_lengths: torch.Tensor | None = None
     ) -> torch.Tensor:
         """Score a batch of trajectories on the given teacher serve.
 
         Args:
             teacher: Normalized serve spec with ``url`` and ``model``.
             input_ids: [B, S] right-padded input token ids.
-            input_lengths: [B] per-row token lengths. Rows are trimmed to
-                their length so the serve does not prefill padding.
+            input_lengths: [B] per-row token lengths. Rows are trimmed to their length so the serve does not prefill
+                padding.
 
         Returns:
-            [B, S] float32 tensor with the teacher logprob of the input token
-            at every position (position 0 is 0), right-padded to S.
+            [B, S] float32 tensor with the teacher logprob of the input token at every position (position 0 is 0),
+            right-padded to S.
         """
         loop = self._ensure_worker()
-        raw = asyncio.run_coroutine_threadsafe(
-            self._score_on_loop(teacher, input_ids, input_lengths), loop
-        )
+        raw = asyncio.run_coroutine_threadsafe(self._score_on_loop(teacher, input_ids, input_lengths), loop)
         # The raw future is owned by the worker loop's teardown; give callers
         # their own future so a dying worker can set _TeacherWorkerDied on it
         # without racing the raw future's chained callbacks.
@@ -431,8 +383,7 @@ class VLLMTeacherLogprobClient:
                 if not fut.done():
                     fut.set_exception(
                         _TeacherWorkerDied(
-                            "vLLM teacher worker thread died before the "
-                            "score_group request could be served"
+                            "vLLM teacher worker thread died before the score_group request could be served"
                         )
                     )
         try:
@@ -442,18 +393,11 @@ class VLLMTeacherLogprobClient:
                 self._pending_futures.discard(entry)
 
     async def _score_on_loop(
-        self,
-        teacher: dict[str, str],
-        input_ids: torch.Tensor,
-        input_lengths: torch.Tensor | None,
+        self, teacher: dict[str, str], input_ids: torch.Tensor, input_lengths: torch.Tensor | None
     ) -> torch.Tensor:
         """Worker-loop side of :meth:`score_group` (touches the session only here)."""
         batch_size, padded_len = input_ids.shape
-        lengths = (
-            input_lengths.tolist()
-            if input_lengths is not None
-            else [padded_len] * batch_size
-        )
+        lengths = input_lengths.tolist() if input_lengths is not None else [padded_len] * batch_size
         prompts = [input_ids[i, : lengths[i]].tolist() for i in range(batch_size)]
 
         payload = {
@@ -470,19 +414,13 @@ class VLLMTeacherLogprobClient:
 
         session = self._session
         if session is None:
-            raise _TeacherWorkerDied(
-                "vLLM teacher worker session is gone; the worker thread died"
-            )
-        response_json = await self._post_with_retries(
-            session, teacher, payload, headers
-        )
+            raise _TeacherWorkerDied("vLLM teacher worker session is gone; the worker thread died")
+        response_json = await self._post_with_retries(session, teacher, payload, headers)
 
         choices = response_json["choices"]
         if not isinstance(choices, list) or len(choices) != batch_size:
             got = len(choices) if isinstance(choices, list) else "non-list"
-            raise RuntimeError(
-                f"Teacher serve returned {got} choices for {batch_size} prompts"
-            )
+            raise RuntimeError(f"Teacher serve returned {got} choices for {batch_size} prompts")
 
         out = torch.zeros(batch_size, padded_len, dtype=torch.float32)
         for i, choice in enumerate(choices):
@@ -491,11 +429,7 @@ class VLLMTeacherLogprobClient:
         return out
 
     @staticmethod
-    def _parse_choice(
-        choice: dict[str, Any],
-        sent_ids: list[int],
-        teacher: dict[str, str],
-    ) -> torch.Tensor:
+    def _parse_choice(choice: dict[str, Any], sent_ids: list[int], teacher: dict[str, str]) -> torch.Tensor:
         """Extract the per-position logprobs for one scored prompt."""
         echo_ids = choice.get("prompt_token_ids")
         if echo_ids is not None and echo_ids != sent_ids:
@@ -506,15 +440,13 @@ class VLLMTeacherLogprobClient:
         logprobs = choice.get("logprobs")
         if logprobs is None:
             raise RuntimeError(
-                f"Teacher serve {teacher['url']} returned no logprobs "
-                "(is prompt logprob scoring enabled?)"
+                f"Teacher serve {teacher['url']} returned no logprobs (is prompt logprob scoring enabled?)"
             )
         token_logprobs = logprobs.get("token_logprobs")
         if token_logprobs is None or len(token_logprobs) != len(sent_ids):
             got = len(token_logprobs) if token_logprobs is not None else 0
             raise RuntimeError(
-                f"Teacher serve {teacher['url']} returned {got} token logprobs "
-                f"for a {len(sent_ids)}-token prompt"
+                f"Teacher serve {teacher['url']} returned {got} token logprobs for a {len(sent_ids)}-token prompt"
             )
         # Position i holds the logprob of input token i (position 0 is None
         # because the first token has no prefix, so it becomes 0).
@@ -540,18 +472,13 @@ class VLLMTeacherLogprobClient:
         return torch.tensor(row, dtype=torch.float32)
 
     async def _post_with_retries(
-        self,
-        session: aiohttp.ClientSession,
-        teacher: dict[str, str],
-        payload: dict[str, Any],
-        headers: dict[str, str],
+        self, session: aiohttp.ClientSession, teacher: dict[str, str], payload: dict[str, Any], headers: dict[str, str]
     ) -> dict[str, Any]:
         """POST one scoring request, retrying transient failures without bound.
 
-        Transient failures (timeouts, transport errors, JSON decode errors,
-        429/5xx) are retried forever with exponential backoff capped at 60s —
-        the teacher scoring is a delivery guarantee. Permanent failures (other
-        4xx and context-length overflow) raise immediately.
+        Transient failures (timeouts, transport errors, JSON decode errors, 429/5xx) are retried forever with
+        exponential backoff capped at 60s — the teacher scoring is a delivery guarantee. Permanent failures (other 4xx
+        and context-length overflow) raise immediately.
         """
         completions_url = f"{teacher['url'].rstrip('/')}/v1/completions"
         attempt = 0
@@ -566,18 +493,14 @@ class VLLMTeacherLogprobClient:
         while True:
             err: Exception | None = None
             try:
-                async with session.post(
-                    completions_url, json=payload, headers=headers
-                ) as resp:
+                async with session.post(completions_url, json=payload, headers=headers) as resp:
                     body = await resp.text()
                     if resp.status in _RETRYABLE_STATUS_CODES:
                         raise _TeacherServerError(resp.status, body)  # transient
                     if resp.status >= 400:
                         for sub in _CONTEXT_LENGTH_SUBSTRINGS:
                             if sub in body:
-                                raise TeacherContextLengthError(
-                                    teacher["url"], body
-                                )  # permanent
+                                raise TeacherContextLengthError(teacher["url"], body)  # permanent
                         raise _TeacherServerError(resp.status, body)  # permanent
                     return json.loads(body)
             except TeacherContextLengthError:
@@ -589,10 +512,7 @@ class VLLMTeacherLogprobClient:
             except (aiohttp.ClientError, asyncio.TimeoutError, json.JSONDecodeError) as exc:
                 err = exc
             elapsed = time.monotonic() - t_start
-            print(
-                f"[OPD teacher] {teacher['url']} attempt {attempt} failed "
-                f"({elapsed:.0f}s so far): {err} — retrying"
-            )
+            print(f"[OPD teacher] {teacher['url']} attempt {attempt} failed ({elapsed:.0f}s so far): {err} — retrying")
             await asyncio.sleep(_retry_delay(attempt))
             attempt += 1
         # The loop above retries forever; this line is defensive only.
@@ -601,8 +521,8 @@ class VLLMTeacherLogprobClient:
     async def close(self, timeout: float = 5.0) -> None:
         """Stop the worker thread and close its loop/session.
 
-        Best-effort: joins the worker with ``timeout`` seconds. Used by tests;
-        the collector keeps the worker alive for its own lifetime.
+        Best-effort: joins the worker with ``timeout`` seconds. Used by tests; the collector keeps the worker alive for
+        its own lifetime.
         """
         with self._lock:
             if self._closed:
@@ -611,6 +531,7 @@ class VLLMTeacherLogprobClient:
             thread = self._thread
             loop = self._loop
         if thread is not None and loop is not None and thread.is_alive():
+
             def _stop() -> None:
                 loop.stop()
 

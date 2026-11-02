@@ -21,11 +21,7 @@ TokenizerType = PreTrainedTokenizerBase
 
 
 def helpsteer3_data_processor(
-    datum_dict: dict[str, Any],
-    task_data_spec: TaskDataSpec,
-    tokenizer: TokenizerType,
-    max_seq_length: int,
-    idx: int,
+    datum_dict: dict[str, Any], task_data_spec: TaskDataSpec, tokenizer: TokenizerType, max_seq_length: int, idx: int
 ) -> DatumSpec:
     """Process a HelpSteer3 preference datum into a DatumSpec for GRPO training.
 
@@ -44,36 +40,18 @@ def helpsteer3_data_processor(
     # Add context messages
     if isinstance(context, list):
         for msg in context:
-            message_log.append(
-                {
-                    "role": msg["role"],
-                    "content": msg["content"],
-                }
-            )
+            message_log.append({"role": msg["role"], "content": msg["content"]})
     else:
         # If context is a string, treat it as a user message
-        message_log.append(
-            {
-                "role": "user",
-                "content": context,
-            }
-        )
+        message_log.append({"role": "user", "content": context})
 
     # Add the preferred completion as the target
     for completion_msg in preferred_completion:
-        message_log.append(
-            {
-                "role": completion_msg["role"],
-                "content": completion_msg["content"],
-            }
-        )
+        message_log.append({"role": completion_msg["role"], "content": completion_msg["content"]})
 
     # Apply chat template and tokenize
     formatted_conversation = tokenizer.apply_chat_template(
-        message_log,
-        tokenize=False,
-        add_generation_prompt=False,
-        add_special_tokens=True,
+        message_log, tokenize=False, add_generation_prompt=False, add_special_tokens=True
     )
 
     # Tokenize the entire conversation
@@ -90,9 +68,7 @@ def helpsteer3_data_processor(
 
     # Clear token_ids for other messages to avoid double counting
     for i in range(1, len(message_log)):
-        message_log[i]["token_ids"] = tokenizer("", return_tensors="pt")["input_ids"][
-            0
-        ]  # Empty tensor
+        message_log[i]["token_ids"] = tokenizer("", return_tensors="pt")["input_ids"][0]  # Empty tensor
 
     length = sum(len(m["token_ids"]) for m in message_log)
 
@@ -105,9 +81,7 @@ def helpsteer3_data_processor(
         # Truncate if too long
         for chat_message in message_log:
             chat_message["token_ids"] = chat_message["token_ids"][
-                : min(
-                    max_seq_length // len(message_log), len(chat_message["token_ids"])
-                )
+                : min(max_seq_length // len(message_log), len(chat_message["token_ids"]))
             ]
         loss_multiplier = 0.0  # Reduce loss for truncated sequences
 
@@ -136,9 +110,7 @@ def sft_processor(
     """Process a datum dictionary for SFT training."""
     # optional preprocessor
     if datum_dict["task_name"] == "clevr-cogent":
-        from nemo_rl.data.datasets.response_datasets.clevr import (
-            format_clevr_cogent_dataset,
-        )
+        from nemo_rl.data.datasets.response_datasets.clevr import format_clevr_cogent_dataset
 
         datum_dict = format_clevr_cogent_dataset(datum_dict)
 
@@ -158,9 +130,7 @@ def sft_processor(
     if length > max_seq_length:
         # make smaller and mask out
         for message in message_log:
-            message["token_ids"] = message["token_ids"][
-                : min(4, max_seq_length // len(message_log))
-            ]
+            message["token_ids"] = message["token_ids"][: min(4, max_seq_length // len(message_log))]
         loss_multiplier = 0.0
 
     output: DatumSpec = {
@@ -174,11 +144,7 @@ def sft_processor(
 
 
 def preference_preprocessor(
-    datum_dict: dict[str, Any],
-    task_data_spec: TaskDataSpec,
-    tokenizer,
-    max_seq_length: int,
-    idx: int,
+    datum_dict: dict[str, Any], task_data_spec: TaskDataSpec, tokenizer, max_seq_length: int, idx: int
 ) -> PreferenceDatumSpec:
     """Process a datum dictionary for RM/DPO training.
 
@@ -234,9 +200,7 @@ def preference_preprocessor(
 
         ```
     """
-    assert len(datum_dict["completions"]) == 2, (
-        "RM/DPO training supports only two completions"
-    )
+    assert len(datum_dict["completions"]) == 2, "RM/DPO training supports only two completions"
     # Lower rank is preferred
     if datum_dict["completions"][0]["rank"] < datum_dict["completions"][1]["rank"]:
         chosen_completion = datum_dict["completions"][0]
@@ -252,12 +216,8 @@ def preference_preprocessor(
     messages_chosen = datum_dict["context"] + chosen_completion["completion"]
     messages_rejected = datum_dict["context"] + rejected_completion["completion"]
 
-    message_log_chosen = get_formatted_message_log(
-        messages_chosen, tokenizer, task_data_spec
-    )
-    message_log_rejected = get_formatted_message_log(
-        messages_rejected, tokenizer, task_data_spec
-    )
+    message_log_chosen = get_formatted_message_log(messages_chosen, tokenizer, task_data_spec)
+    message_log_rejected = get_formatted_message_log(messages_rejected, tokenizer, task_data_spec)
 
     length_chosen = sum(len(m["token_ids"]) for m in message_log_chosen)
     length_rejected = sum(len(m["token_ids"]) for m in message_log_rejected)
@@ -270,13 +230,9 @@ def preference_preprocessor(
 
         # make smaller and mask out
         for message in message_log_chosen:
-            message["token_ids"] = message["token_ids"][
-                : min(4, max_seq_length // len(message_log_chosen))
-            ]
+            message["token_ids"] = message["token_ids"][: min(4, max_seq_length // len(message_log_chosen))]
         for message in message_log_rejected:
-            message["token_ids"] = message["token_ids"][
-                : min(4, max_seq_length // len(message_log_rejected))
-            ]
+            message["token_ids"] = message["token_ids"][: min(4, max_seq_length // len(message_log_rejected))]
         loss_multiplier = 0.0
 
         length_chosen = sum(len(m["token_ids"]) for m in message_log_chosen)
@@ -298,11 +254,7 @@ def preference_preprocessor(
 
 # Example of a generic math data processor
 def math_data_processor(
-    datum_dict: dict[str, Any],
-    task_data_spec: TaskDataSpec,
-    tokenizer: TokenizerType,
-    max_seq_length: int,
-    idx: int,
+    datum_dict: dict[str, Any], task_data_spec: TaskDataSpec, tokenizer: TokenizerType, max_seq_length: int, idx: int
 ) -> DatumSpec:
     """Process a datum dictionary (directly loaded from dataset) into a DatumSpec for the Math Environment."""
     problem = datum_dict["problem"]
@@ -313,19 +265,11 @@ def math_data_processor(
 
     # system prompt
     if task_data_spec.system_prompt:
-        sys_prompt: dict[str, str | torch.Tensor] = {
-            "role": "system",
-            "content": task_data_spec.system_prompt,
-        }
+        sys_prompt: dict[str, str | torch.Tensor] = {"role": "system", "content": task_data_spec.system_prompt}
         sys = tokenizer.apply_chat_template(
-            [cast(dict[str, str], sys_prompt)],
-            tokenize=False,
-            add_generation_prompt=False,
-            add_special_tokens=False,
+            [cast(dict[str, str], sys_prompt)], tokenize=False, add_generation_prompt=False, add_special_tokens=False
         )
-        sys_prompt["token_ids"] = tokenizer(
-            sys, return_tensors="pt", add_special_tokens=False
-        )["input_ids"][0]
+        sys_prompt["token_ids"] = tokenizer(sys, return_tensors="pt", add_special_tokens=False)["input_ids"][0]
         message_log.append(sys_prompt)
 
     # user prompt
@@ -333,14 +277,9 @@ def math_data_processor(
         problem = task_data_spec.prompt.format(problem)
     user_message = {"role": "user", "content": problem}
     message = tokenizer.apply_chat_template(
-        [user_message],
-        tokenize=False,
-        add_generation_prompt=True,
-        add_special_tokens=False,
+        [user_message], tokenize=False, add_generation_prompt=True, add_special_tokens=False
     )
-    user_message["token_ids"] = tokenizer(
-        message, return_tensors="pt", add_special_tokens=False
-    )["input_ids"][0]
+    user_message["token_ids"] = tokenizer(message, return_tensors="pt", add_special_tokens=False)["input_ids"][0]
     user_message["content"] = message
     message_log.append(user_message)
 
@@ -350,9 +289,7 @@ def math_data_processor(
     if length > max_seq_length:
         # make smaller and mask out
         for indiv_message in message_log:
-            indiv_message["token_ids"] = indiv_message["token_ids"][
-                : min(4, max_seq_length // len(message_log))
-            ]
+            indiv_message["token_ids"] = indiv_message["token_ids"][: min(4, max_seq_length // len(message_log))]
         loss_multiplier = 0.0
 
     output: DatumSpec = {
@@ -368,11 +305,7 @@ def math_data_processor(
 
 
 def math_hf_data_processor(
-    datum_dict: dict[str, Any],
-    task_data_spec: TaskDataSpec,
-    tokenizer: TokenizerType,
-    max_seq_length: int,
-    idx: int,
+    datum_dict: dict[str, Any], task_data_spec: TaskDataSpec, tokenizer: TokenizerType, max_seq_length: int, idx: int
 ) -> DatumSpec:
     """Process a datum dictionary (directly loaded from data/hf_datasets/openmathinstruct2.py) into a DatumSpec for the Reward Model Environment."""
     user_message = datum_dict["messages"]
@@ -380,25 +313,13 @@ def math_hf_data_processor(
     extra_env_info = {"ground_truth": user_message[1]["content"]}
 
     message_log: LLMMessageLogType = []
-    formatted_content = (
-        task_data_spec.prompt.format(problem) if task_data_spec.prompt else problem
-    )
-    user_message = {
-        "role": "user",
-        "content": formatted_content,
-    }
+    formatted_content = task_data_spec.prompt.format(problem) if task_data_spec.prompt else problem
+    user_message = {"role": "user", "content": formatted_content}
     message: list[str] = tokenizer.apply_chat_template(  # type: ignore
-        [user_message],
-        tokenize=False,
-        add_generation_prompt=True,
-        add_special_tokens=False,
+        [user_message], tokenize=False, add_generation_prompt=True, add_special_tokens=False
     )
 
-    user_message["token_ids"] = tokenizer(
-        message,
-        return_tensors="pt",
-        add_special_tokens=False,
-    )["input_ids"][0]
+    user_message["token_ids"] = tokenizer(message, return_tensors="pt", add_special_tokens=False)["input_ids"][0]
     user_message["content"] = message
     message_log.append(user_message)
 
@@ -408,9 +329,7 @@ def math_hf_data_processor(
     if length > max_seq_length:
         # make smaller and mask out
         for chat_message in message_log:
-            chat_message["token_ids"] = chat_message["token_ids"][
-                : min(4, max_seq_length // len(message_log))
-            ]
+            chat_message["token_ids"] = chat_message["token_ids"][: min(4, max_seq_length // len(message_log))]
         loss_multiplier = 0.0
 
     output: DatumSpec = {
@@ -425,19 +344,11 @@ def math_hf_data_processor(
 
 
 def vlm_hf_data_processor(
-    datum_dict: dict[str, Any],
-    task_data_spec: TaskDataSpec,
-    processor: AutoProcessor,
-    max_seq_length: int,
-    idx: int,
+    datum_dict: dict[str, Any], task_data_spec: TaskDataSpec, processor: AutoProcessor, max_seq_length: int, idx: int
 ) -> DatumSpec:
     """Process a datum dictionary (directly loaded from response_datasets/<dataset_name>.py) into a DatumSpec for the VLM Environment."""
-    from nemo_rl.data.datasets.response_datasets.clevr import (
-        format_clevr_cogent_dataset,
-    )
-    from nemo_rl.data.datasets.response_datasets.geometry3k import (
-        format_geometry3k_dataset,
-    )
+    from nemo_rl.data.datasets.response_datasets.clevr import format_clevr_cogent_dataset
+    from nemo_rl.data.datasets.response_datasets.geometry3k import format_geometry3k_dataset
     from nemo_rl.data.datasets.response_datasets.refcoco import format_refcoco_dataset
     from nemo_rl.data.multimodal_utils import (
         PackedTensor,
@@ -492,26 +403,18 @@ def vlm_hf_data_processor(
 
     # get formatted user message
     if hasattr(processor, "conversation_preprocessor"):
-        user_message_for_chat_template = processor.conversation_preprocessor(
-            user_message
-        )
+        user_message_for_chat_template = processor.conversation_preprocessor(user_message)
     else:
         user_message_for_chat_template = user_message
 
     # this is the string-tokenized conversation template for the generation policy (for vllm)
     string_formatted_dialog = processor.apply_chat_template(
-        [user_message_for_chat_template],
-        tokenize=False,
-        add_generation_prompt=True,
+        [user_message_for_chat_template], tokenize=False, add_generation_prompt=True
     )
 
     # this is the id-tokenized and image processed conversation template for the policy
     message: dict = processor.apply_chat_template(
-        [user_message],
-        tokenize=True,
-        add_generation_prompt=True,
-        return_tensors="pt",
-        return_dict=True,
+        [user_message], tokenize=True, add_generation_prompt=True, return_tensors="pt", return_dict=True
     )
 
     # add this for backward compatibility
@@ -520,9 +423,7 @@ def vlm_hf_data_processor(
     multimodal_keys = get_multimodal_keys_from_processor(processor)
     for key in multimodal_keys:
         if key in message:
-            user_message[key] = PackedTensor(
-                message[key], dim_to_pack=get_dim_to_pack_along(processor, key)
-            )
+            user_message[key] = PackedTensor(message[key], dim_to_pack=get_dim_to_pack_along(processor, key))
 
     # specifically for gemma, we need to add token_type_ids to the user message as a sequence-type value
     if "token_type_ids" in message:
@@ -535,16 +436,11 @@ def vlm_hf_data_processor(
     loss_multiplier = 1.0
     if length >= max_seq_length:
         # Treat truncated messages as text only
-        vllm_kwargs = {
-            "vllm_content": None,
-            "vllm_images": [],
-        }
+        vllm_kwargs = {"vllm_content": None, "vllm_images": []}
 
         # make smaller and mask out
         for chat_message in message_log:
-            chat_message["token_ids"] = chat_message["token_ids"][
-                : min(4, max_seq_length // len(message_log))
-            ]
+            chat_message["token_ids"] = chat_message["token_ids"][: min(4, max_seq_length // len(message_log))]
             for key, value in chat_message.items():
                 if isinstance(value, PackedTensor):
                     chat_message[key] = PackedTensor.empty_like(value)
@@ -552,10 +448,7 @@ def vlm_hf_data_processor(
     else:
         # get the prompt content! (use this for vllm-backend that needs formatted dialog and list of images) for the entire conversation
         # add images for vllm serving
-        vllm_kwargs = {
-            "vllm_content": string_formatted_dialog,
-            "vllm_images": images,
-        }
+        vllm_kwargs = {"vllm_content": string_formatted_dialog, "vllm_images": images}
 
     output: DatumSpec = {
         "message_log": message_log,
@@ -569,28 +462,16 @@ def vlm_hf_data_processor(
     return output
 
 
-def _construct_multichoice_prompt(
-    prompt: str, question: str, options: dict[str, str]
-) -> str:
+def _construct_multichoice_prompt(prompt: str, question: str, options: dict[str, str]) -> str:
     """Construct prompt from question and options."""
     output = prompt
     output += f"\n\nQuestion: {question}\nOptions:\n"
-    output += "\n".join(
-        [
-            f"{letter}) {option}"
-            for letter, option in options.items()
-            if option is not None
-        ]
-    )
+    output += "\n".join([f"{letter}) {option}" for letter, option in options.items() if option is not None])
     return output
 
 
 def multichoice_qa_processor(
-    datum_dict: dict[str, Any],
-    task_data_spec: TaskDataSpec,
-    tokenizer: TokenizerType,
-    max_seq_length: int,
-    idx: int,
+    datum_dict: dict[str, Any], task_data_spec: TaskDataSpec, tokenizer: TokenizerType, max_seq_length: int, idx: int
 ) -> DatumSpec:
     """Process a datum dictionary (directly loaded from dataset) into a DatumSpec for multiple-choice problems."""
     question = datum_dict["question"]
@@ -604,36 +485,21 @@ def multichoice_qa_processor(
 
     # system prompt
     if task_data_spec.system_prompt:
-        sys_prompt: dict[str, str | torch.Tensor] = {
-            "role": "system",
-            "content": task_data_spec.system_prompt,
-        }
+        sys_prompt: dict[str, str | torch.Tensor] = {"role": "system", "content": task_data_spec.system_prompt}
         sys = tokenizer.apply_chat_template(
-            [cast(dict[str, str], sys_prompt)],
-            tokenize=False,
-            add_generation_prompt=False,
-            add_special_tokens=False,
+            [cast(dict[str, str], sys_prompt)], tokenize=False, add_generation_prompt=False, add_special_tokens=False
         )
-        sys_prompt["token_ids"] = tokenizer(
-            sys, return_tensors="pt", add_special_tokens=False
-        )["input_ids"][0]
+        sys_prompt["token_ids"] = tokenizer(sys, return_tensors="pt", add_special_tokens=False)["input_ids"][0]
         message_log.append(sys_prompt)
 
     # user prompt
     if task_data_spec.prompt:
-        question = _construct_multichoice_prompt(
-            task_data_spec.prompt, question, options
-        )
+        question = _construct_multichoice_prompt(task_data_spec.prompt, question, options)
     user_message = {"role": "user", "content": question}
     message = tokenizer.apply_chat_template(
-        [user_message],
-        tokenize=False,
-        add_generation_prompt=True,
-        add_special_tokens=False,
+        [user_message], tokenize=False, add_generation_prompt=True, add_special_tokens=False
     )
-    user_message["token_ids"] = tokenizer(
-        message, return_tensors="pt", add_special_tokens=False
-    )["input_ids"][0]
+    user_message["token_ids"] = tokenizer(message, return_tensors="pt", add_special_tokens=False)["input_ids"][0]
     user_message["content"] = message
     message_log.append(user_message)
 
@@ -663,12 +529,10 @@ def _parse_tool_arguments(arguments: Any) -> Any:
 def _sanitize_nemo_gym_messages(conversation: list[dict]) -> list[dict]:
     """Convert raw agent execution traces into valid HF chat-template messages.
 
-    Mirrors the sanitization in ``custom_utils/utils_data/filter_overlong_token.py``
-    so in-training length filtering measures the same prompt shape as the offline
-    pre-filter: role-bearing messages pass through (with JSON-decoded tool-call
-    arguments), ``reasoning`` items are dropped, ``function_call`` items become
-    assistant tool_calls messages, and ``function_call_output`` items become
-    tool messages.
+    Mirrors the sanitization in ``custom_utils/utils_data/filter_overlong_token.py`` so in-training length filtering
+    measures the same prompt shape as the offline pre-filter: role-bearing messages pass through (with JSON-decoded
+    tool-call arguments), ``reasoning`` items are dropped, ``function_call`` items become assistant tool_calls messages,
+    and ``function_call_output`` items become tool messages.
     """
     hf_messages: list[dict] = []
 
@@ -689,28 +553,28 @@ def _sanitize_nemo_gym_messages(conversation: list[dict]) -> list[dict]:
             continue
 
         if msg_type == "function_call":
-            hf_messages.append({
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {
-                        "id": msg.get("call_id"),
-                        "type": "function",
-                        "function": {
-                            "name": msg.get("name"),
-                            "arguments": _parse_tool_arguments(msg.get("arguments", {})),
-                        },
-                    }
-                ],
-            })
+            hf_messages.append(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": msg.get("call_id"),
+                            "type": "function",
+                            "function": {
+                                "name": msg.get("name"),
+                                "arguments": _parse_tool_arguments(msg.get("arguments", {})),
+                            },
+                        }
+                    ],
+                }
+            )
             continue
 
         if msg_type == "function_call_output":
-            hf_messages.append({
-                "role": "tool",
-                "tool_call_id": msg.get("call_id"),
-                "content": str(msg.get("output", "")),
-            })
+            hf_messages.append(
+                {"role": "tool", "tool_call_id": msg.get("call_id"), "content": str(msg.get("output", ""))}
+            )
 
     return hf_messages
 
@@ -718,9 +582,8 @@ def _sanitize_nemo_gym_messages(conversation: list[dict]) -> list[dict]:
 def _nemo_gym_prompt_token_count(raw_line: str, tokenizer: TokenizerType) -> int:
     """Return the chat-templated token count of a raw Nemo Gym row.
 
-    Measures ``responses_create_params.input`` plus the optional
-    ``instructions`` (system prompt) and ``tools``, with a generation prompt,
-    mirroring what the generation side renders.
+    Measures ``responses_create_params.input`` plus the optional ``instructions`` (system prompt) and ``tools``, with a
+    generation prompt, mirroring what the generation side renders.
     """
     entry = json.loads(raw_line)
     rcp = entry.get("responses_create_params") or {}
@@ -731,19 +594,10 @@ def _nemo_gym_prompt_token_count(raw_line: str, tokenizer: TokenizerType) -> int
     tools = rcp.get("tools")
     if tools:
         result = tokenizer.apply_chat_template(
-            messages,
-            tools=tools,
-            tokenize=True,
-            return_dict=True,
-            add_generation_prompt=True,
+            messages, tools=tools, tokenize=True, return_dict=True, add_generation_prompt=True
         )
     else:
-        result = tokenizer.apply_chat_template(
-            messages,
-            tokenize=True,
-            return_dict=True,
-            add_generation_prompt=True,
-        )
+        result = tokenizer.apply_chat_template(messages, tokenize=True, return_dict=True, add_generation_prompt=True)
     ids = result["input_ids"]
     return len(ids)
 
@@ -755,32 +609,22 @@ _GYM_FILTER_MAX_LENGTH: int = 0
 def _gym_filter_keep_row(row: dict) -> bool:
     """Return whether a Nemo Gym row's measured prompt length is within the limit.
 
-    Rows that cannot be measured are kept so malformed data still fails loudly
-    later instead of being silently dropped.
+    Rows that cannot be measured are kept so malformed data still fails loudly later instead of being silently dropped.
     """
     try:
         tokenizer = _GYM_FILTER_TOKENIZER
         if tokenizer is None:
             return True
-        return (
-            _nemo_gym_prompt_token_count(row["extra_env_info"], tokenizer)
-            <= _GYM_FILTER_MAX_LENGTH
-        )
+        return _nemo_gym_prompt_token_count(row["extra_env_info"], tokenizer) <= _GYM_FILTER_MAX_LENGTH
     except Exception:
         return True
 
 
-def filter_overlong_nemo_gym_dataset(
-    dataset,
-    tokenizer: TokenizerType,
-    max_seq_length: int,
-    num_proc: int = 8,
-):
+def filter_overlong_nemo_gym_dataset(dataset, tokenizer: TokenizerType, max_seq_length: int, num_proc: int = 8):
     """Drop Nemo Gym rows whose measured prompt length exceeds *max_seq_length*.
 
-    Rows over the limit would otherwise be rejected by vLLM at rollout time
-    (prompt exceeding ``max_model_len``) and enter training as empty-message-log
-    samples that break sequence packing. Returns the filtered dataset.
+    Rows over the limit would otherwise be rejected by vLLM at rollout time (prompt exceeding ``max_model_len``) and
+    enter training as empty-message-log samples that break sequence packing. Returns the filtered dataset.
     """
     global _GYM_FILTER_TOKENIZER, _GYM_FILTER_MAX_LENGTH
     _GYM_FILTER_TOKENIZER = tokenizer
@@ -841,9 +685,7 @@ PROCESSOR_REGISTRY: Dict[str, TaskDataProcessFnCallable] = cast(
 )
 
 
-def register_processor(
-    processor_name: str, processor_function: TaskDataProcessFnCallable
-) -> None:
+def register_processor(processor_name: str, processor_function: TaskDataProcessFnCallable) -> None:
     if processor_name in PROCESSOR_REGISTRY:
         raise ValueError(f"Processor name {processor_name} already registered")
     PROCESSOR_REGISTRY[processor_name] = processor_function

@@ -1,5 +1,3 @@
-
-
 import os
 import re
 import sys
@@ -13,13 +11,12 @@ try:
     from nemo_rl.experience.rollouts import apply_reward_penalties
 except (ImportError, ModuleNotFoundError):
     _rollouts_path = os.path.normpath(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                     "..", "..", "..", "nemo_rl", "experience", "rollouts.py")
+        os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "nemo_rl", "experience", "rollouts.py"
+        )
     )
     _src = open(_rollouts_path).read()
-    _match = re.search(
-        r'^(def apply_reward_penalties\(.+?)(?=\ndef )', _src, re.DOTALL | re.MULTILINE
-    )
+    _match = re.search(r"^(def apply_reward_penalties\(.+?)(?=\ndef )", _src, re.DOTALL | re.MULTILINE)
     assert _match, "Could not find apply_reward_penalties in rollouts.py"
     exec(_match.group(1))
 
@@ -29,30 +26,23 @@ try:
     from nemo_rl.experience.rollouts import apply_empty_generation_gate
 except (ImportError, ModuleNotFoundError):
     _rollouts_path = os.path.normpath(
-        os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                     "..", "..", "..", "nemo_rl", "experience", "rollouts.py")
+        os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "nemo_rl", "experience", "rollouts.py"
+        )
     )
     _src = open(_rollouts_path).read()
-    _match = re.search(
-        r'^(def apply_empty_generation_gate\(.+?)(?=\ndef )', _src, re.DOTALL | re.MULTILINE
-    )
+    _match = re.search(r"^(def apply_empty_generation_gate\(.+?)(?=\ndef )", _src, re.DOTALL | re.MULTILINE)
     assert _match, "Could not find apply_empty_generation_gate in rollouts.py"
     exec(_match.group(1))
 
 
 # ---- Helpers to build minimal result dicts ----
 
-def _make_result(
-    reward=1.0,
-    output_items=None,
-    message_log=None,
-):
+
+def _make_result(reward=1.0, output_items=None, message_log=None):
     """Build a minimal result dict matching the structure from nemo_gym."""
     return {
-        "full_result": {
-            "reward": reward,
-            "response": {"output": output_items or []},
-        },
+        "full_result": {"reward": reward, "response": {"output": output_items or []}},
         "message_log": message_log or [],
     }
 
@@ -65,11 +55,7 @@ def _reasoning_item(text, generation_str=None):
 
 
 def _message_item(text, generation_str=None):
-    item = {
-        "type": "message",
-        "content": [{"text": text, "type": "output_text"}],
-        "role": "assistant",
-    }
+    item = {"type": "message", "content": [{"text": text, "type": "output_text"}], "role": "assistant"}
     if generation_str is not None:
         item["generation_str"] = generation_str
     return item
@@ -94,76 +80,68 @@ def _msg(role, token_ids):
 # Penalty 1: penalize_duplicated_reasoning
 # =====================================================================
 
+
 class TestPenalizeDuplicatedReasoning:
     CFG = {"penalize_duplicated_reasoning": True}
 
     def test_exact_match_penalized(self):
-        result = _make_result(reward=1.0, output_items=[
-            _reasoning_item("The answer is 42"),
-            _message_item("The answer is 42"),
-        ])
+        result = _make_result(
+            reward=1.0, output_items=[_reasoning_item("The answer is 42"), _message_item("The answer is 42")]
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 0.0
         assert counts["duplicated_reasoning"] == 1
 
     def test_different_text_not_penalized(self):
-        result = _make_result(reward=1.0, output_items=[
-            _reasoning_item("Let me think about this"),
-            _message_item("The answer is 42"),
-        ])
+        result = _make_result(
+            reward=1.0, output_items=[_reasoning_item("Let me think about this"), _message_item("The answer is 42")]
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
         assert counts["duplicated_reasoning"] == 0
 
     def test_whitespace_stripped_before_compare(self):
-        result = _make_result(reward=1.0, output_items=[
-            _reasoning_item("  hello world  "),
-            _message_item("hello world"),
-        ])
+        result = _make_result(
+            reward=1.0, output_items=[_reasoning_item("  hello world  "), _message_item("hello world")]
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 0.0
 
     def test_empty_reasoning_not_penalized(self):
-        result = _make_result(reward=1.0, output_items=[
-            _reasoning_item(""),
-            _message_item(""),
-        ])
+        result = _make_result(reward=1.0, output_items=[_reasoning_item(""), _message_item("")])
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
 
     def test_reasoning_followed_by_function_call_not_penalized(self):
-        result = _make_result(reward=1.0, output_items=[
-            _reasoning_item("I need to call a tool"),
-            _function_call_item(),
-        ])
+        result = _make_result(
+            reward=1.0, output_items=[_reasoning_item("I need to call a tool"), _function_call_item()]
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
 
     def test_no_reasoning_item_not_penalized(self):
-        result = _make_result(reward=1.0, output_items=[
-            _message_item("The answer is 42"),
-        ])
+        result = _make_result(reward=1.0, output_items=[_message_item("The answer is 42")])
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
 
     def test_disabled_by_default(self):
-        result = _make_result(reward=1.0, output_items=[
-            _reasoning_item("same"),
-            _message_item("same"),
-        ])
+        result = _make_result(reward=1.0, output_items=[_reasoning_item("same"), _message_item("same")])
         counts = apply_reward_penalties([result], {})
         assert result["full_result"]["reward"] == 1.0
 
     def test_multi_turn_first_pair_matches(self):
         """In multi-turn, if any reasoning/answer pair matches, penalize."""
-        result = _make_result(reward=1.0, output_items=[
-            _reasoning_item("duplicated"),
-            _message_item("duplicated"),
-            _function_call_item(),
-            _function_call_output_item(),
-            _reasoning_item("different thinking"),
-            _message_item("final answer"),
-        ])
+        result = _make_result(
+            reward=1.0,
+            output_items=[
+                _reasoning_item("duplicated"),
+                _message_item("duplicated"),
+                _function_call_item(),
+                _function_call_output_item(),
+                _reasoning_item("different thinking"),
+                _message_item("final answer"),
+            ],
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 0.0
 
@@ -172,33 +150,26 @@ class TestPenalizeDuplicatedReasoning:
 # Penalty 2: penalize_empty_final_answer
 # =====================================================================
 
+
 class TestPenalizeEmptyFinalAnswer:
     CFG = {"penalize_empty_final_answer": True}
 
     def test_empty_content_penalized(self):
-        result = _make_result(reward=1.0, output_items=[
-            _reasoning_item("thinking"),
-            _message_item(""),
-        ])
+        result = _make_result(reward=1.0, output_items=[_reasoning_item("thinking"), _message_item("")])
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 0.0
         assert counts["empty_final_answer"] == 1
 
     def test_nonempty_content_not_penalized(self):
-        result = _make_result(reward=1.0, output_items=[
-            _reasoning_item("thinking"),
-            _message_item("The answer is 42"),
-        ])
+        result = _make_result(reward=1.0, output_items=[_reasoning_item("thinking"), _message_item("The answer is 42")])
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
 
     def test_no_message_item_penalized(self):
         """Only reasoning + tool calls, no final message."""
-        result = _make_result(reward=1.0, output_items=[
-            _reasoning_item("thinking"),
-            _function_call_item(),
-            _function_call_output_item(),
-        ])
+        result = _make_result(
+            reward=1.0, output_items=[_reasoning_item("thinking"), _function_call_item(), _function_call_output_item()]
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 0.0
 
@@ -208,18 +179,13 @@ class TestPenalizeEmptyFinalAnswer:
         assert result["full_result"]["reward"] == 0.0
 
     def test_whitespace_only_penalized(self):
-        result = _make_result(reward=1.0, output_items=[
-            _message_item("   "),
-        ])
+        result = _make_result(reward=1.0, output_items=[_message_item("   ")])
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 0.0
 
     def test_last_item_function_call_not_penalized(self):
         """Model ended mid-agentic-loop with a function_call — not an empty answer."""
-        result = _make_result(reward=1.0, output_items=[
-            _reasoning_item("thinking"),
-            _function_call_item(),
-        ])
+        result = _make_result(reward=1.0, output_items=[_reasoning_item("thinking"), _function_call_item()])
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
         assert counts["empty_final_answer"] == 0
@@ -227,11 +193,9 @@ class TestPenalizeEmptyFinalAnswer:
     def test_message_before_tool_call_uses_last_message(self):
         """Last content-bearing item is the function_call_output (no content field),
         but there's a message earlier. The reverse walk finds the message."""
-        result = _make_result(reward=1.0, output_items=[
-            _message_item("answer"),
-            _function_call_item(),
-            _function_call_output_item(),
-        ])
+        result = _make_result(
+            reward=1.0, output_items=[_message_item("answer"), _function_call_item(), _function_call_output_item()]
+        )
         counts = apply_reward_penalties([result], self.CFG)
         # function_call_output has no "content", function_call has no "content",
         # so reverse walk reaches the message item
@@ -242,116 +206,105 @@ class TestPenalizeEmptyFinalAnswer:
 # Penalty 3: penalize_eos_token
 # =====================================================================
 
+
 class TestPenalizeEosToken:
     CFG = {"penalize_eos_token": True}
 
     def test_eos_in_generation_penalized(self):
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100, 200]),
-            _msg("assistant", [300, 2, 400]),  # token 2 = EOS
-        ])
+        result = _make_result(
+            reward=1.0,
+            message_log=[
+                _msg("user", [100, 200]),
+                _msg("assistant", [300, 2, 400]),  # token 2 = EOS
+            ],
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 0.0
         assert counts["eos_token"] == 1
 
     def test_no_eos_not_penalized(self):
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100, 200]),
-            _msg("assistant", [300, 400, 500]),
-        ])
+        result = _make_result(reward=1.0, message_log=[_msg("user", [100, 200]), _msg("assistant", [300, 400, 500])])
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
 
     def test_eos_in_user_not_penalized(self):
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100, 2, 200]),  # EOS in user prompt
-            _msg("assistant", [300, 400]),
-        ])
+        result = _make_result(
+            reward=1.0,
+            message_log=[
+                _msg("user", [100, 2, 200]),  # EOS in user prompt
+                _msg("assistant", [300, 400]),
+            ],
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
 
     def test_custom_eos_token_id(self):
         cfg = {"penalize_eos_token": True, "token_ids": {"eos": 99}}
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100]),
-            _msg("assistant", [300, 99, 400]),
-        ])
+        result = _make_result(reward=1.0, message_log=[_msg("user", [100]), _msg("assistant", [300, 99, 400])])
         counts = apply_reward_penalties([result], cfg)
         assert result["full_result"]["reward"] == 0.0
 
     def test_multi_eos_token_ids_comma_separated(self):
         cfg = {"penalize_eos_token": True, "token_ids": {"eos": "2,177"}}
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100]),
-            _msg("assistant", [300, 177, 400]),  # token 177 = second configured EOS
-        ])
+        result = _make_result(
+            reward=1.0,
+            message_log=[
+                _msg("user", [100]),
+                _msg("assistant", [300, 177, 400]),  # token 177 = second configured EOS
+            ],
+        )
         counts = apply_reward_penalties([result], cfg)
         assert result["full_result"]["reward"] == 0.0
         assert counts["eos_token"] == 1
 
     def test_multi_eos_token_ids_dedup_and_strip(self):
         cfg = {"penalize_eos_token": True, "token_ids": {"eos": "2,1 ,6,,7,  "}}
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100]),
-            _msg("assistant", [300, 7, 400]),
-        ])
+        result = _make_result(reward=1.0, message_log=[_msg("user", [100]), _msg("assistant", [300, 7, 400])])
         counts = apply_reward_penalties([result], cfg)
         assert result["full_result"]["reward"] == 0.0
         assert counts["eos_token"] == 1
 
     def test_multi_eos_no_match_not_penalized(self):
         cfg = {"penalize_eos_token": True, "token_ids": {"eos": "2,1 ,6,,7,  "}}
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100]),
-            _msg("assistant", [300, 400]),
-        ])
+        result = _make_result(reward=1.0, message_log=[_msg("user", [100]), _msg("assistant", [300, 400])])
         counts = apply_reward_penalties([result], cfg)
         assert result["full_result"]["reward"] == 1.0
         assert counts["eos_token"] == 0
 
     def test_single_string_eos_token_id(self):
         cfg = {"penalize_eos_token": True, "token_ids": {"eos": "99"}}
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100]),
-            _msg("assistant", [300, 99, 400]),
-        ])
+        result = _make_result(reward=1.0, message_log=[_msg("user", [100]), _msg("assistant", [300, 99, 400])])
         counts = apply_reward_penalties([result], cfg)
         assert result["full_result"]["reward"] == 0.0
         assert counts["eos_token"] == 1
 
     def test_invalid_eos_entry_raises_value_error(self):
         cfg = {"penalize_eos_token": True, "token_ids": {"eos": "2,abc"}}
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100]),
-            _msg("assistant", [300, 2]),
-        ])
+        result = _make_result(reward=1.0, message_log=[_msg("user", [100]), _msg("assistant", [300, 2])])
         with pytest.raises(ValueError):
             apply_reward_penalties([result], cfg)
 
     def test_empty_eos_value_raises_value_error(self):
         cfg = {"penalize_eos_token": True, "token_ids": {"eos": " ,, "}}
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100]),
-            _msg("assistant", [300, 2]),
-        ])
+        result = _make_result(reward=1.0, message_log=[_msg("user", [100]), _msg("assistant", [300, 2])])
         with pytest.raises(ValueError):
             apply_reward_penalties([result], cfg)
 
     def test_multi_turn_eos_in_second_turn(self):
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100]),
-            _msg("assistant", [300, 400]),  # turn 1 ok
-            _msg("user", [500]),
-            _msg("assistant", [600, 2]),  # turn 2 has EOS
-        ])
+        result = _make_result(
+            reward=1.0,
+            message_log=[
+                _msg("user", [100]),
+                _msg("assistant", [300, 400]),  # turn 1 ok
+                _msg("user", [500]),
+                _msg("assistant", [600, 2]),  # turn 2 has EOS
+            ],
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 0.0
 
     def test_empty_generation_not_penalized(self):
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100]),
-            _msg("assistant", []),
-        ])
+        result = _make_result(reward=1.0, message_log=[_msg("user", [100]), _msg("assistant", [])])
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
 
@@ -360,6 +313,7 @@ class TestPenalizeEosToken:
 # Penalty 4: penalize_malformed_thinking
 # =====================================================================
 
+
 class TestPenalizeMultiEndThink:
     CFG = {"penalize_malformed_thinking": True}
 
@@ -367,90 +321,108 @@ class TestPenalizeMultiEndThink:
 
     def test_enable_thinking_true_valid(self):
         """enable_thinking=True: <think>(12) in user prompt, </think>(13) in gen."""
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100, 12, 200]),   # 1x <think> in prompt
-            _msg("assistant", [300, 13, 400]),  # 1x </think> in gen
-        ])
+        result = _make_result(
+            reward=1.0,
+            message_log=[
+                _msg("user", [100, 12, 200]),  # 1x <think> in prompt
+                _msg("assistant", [300, 13, 400]),  # 1x </think> in gen
+            ],
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
 
     def test_enable_thinking_false_valid(self):
         """enable_thinking=False: <think>(12) and </think>(13) both in prompt."""
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100, 12, 13, 200]),  # both in prompt
-            _msg("assistant", [300, 400]),       # none in gen
-        ])
+        result = _make_result(
+            reward=1.0,
+            message_log=[
+                _msg("user", [100, 12, 13, 200]),  # both in prompt
+                _msg("assistant", [300, 400]),  # none in gen
+            ],
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
 
     def test_missing_think_open_penalized(self):
         """No <think> token at all."""
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100, 200]),
-            _msg("assistant", [300, 13, 400]),  # only </think>
-        ])
+        result = _make_result(
+            reward=1.0,
+            message_log=[
+                _msg("user", [100, 200]),
+                _msg("assistant", [300, 13, 400]),  # only </think>
+            ],
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 0.0
         assert counts["malformed_thinking"] == 1
 
     def test_missing_think_close_penalized(self):
         """No </think> token at all."""
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100, 12, 200]),
-            _msg("assistant", [300, 400]),  # no </think>
-        ])
+        result = _make_result(
+            reward=1.0,
+            message_log=[
+                _msg("user", [100, 12, 200]),
+                _msg("assistant", [300, 400]),  # no </think>
+            ],
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 0.0
 
     def test_double_think_close_penalized(self):
         """Two </think> tokens in generation."""
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100, 12, 200]),
-            _msg("assistant", [300, 13, 400, 13]),  # 2x </think>
-        ])
+        result = _make_result(
+            reward=1.0,
+            message_log=[
+                _msg("user", [100, 12, 200]),
+                _msg("assistant", [300, 13, 400, 13]),  # 2x </think>
+            ],
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 0.0
 
     def test_double_think_open_penalized(self):
         """Two <think> tokens."""
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100, 12, 12, 200]),  # 2x <think>
-            _msg("assistant", [300, 13, 400]),
-        ])
+        result = _make_result(
+            reward=1.0,
+            message_log=[
+                _msg("user", [100, 12, 12, 200]),  # 2x <think>
+                _msg("assistant", [300, 13, 400]),
+            ],
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 0.0
 
     def test_multi_turn_valid(self):
         """Two valid turns, each with exactly 1 <think> and 1 </think>."""
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100, 12]),
-            _msg("assistant", [300, 13, 400]),
-            _msg("user", [500, 12]),
-            _msg("assistant", [600, 13, 700]),
-        ])
+        result = _make_result(
+            reward=1.0,
+            message_log=[
+                _msg("user", [100, 12]),
+                _msg("assistant", [300, 13, 400]),
+                _msg("user", [500, 12]),
+                _msg("assistant", [600, 13, 700]),
+            ],
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
 
     def test_multi_turn_second_turn_invalid(self):
         """First turn ok, second turn has double </think>."""
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100, 12]),
-            _msg("assistant", [300, 13, 400]),
-            _msg("user", [500, 12]),
-            _msg("assistant", [600, 13, 13, 700]),  # 2x </think>
-        ])
+        result = _make_result(
+            reward=1.0,
+            message_log=[
+                _msg("user", [100, 12]),
+                _msg("assistant", [300, 13, 400]),
+                _msg("user", [500, 12]),
+                _msg("assistant", [600, 13, 13, 700]),  # 2x </think>
+            ],
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 0.0
 
     def test_custom_token_ids(self):
-        cfg = {
-            "penalize_malformed_thinking": True,
-            "token_ids": {"think_open": 50, "think_close": 51},
-        }
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100, 50]),
-            _msg("assistant", [300, 51, 400]),
-        ])
+        cfg = {"penalize_malformed_thinking": True, "token_ids": {"think_open": 50, "think_close": 51}}
+        result = _make_result(reward=1.0, message_log=[_msg("user", [100, 50]), _msg("assistant", [300, 51, 400])])
         counts = apply_reward_penalties([result], cfg)
         assert result["full_result"]["reward"] == 1.0
 
@@ -458,28 +430,37 @@ class TestPenalizeMultiEndThink:
         """Prompt has many think tokens from history; only the delta matters."""
         # Simulates a prompt with 5 <think> and 4 </think> from prior turns,
         # plus a trailing <think> for the current turn = 5 open, 4 close -> thinking_on
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100, 12, 13, 12, 13, 12, 13, 12, 13, 12]),  # 5 open, 4 close
-            _msg("assistant", [300, 13, 400]),  # 0 open, 1 close
-        ])
+        result = _make_result(
+            reward=1.0,
+            message_log=[
+                _msg("user", [100, 12, 13, 12, 13, 12, 13, 12, 13, 12]),  # 5 open, 4 close
+                _msg("assistant", [300, 13, 400]),  # 0 open, 1 close
+            ],
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
 
     def test_thinking_off_with_think_in_generation_penalized(self):
         """enable_thinking=False inferred (balanced), but model generates </think>."""
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100, 12, 13]),  # 1 open, 1 close -> thinking_off
-            _msg("assistant", [300, 13, 400]),  # unexpected </think>
-        ])
+        result = _make_result(
+            reward=1.0,
+            message_log=[
+                _msg("user", [100, 12, 13]),  # 1 open, 1 close -> thinking_off
+                _msg("assistant", [300, 13, 400]),  # unexpected </think>
+            ],
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 0.0
 
     def test_unexpected_prompt_pattern_penalized(self):
         """More </think> than <think> in prompt — unexpected pattern."""
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100, 13, 13, 12]),  # 1 open, 2 close -> unexpected
-            _msg("assistant", [300, 400]),
-        ])
+        result = _make_result(
+            reward=1.0,
+            message_log=[
+                _msg("user", [100, 13, 13, 12]),  # 1 open, 2 close -> unexpected
+                _msg("assistant", [300, 400]),
+            ],
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 0.0
 
@@ -516,10 +497,7 @@ class TestPenalizeMultiEndThink:
         result = _make_result(
             reward=1.0,
             output_items=[_message_item("answer", generation_str="thinking </think> answer")],
-            message_log=[
-                _msg("user", [100, 12]),
-                _msg("assistant", [300, 13, 400]),
-            ],
+            message_log=[_msg("user", [100, 12]), _msg("assistant", [300, 13, 400])],
         )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
@@ -530,28 +508,28 @@ class TestPenalizeMultiEndThink:
             reward=1.0,
             output_items=[
                 _function_call_output_item(),  # no generation_str
-                _message_item("answer"),       # no generation_str
+                _message_item("answer"),  # no generation_str
             ],
-            message_log=[
-                _msg("user", [100, 12]),
-                _msg("assistant", [300, 13, 400]),
-            ],
+            message_log=[_msg("user", [100, 12]), _msg("assistant", [300, 13, 400])],
         )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
 
 
 class TestAdvantageLevelMalformedThinkTag:
-    CFG = {"grpo": {"penalize_malformed_thinking": True}}
+    CFG = {"grpo": {"advantage_penalty": {"malformed_thinking": {"enabled": True}}}}
 
     def test_token_violation_marks_only_violating_turns(self):
         """Turn 1 valid, turn 2 has double  response — only turn 2 marked."""
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100, 12]),
-            _msg("assistant", [300, 13, 400]),
-            _msg("user", [500, 12]),
-            _msg("assistant", [600, 13, 13, 700]),
-        ])
+        result = _make_result(
+            reward=1.0,
+            message_log=[
+                _msg("user", [100, 12]),
+                _msg("assistant", [300, 13, 400]),
+                _msg("user", [500, 12]),
+                _msg("assistant", [600, 13, 13, 700]),
+            ],
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
         assert counts["malformed_thinking"] == 1
@@ -562,12 +540,15 @@ class TestAdvantageLevelMalformedThinkTag:
 
     def test_multiple_violating_turns_all_marked(self):
         """Both turns malformed — every violating assistant message marked."""
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100, 12]),
-            _msg("assistant", [300, 13, 13]),
-            _msg("user", [500, 12]),
-            _msg("assistant", [600, 13, 13]),
-        ])
+        result = _make_result(
+            reward=1.0,
+            message_log=[
+                _msg("user", [100, 12]),
+                _msg("assistant", [300, 13, 13]),
+                _msg("user", [500, 12]),
+                _msg("assistant", [600, 13, 13]),
+            ],
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
         ml = result["message_log"]
@@ -575,10 +556,7 @@ class TestAdvantageLevelMalformedThinkTag:
         assert ml[3]["has_malformed_thinking"] is True
 
     def test_no_violation_no_flags(self):
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100, 12]),
-            _msg("assistant", [300, 13, 400]),
-        ])
+        result = _make_result(reward=1.0, message_log=[_msg("user", [100, 12]), _msg("assistant", [300, 13, 400])])
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
         assert "has_malformed_thinking" not in result["message_log"][1]
@@ -600,12 +578,15 @@ class TestAdvantageLevelMalformedThinkTag:
     def test_both_levels_reward_zeroed_and_flagged(self):
         cfg = {
             "penalize_malformed_thinking": True,
-            "grpo": {"penalize_malformed_thinking": True},
+            "grpo": {"advantage_penalty": {"malformed_thinking": {"enabled": True}}},
         }
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100, 13, 13, 12]),  # unexpected prompt pattern
-            _msg("assistant", [300, 400]),
-        ])
+        result = _make_result(
+            reward=1.0,
+            message_log=[
+                _msg("user", [100, 13, 13, 12]),  # unexpected prompt pattern
+                _msg("assistant", [300, 400]),
+            ],
+        )
         counts = apply_reward_penalties([result], cfg)
         assert result["full_result"]["reward"] == 0.0
         assert counts["malformed_thinking"] == 1
@@ -613,23 +594,28 @@ class TestAdvantageLevelMalformedThinkTag:
 
 
 # =====================================================================
-# Advantage-level flags (grpo.penalize_*): message flag attachment
+# Advantage-level flags (grpo.advantage_penalty.*): message flag attachment
 # =====================================================================
 
+
 class TestAdvantageLevelEosToken:
-    CFG = {"grpo": {"penalize_eos_token": True}}
+    CFG = {"grpo": {"advantage_penalty": {"eos_token": {"enabled": True}}}}
 
     def test_marks_from_first_eos_to_final_message_assistant_only(self):
         """Punish from the literal first EOS token until the final token,
-        assistant turns only."""
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100]),
-            _msg("assistant", [300, 400]),   # clean turn before first EOS
-            _msg("user", [500]),
-            _msg("assistant", [600, 2]),     # first EOS here
-            _msg("user", [700]),
-            _msg("assistant", [800, 900]),   # after EOS — still flagged
-        ])
+        assistant turns only.
+        """
+        result = _make_result(
+            reward=1.0,
+            message_log=[
+                _msg("user", [100]),
+                _msg("assistant", [300, 400]),  # clean turn before first EOS
+                _msg("user", [500]),
+                _msg("assistant", [600, 2]),  # first EOS here
+                _msg("user", [700]),
+                _msg("assistant", [800, 900]),  # after EOS — still flagged
+            ],
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
         assert counts["eos_token"] == 1
@@ -642,61 +628,43 @@ class TestAdvantageLevelEosToken:
         assert ml[5]["has_eos_token"] is True
 
     def test_no_eos_no_flags(self):
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100]),
-            _msg("assistant", [300, 400]),
-        ])
+        result = _make_result(reward=1.0, message_log=[_msg("user", [100]), _msg("assistant", [300, 400])])
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
         assert "has_eos_token" not in result["message_log"][1]
 
     def test_eos_in_user_only_no_flags(self):
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100, 2, 200]),
-            _msg("assistant", [300, 400]),
-        ])
+        result = _make_result(reward=1.0, message_log=[_msg("user", [100, 2, 200]), _msg("assistant", [300, 400])])
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
         assert "has_eos_token" not in result["message_log"][0]
         assert "has_eos_token" not in result["message_log"][1]
 
     def test_custom_eos_token_id(self):
-        cfg = {"grpo": {"penalize_eos_token": True}, "token_ids": {"eos": 99}}
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100]),
-            _msg("assistant", [300, 99, 400]),
-        ])
+        cfg = {"grpo": {"advantage_penalty": {"eos_token": {"enabled": True}}}, "token_ids": {"eos": 99}}
+        result = _make_result(reward=1.0, message_log=[_msg("user", [100]), _msg("assistant", [300, 99, 400])])
         counts = apply_reward_penalties([result], cfg)
         assert result["full_result"]["reward"] == 1.0
         assert result["message_log"][1]["has_eos_token"] is True
 
     def test_custom_multi_eos_token_ids(self):
-        cfg = {"grpo": {"penalize_eos_token": True}, "token_ids": {"eos": "2,1 ,6,,7,  "}}
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100]),
-            _msg("assistant", [300, 6, 400]),
-        ])
+        cfg = {"grpo": {"advantage_penalty": {"eos_token": {"enabled": True}}}, "token_ids": {"eos": "2,1 ,6,,7,  "}}
+        result = _make_result(reward=1.0, message_log=[_msg("user", [100]), _msg("assistant", [300, 6, 400])])
         counts = apply_reward_penalties([result], cfg)
         assert result["full_result"]["reward"] == 1.0
         assert counts["eos_token"] == 1
         assert result["message_log"][1]["has_eos_token"] is True
 
     def test_both_levels_reward_zeroed_and_flagged(self):
-        cfg = {"penalize_eos_token": True, "grpo": {"penalize_eos_token": True}}
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100]),
-            _msg("assistant", [300, 2]),
-        ])
+        cfg = {"penalize_eos_token": True, "grpo": {"advantage_penalty": {"eos_token": {"enabled": True}}}}
+        result = _make_result(reward=1.0, message_log=[_msg("user", [100]), _msg("assistant", [300, 2])])
         counts = apply_reward_penalties([result], cfg)
         assert result["full_result"]["reward"] == 0.0
         assert counts["eos_token"] == 1
         assert result["message_log"][1]["has_eos_token"] is True
 
     def test_grpo_flag_triggers_roles_guard(self):
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100]),
-            _msg("tool", [300]),
-        ])
+        result = _make_result(reward=1.0, message_log=[_msg("user", [100]), _msg("tool", [300])])
         try:
             apply_reward_penalties([result], self.CFG)
         except AssertionError:
@@ -706,16 +674,14 @@ class TestAdvantageLevelEosToken:
 
 
 class TestAdvantageLevelEmptyFinalAnswer:
-    CFG = {"grpo": {"penalize_empty_final_answer": True}}
+    CFG = {"grpo": {"advantage_penalty": {"empty_final_answer": {"enabled": True}}}}
 
     def test_marks_last_assistant_message(self):
-        result = _make_result(reward=1.0, output_items=[
-            _reasoning_item("thinking"),
-            _message_item(""),
-        ], message_log=[
-            _msg("user", [100]),
-            _msg("assistant", [300, 400]),
-        ])
+        result = _make_result(
+            reward=1.0,
+            output_items=[_reasoning_item("thinking"), _message_item("")],
+            message_log=[_msg("user", [100]), _msg("assistant", [300, 400])],
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
         assert counts["empty_final_answer"] == 1
@@ -723,39 +689,36 @@ class TestAdvantageLevelEmptyFinalAnswer:
         assert result["message_log"][1]["has_empty_final_answer"] is True
 
     def test_multi_turn_marks_only_last_assistant(self):
-        result = _make_result(reward=1.0, output_items=[
-            _reasoning_item("thinking"),
-            _message_item(""),
-        ], message_log=[
-            _msg("user", [100]),
-            _msg("assistant", [300, 400]),
-            _msg("user", [500]),
-            _msg("assistant", [600, 700]),
-        ])
+        result = _make_result(
+            reward=1.0,
+            output_items=[_reasoning_item("thinking"), _message_item("")],
+            message_log=[
+                _msg("user", [100]),
+                _msg("assistant", [300, 400]),
+                _msg("user", [500]),
+                _msg("assistant", [600, 700]),
+            ],
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert "has_empty_final_answer" not in result["message_log"][1]
         assert result["message_log"][3]["has_empty_final_answer"] is True
 
     def test_nonempty_answer_not_flagged(self):
-        result = _make_result(reward=1.0, output_items=[
-            _reasoning_item("thinking"),
-            _message_item("The answer is 42"),
-        ], message_log=[
-            _msg("user", [100]),
-            _msg("assistant", [300, 400]),
-        ])
+        result = _make_result(
+            reward=1.0,
+            output_items=[_reasoning_item("thinking"), _message_item("The answer is 42")],
+            message_log=[_msg("user", [100]), _msg("assistant", [300, 400])],
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
         assert "has_empty_final_answer" not in result["message_log"][1]
 
     def test_function_call_skip_not_flagged(self):
-        result = _make_result(reward=1.0, output_items=[
-            _reasoning_item("thinking"),
-            _function_call_item(),
-        ], message_log=[
-            _msg("user", [100]),
-            _msg("assistant", [300, 400]),
-        ])
+        result = _make_result(
+            reward=1.0,
+            output_items=[_reasoning_item("thinking"), _function_call_item()],
+            message_log=[_msg("user", [100]), _msg("assistant", [300, 400])],
+        )
         counts = apply_reward_penalties([result], self.CFG)
         assert result["full_result"]["reward"] == 1.0
         assert "has_empty_final_answer" not in result["message_log"][1]
@@ -763,15 +726,13 @@ class TestAdvantageLevelEmptyFinalAnswer:
     def test_both_levels_reward_zeroed_and_flagged(self):
         cfg = {
             "penalize_empty_final_answer": True,
-            "grpo": {"penalize_empty_final_answer": True},
+            "grpo": {"advantage_penalty": {"empty_final_answer": {"enabled": True}}},
         }
-        result = _make_result(reward=1.0, output_items=[
-            _reasoning_item("thinking"),
-            _message_item(""),
-        ], message_log=[
-            _msg("user", [100]),
-            _msg("assistant", [300, 400]),
-        ])
+        result = _make_result(
+            reward=1.0,
+            output_items=[_reasoning_item("thinking"), _message_item("")],
+            message_log=[_msg("user", [100]), _msg("assistant", [300, 400])],
+        )
         counts = apply_reward_penalties([result], cfg)
         assert result["full_result"]["reward"] == 0.0
         assert counts["empty_final_answer"] == 1
@@ -784,10 +745,7 @@ class TestAdvantageLevelEmptyFinalAnswer:
         assert counts["empty_final_answer"] == 1
 
     def test_grpo_flag_triggers_roles_guard(self):
-        result = _make_result(reward=1.0, message_log=[
-            _msg("user", [100]),
-            _msg("tool", [300]),
-        ])
+        result = _make_result(reward=1.0, message_log=[_msg("user", [100]), _msg("tool", [300])])
         try:
             apply_reward_penalties([result], self.CFG)
         except AssertionError:
@@ -799,6 +757,7 @@ class TestAdvantageLevelEmptyFinalAnswer:
 # =====================================================================
 # Cross-cutting: multiple penalties, config gating, batch behavior
 # =====================================================================
+
 
 class TestCrossCutting:
     def test_no_config_no_penalties(self):
@@ -818,16 +777,10 @@ class TestCrossCutting:
 
     def test_multiple_penalties_stack(self):
         """A result that triggers both duplicated reasoning and EOS penalty."""
-        cfg = {
-            "penalize_duplicated_reasoning": True,
-            "penalize_eos_token": True,
-        }
+        cfg = {"penalize_duplicated_reasoning": True, "penalize_eos_token": True}
         result = _make_result(
             reward=1.0,
-            output_items=[
-                _reasoning_item("same"),
-                _message_item("same"),
-            ],
+            output_items=[_reasoning_item("same"), _message_item("same")],
             message_log=[
                 _msg("user", [100]),
                 _msg("assistant", [300, 2]),  # EOS
@@ -841,14 +794,8 @@ class TestCrossCutting:
     def test_batch_of_results_mixed(self):
         """Two results: first is fine, second has EOS."""
         cfg = {"penalize_eos_token": True}
-        r1 = _make_result(reward=1.0, message_log=[
-            _msg("user", [100]),
-            _msg("assistant", [300, 400]),
-        ])
-        r2 = _make_result(reward=1.0, message_log=[
-            _msg("user", [100]),
-            _msg("assistant", [300, 2]),
-        ])
+        r1 = _make_result(reward=1.0, message_log=[_msg("user", [100]), _msg("assistant", [300, 400])])
+        r2 = _make_result(reward=1.0, message_log=[_msg("user", [100]), _msg("assistant", [300, 2])])
         counts = apply_reward_penalties([r1, r2], cfg)
         assert r1["full_result"]["reward"] == 1.0
         assert r2["full_result"]["reward"] == 0.0
@@ -858,6 +805,7 @@ class TestCrossCutting:
 # =====================================================================
 # Empty generation gate
 # =====================================================================
+
 
 class TestEmptyGenerationGate:
     CFG = {"token_ids": {"eos": "2, 11"}}
@@ -870,10 +818,7 @@ class TestEmptyGenerationGate:
         }
 
     def test_empty_assistant_gated_to_smallest_eos(self):
-        result = _make_result(message_log=[
-            _msg("user", [1, 2, 3]),
-            self._empty_assistant(),
-        ])
+        result = _make_result(message_log=[_msg("user", [1, 2, 3]), self._empty_assistant()])
         count = apply_empty_generation_gate([result], self.CFG)
         assert count == 1
         msg = result["message_log"][1]
@@ -882,14 +827,16 @@ class TestEmptyGenerationGate:
         assert msg["has_empty_generation"] is True
 
     def test_non_empty_assistant_untouched(self):
-        result = _make_result(message_log=[
-            _msg("user", [1]),
-            {
-                "role": "assistant",
-                "token_ids": torch.tensor([5, 6]),
-                "generation_logprobs": torch.tensor([-0.1, -0.2]),
-            },
-        ])
+        result = _make_result(
+            message_log=[
+                _msg("user", [1]),
+                {
+                    "role": "assistant",
+                    "token_ids": torch.tensor([5, 6]),
+                    "generation_logprobs": torch.tensor([-0.1, -0.2]),
+                },
+            ]
+        )
         count = apply_empty_generation_gate([result], self.CFG)
         assert count == 0
         assert result["message_log"][1]["token_ids"].tolist() == [5, 6]
@@ -907,10 +854,7 @@ class TestEmptyGenerationGate:
         assert "has_empty_generation" not in result["message_log"][0]
 
     def test_user_messages_untouched(self):
-        result = _make_result(message_log=[
-            _msg("user", [1, 2]),
-            self._empty_assistant(),
-        ])
+        result = _make_result(message_log=[_msg("user", [1, 2]), self._empty_assistant()])
         apply_empty_generation_gate([result], self.CFG)
         assert result["message_log"][0]["token_ids"].tolist() == [1, 2]
 
@@ -922,12 +866,9 @@ class TestEmptyGenerationGate:
         assert msg["generation_logprobs"].dtype == torch.float32
 
     def test_multiple_empty_messages_counted(self):
-        result = _make_result(message_log=[
-            _msg("user", [1]),
-            self._empty_assistant(),
-            _msg("user", [2]),
-            self._empty_assistant(),
-        ])
+        result = _make_result(
+            message_log=[_msg("user", [1]), self._empty_assistant(), _msg("user", [2]), self._empty_assistant()]
+        )
         assert apply_empty_generation_gate([result], self.CFG) == 2
 
     def test_invalid_eos_config_raises(self):

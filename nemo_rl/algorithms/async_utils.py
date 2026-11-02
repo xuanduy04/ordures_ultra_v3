@@ -1,5 +1,3 @@
-
-
 from __future__ import annotations
 
 import statistics
@@ -36,8 +34,8 @@ _NEXT_NG_TASK_INDEX_KEY = "next_ng_task_index"
 class ReplayBuffer:
     """Replay buffer storing per-prompt groups.
 
-    A single entry corresponds to 1 prompt repeated by
-    grpo.num_generations_per_prompt (required to compute per-prompt advantages).
+    A single entry corresponds to 1 prompt repeated by grpo.num_generations_per_prompt (required to compute per-prompt
+    advantages).
     """
 
     def __init__(self, max_size: int):
@@ -56,8 +54,8 @@ class ReplayBuffer:
     def _rollout_metrics_turn_count_for_diagnostics(rm: dict[str, Any]) -> Optional[float]:
         """One scalar turn-depth per buffered trajectory for starvation diagnostics.
 
-        Supports sync multi-turn rollouts (`max_turns_per_sample` / `avg_turns_per_sample`)
-        and NeMo Gym (`turns_per_sample/max` / `turns_per_sample/mean`.
+        Supports sync multi-turn rollouts (`max_turns_per_sample` / `avg_turns_per_sample`) and NeMo Gym
+        (`turns_per_sample/max` / `turns_per_sample/mean`.
         """
         if "max_turns_per_sample" in rm:
             return float(rm["max_turns_per_sample"])
@@ -69,12 +67,7 @@ class ReplayBuffer:
             return float(rm["turns_per_sample/mean"])
         return None
 
-    def push_with_wait_signal(
-        self,
-        trajectory: dict[str, Any],
-        weight_version: int,
-        target_weight_version: int,
-    ) -> str:
+    def push_with_wait_signal(self, trajectory: dict[str, Any], weight_version: int, target_weight_version: int) -> str:
         """Add a per-prompt trajectory group with metadata.
 
         Args:
@@ -146,18 +139,12 @@ class ReplayBuffer:
                     "mean": sum(max_gen_tokens_per_turn_list) / len(max_gen_tokens_per_turn_list)
                     if max_gen_tokens_per_turn_list
                     else 0,
-                    "median": statistics.median(max_gen_tokens_per_turn_list)
-                    if max_gen_tokens_per_turn_list
-                    else 0,
-                    "max": max(max_gen_tokens_per_turn_list)
-                    if max_gen_tokens_per_turn_list
-                    else 0,
+                    "median": statistics.median(max_gen_tokens_per_turn_list) if max_gen_tokens_per_turn_list else 0,
+                    "max": max(max_gen_tokens_per_turn_list) if max_gen_tokens_per_turn_list else 0,
                     "p95": _pct(max_gen_tokens_per_turn_list, 95),
                 },
                 "turns_per_sample_in_buffer": {
-                    "mean": sum(turn_counts_list) / len(turn_counts_list)
-                    if turn_counts_list
-                    else 0,
+                    "mean": sum(turn_counts_list) / len(turn_counts_list) if turn_counts_list else 0,
                     "median": statistics.median(turn_counts_list) if turn_counts_list else 0,
                     "max": max(turn_counts_list) if turn_counts_list else 0,
                     "p95": _pct(turn_counts_list, 95),
@@ -176,17 +163,13 @@ class ReplayBuffer:
             return set(self.target_weight_versions)
 
     def sample(
-        self,
-        num_prompt_groups: int,
-        current_weight_version: int,
-        max_age_steps: int,
+        self, num_prompt_groups: int, current_weight_version: int, max_age_steps: int
     ) -> Optional[dict[str, Any]]:
         """Sample per-prompt trajectory groups intended for the current training step.
 
-        Only returns trajectories with target_weight_version == current_weight_version.
-        If insufficient trajectories are available, returns None to stall training
-        until the remaining trajectories are generated. This ensures no trajectory
-        loses its last chance to be used for its intended training step.
+        Only returns trajectories with target_weight_version == current_weight_version. If insufficient trajectories are
+        available, returns None to stall training until the remaining trajectories are generated. This ensures no
+        trajectory loses its last chance to be used for its intended training step.
 
         Returns:
             Dictionary with 'trajectories' and 'avg_trajectory_age' keys, or None if insufficient data
@@ -213,29 +196,18 @@ class ReplayBuffer:
 
             # Evict old trajectories that are beyond the age window
             # This can happen after checkpoint restore when old trajectories remain
-            old_indices = [
-                i for i, v in enumerate(self.trajectory_versions)
-                if v < min_valid_version
-            ]
+            old_indices = [i for i, v in enumerate(self.trajectory_versions) if v < min_valid_version]
             if old_indices:
-                print(
-                    f"   🗑️ Evicting {len(old_indices)} stale trajectories "
-                    f"(version < {min_valid_version})"
-                )
+                print(f"   🗑️ Evicting {len(old_indices)} stale trajectories (version < {min_valid_version})")
                 # Keep only non-old trajectories
-                indices_to_keep = [
-                    i for i in range(len(self.trajectories))
-                    if i not in set(old_indices)
-                ]
+                indices_to_keep = [i for i in range(len(self.trajectories)) if i not in set(old_indices)]
                 self.trajectories = [self.trajectories[i] for i in indices_to_keep]
                 self.trajectory_versions = [self.trajectory_versions[i] for i in indices_to_keep]
                 self.target_weight_versions = [self.target_weight_versions[i] for i in indices_to_keep]
 
             # Filter for valid trajectories without modifying the buffer
             valid_indices = [
-                i
-                for i, v in enumerate(self.trajectory_versions)
-                if min_valid_version <= v <= current_weight_version
+                i for i, v in enumerate(self.trajectory_versions) if min_valid_version <= v <= current_weight_version
             ]
             # print(
             #     f"   valid_indices: {len(valid_indices)}/{total_trajectories} trajectories within age window"
@@ -253,11 +225,7 @@ class ReplayBuffer:
 
             # Only select trajectories intended for the current training step
             # This ensures no trajectory loses its "last chance" to be used for its intended step
-            intended_indices = [
-                i
-                for i in valid_indices
-                if self.target_weight_versions[i] == current_weight_version
-            ]
+            intended_indices = [i for i in valid_indices if self.target_weight_versions[i] == current_weight_version]
 
             # print(
             #     f"   🎯 Found {len(intended_indices)} trajectories intended for current step {current_weight_version}"
@@ -275,21 +243,13 @@ class ReplayBuffer:
 
             # Select exactly the trajectories intended for this step (FIFO within same target)
             selected: list[int] = intended_indices[:num_prompt_groups]
-            print(
-                f"   ✅ Selected {len(selected)} trajectories all intended for step {current_weight_version}"
-            )
+            print(f"   ✅ Selected {len(selected)} trajectories all intended for step {current_weight_version}")
 
             sampled_weights = [self.trajectory_versions[i] for i in selected]
-            avg_trajectory_age = current_weight_version - sum(sampled_weights) / len(
-                sampled_weights
-            )
-            print(
-                f"✅ Selected counts by generation weight-version: {Counter(sampled_weights)}"
-            )
+            avg_trajectory_age = current_weight_version - sum(sampled_weights) / len(sampled_weights)
+            print(f"✅ Selected counts by generation weight-version: {Counter(sampled_weights)}")
             print(f"📊 Average trajectory age: {avg_trajectory_age:.2f} steps")
-            print(
-                f"🎯 All selected trajectories target step {current_weight_version} (100% target match)"
-            )
+            print(f"🎯 All selected trajectories target step {current_weight_version} (100% target match)")
 
             sampled_items = [self.trajectories[i] for i in selected]
 
@@ -315,10 +275,7 @@ class ReplayBuffer:
                 f"🗑️ Consumed and removed {len(selected)} groups from buffer, old buffer size: {total_trajectories}, new buffer size: {len(self.trajectories)}, new target weight versions {self.target_weight_versions}"
             )
 
-            return {
-                "trajectories": sampled_items,
-                "avg_trajectory_age": avg_trajectory_age,
-            }
+            return {"trajectories": sampled_items, "avg_trajectory_age": avg_trajectory_age}
 
     def size(self) -> int:
         """Return current buffer size."""
@@ -335,8 +292,8 @@ class ReplayBuffer:
     def state_dict(self) -> dict:
         """Get serializable state for checkpointing.
 
-        Returns a dictionary containing all state needed to restore the buffer,
-        enabling resume from checkpoint without losing buffered trajectories.
+        Returns a dictionary containing all state needed to restore the buffer, enabling resume from checkpoint without
+        losing buffered trajectories.
         """
         with self._lock:
             return {
@@ -348,27 +305,24 @@ class ReplayBuffer:
             }
 
     def load_state_dict(
-        self,
-        state: dict,
-        num_prompts_per_step: int | None = None,
-        current_training_step: int | None = None,
+        self, state: dict, num_prompts_per_step: int | None = None, current_training_step: int | None = None
     ) -> None:
         """Restore state from checkpoint.
 
         Args:
             state: Dictionary from state_dict() containing buffer state.
-            num_prompts_per_step: If provided, validates that each target step has
-                complete batches. Incomplete target steps will be removed.
-            current_training_step: The training step we're resuming from. If provided,
-                ensures the buffer is ready for this step by:
+            num_prompts_per_step: If provided, validates that each target step has complete batches. Incomplete target
+                steps will be removed.
+            current_training_step: The training step we're resuming from. If provided, ensures the buffer is ready for
+                this step by:
                 - Removing trajectories for steps we've already passed
                 - Removing incomplete batches for the current step
-                - Adjusting last_target_weight_already_generated so collector
-                  will regenerate any missing trajectories for current step
+                - Adjusting last_target_weight_already_generated so collector will regenerate any missing trajectories
+                  for current step
 
         Note:
-            The max_size in the checkpoint is stored for validation but the
-            current instance's max_size takes precedence (allows config changes).
+            The max_size in the checkpoint is stored for validation but the current instance's max_size takes precedence
+            (allows config changes).
         """
         with self._lock:
             # Validate checkpoint has expected keys
@@ -393,29 +347,18 @@ class ReplayBuffer:
             self.trajectories = list(state["trajectories"])
             self.trajectory_versions = list(state["trajectory_versions"])
             self.target_weight_versions = list(state["target_weight_versions"])
-            self.last_target_weight_already_generated = state[
-                "last_target_weight_already_generated"
-            ]
+            self.last_target_weight_already_generated = state["last_target_weight_already_generated"]
 
             # Truncate if restored state exceeds current max_size
             if len(self.trajectories) > self.max_size:
-                print(
-                    f"⚠️ Truncating restored buffer from {len(self.trajectories)} "
-                    f"to max_size={self.max_size}"
-                )
+                print(f"⚠️ Truncating restored buffer from {len(self.trajectories)} to max_size={self.max_size}")
                 self.trajectories = self.trajectories[: self.max_size]
                 self.trajectory_versions = self.trajectory_versions[: self.max_size]
                 self.target_weight_versions = self.target_weight_versions[: self.max_size]
 
             # Prepare buffer for resume at current_training_step
-            if (
-                current_training_step is not None
-                and num_prompts_per_step is not None
-                and len(self.trajectories) > 0
-            ):
-                self._prepare_for_training_step(
-                    current_training_step, num_prompts_per_step
-                )
+            if current_training_step is not None and num_prompts_per_step is not None and len(self.trajectories) > 0:
+                self._prepare_for_training_step(current_training_step, num_prompts_per_step)
             elif num_prompts_per_step is not None and len(self.trajectories) > 0:
                 # Fallback to just removing incomplete steps
                 self._remove_incomplete_target_steps(num_prompts_per_step)
@@ -425,9 +368,7 @@ class ReplayBuffer:
                 f"last_target_weight_already_generated={self.last_target_weight_already_generated}"
             )
 
-    def _prepare_for_training_step(
-        self, current_step: int, num_prompts_per_step: int
-    ) -> None:
+    def _prepare_for_training_step(self, current_step: int, num_prompts_per_step: int) -> None:
         """Prepare buffer for resuming training at a specific step.
 
         This method ensures training can resume at current_step by:
@@ -441,10 +382,7 @@ class ReplayBuffer:
 
         # Step 1: Remove trajectories for steps we've already passed
         original_count = len(self.trajectories)
-        indices_to_keep = [
-            i for i, t in enumerate(self.target_weight_versions)
-            if t >= current_step
-        ]
+        indices_to_keep = [i for i, t in enumerate(self.target_weight_versions) if t >= current_step]
 
         if len(indices_to_keep) < original_count:
             removed_past = original_count - len(indices_to_keep)
@@ -494,9 +432,7 @@ class ReplayBuffer:
             Number of additional trajectories needed (0 if complete or over-complete)
         """
         with self._lock:
-            current_count = sum(
-                1 for t in self.target_weight_versions if t == target_step
-            )
+            current_count = sum(1 for t in self.target_weight_versions if t == target_step)
             return max(0, num_prompts_per_step - current_count)
 
     def has_complete_batch(self, target_step: int, num_prompts_per_step: int) -> bool:
@@ -510,16 +446,14 @@ class ReplayBuffer:
             True if target_step has >= num_prompts_per_step trajectories
         """
         with self._lock:
-            current_count = sum(
-                1 for t in self.target_weight_versions if t == target_step
-            )
+            current_count = sum(1 for t in self.target_weight_versions if t == target_step)
             return current_count >= num_prompts_per_step
 
     def _remove_incomplete_target_steps(self, num_prompts_per_step: int) -> None:
         """Remove trajectories for target steps that don't have complete batches.
 
-        This prevents training stalls on resume when a checkpoint was saved
-        mid-batch (e.g., 127/128 trajectories for a target step).
+        This prevents training stalls on resume when a checkpoint was saved mid-batch (e.g., 127/128 trajectories for a
+        target step).
 
         Must be called while holding self._lock.
         """
@@ -527,41 +461,26 @@ class ReplayBuffer:
         target_counts = Counter(self.target_weight_versions)
 
         # Find incomplete target steps
-        incomplete_targets = {
-            target for target, count in target_counts.items()
-            if count < num_prompts_per_step
-        }
+        incomplete_targets = {target for target, count in target_counts.items() if count < num_prompts_per_step}
 
         if not incomplete_targets:
-            print(
-                f"   ✓ All target steps have complete batches ({num_prompts_per_step} each)"
-            )
+            print(f"   ✓ All target steps have complete batches ({num_prompts_per_step} each)")
             return
 
-        print(
-            f"   ⚠️ Found {len(incomplete_targets)} incomplete target steps: "
-            f"{sorted(incomplete_targets)}"
-        )
+        print(f"   ⚠️ Found {len(incomplete_targets)} incomplete target steps: {sorted(incomplete_targets)}")
         for target in sorted(incomplete_targets):
-            print(
-                f"      - Target {target}: {target_counts[target]}/{num_prompts_per_step} trajectories"
-            )
+            print(f"      - Target {target}: {target_counts[target]}/{num_prompts_per_step} trajectories")
 
         # Remove incomplete target step trajectories
         original_count = len(self.trajectories)
-        indices_to_keep = [
-            i for i, t in enumerate(self.target_weight_versions)
-            if t not in incomplete_targets
-        ]
+        indices_to_keep = [i for i, t in enumerate(self.target_weight_versions) if t not in incomplete_targets]
 
         self.trajectories = [self.trajectories[i] for i in indices_to_keep]
         self.trajectory_versions = [self.trajectory_versions[i] for i in indices_to_keep]
         self.target_weight_versions = [self.target_weight_versions[i] for i in indices_to_keep]
 
         removed_count = original_count - len(self.trajectories)
-        print(
-            f"   🗑️ Removed {removed_count} trajectories from incomplete target steps"
-        )
+        print(f"   🗑️ Removed {removed_count} trajectories from incomplete target steps")
 
         # Adjust last_target_weight_already_generated to highest COMPLETE target
         if self.target_weight_versions:
@@ -575,9 +494,7 @@ class ReplayBuffer:
                 self.last_target_weight_already_generated = max_complete
         else:
             # No complete targets left, reset counter
-            print(
-                "   🔄 No complete targets left, resetting last_target_weight_already_generated to -1"
-            )
+            print("   🔄 No complete targets left, resetting last_target_weight_already_generated to -1")
             self.last_target_weight_already_generated = -1
 
 
@@ -603,9 +520,7 @@ class AsyncTrajectoryCollector:
         self.replay_buffer = replay_buffer
         self.on_policy_distillation_cfg = on_policy_distillation_cfg or {}
         self._has_opd_teachers = is_opd_enabled(self.master_config)
-        self._teacher_logprob_client = (
-            VLLMTeacherLogprobClient() if self._has_opd_teachers else None
-        )
+        self._teacher_logprob_client = VLLMTeacherLogprobClient() if self._has_opd_teachers else None
         self.running = False
         self.data_exhausted = False
 
@@ -645,7 +560,9 @@ class AsyncTrajectoryCollector:
         # Debug counters: track spawned vs successfully buffered vs completed per target weight
         self._spawned_per_target: dict[int, int] = {}
         self._buffered_per_target: dict[int, int] = {}
-        self._completed_per_target: dict[int, int] = {}  # Prompt-group completions (counts once per prompt_idx; success + failure)
+        self._completed_per_target: dict[
+            int, int
+        ] = {}  # Prompt-group completions (counts once per prompt_idx; success + failure)
         self._counter_lock: _threading.Lock = _threading.Lock()
 
         # Timer for efficiency metrics
@@ -655,14 +572,12 @@ class AsyncTrajectoryCollector:
     def _calculate_target_weights(self, generation_weight_version: int) -> list[int]:
         """Calculate target weight versions for given generation weight version.
 
-        The list of versions returned enumerate the possible version a generation
-        server can target. These versions are looped over to see what training
-        step they can target. If all target versions are exhausted, this generation
+        The list of versions returned enumerate the possible version a generation server can target. These versions are
+        looped over to see what training step they can target. If all target versions are exhausted, this generation
         server will remain idle until the next weight update.
 
         Example:
-        generation_weight_version = 10
-        max_trajectory_age_steps = 4
+            generation_weight_version = 10 max_trajectory_age_steps = 4
 
         Returns:
             [11, 12, 13, 14]  # Meaning this generation server can create trajectories for training step 11, 12, 13, 14
@@ -671,27 +586,19 @@ class AsyncTrajectoryCollector:
         async_cfg = self.master_config.get("grpo", {}).get("async_grpo", {})
         max_trajectory_age = async_cfg["max_trajectory_age_steps"]
         if generation_weight_version == self.initial_weight_version:
-            return [
-                i
-                for i in range(
-                    self.initial_weight_version,
-                    self.initial_weight_version + max_trajectory_age + 1,
-                )
-            ]
+            return [i for i in range(self.initial_weight_version, self.initial_weight_version + max_trajectory_age + 1)]
 
         return [generation_weight_version + i for i in range(1, max_trajectory_age + 1)]
 
-    def _get_next_target_for_generation(
-        self, generation_weight_version: int
-    ) -> Optional[int]:
+    def _get_next_target_for_generation(self, generation_weight_version: int) -> Optional[int]:
         """Get the next target weight that needs generation (if any).
 
-        Checks all targets in the valid range (current weight version + 1 to max_age ahead)
-        and returns the first one that needs trajectories and isn't already being generated.
+        Checks all targets in the valid range (current weight version + 1 to max_age ahead) and returns the first one
+        that needs trajectories and isn't already being generated.
 
         This approach checks:
-        1. last_target_weight_already_generated: Skip targets that training has already consumed
-           (prevents over-generation for consumed targets with slow workers still arriving)
+        1. last_target_weight_already_generated: Skip targets that training has already consumed (prevents
+           over-generation for consumed targets with slow workers still arriving)
         2. _generating_targets: Prevents duplicate concurrent generation for the same target
         3. get_trajectories_needed: Allows gap-filling for incomplete targets after checkpoint resume
 
@@ -702,15 +609,13 @@ class AsyncTrajectoryCollector:
         - Skipping complete targets: get_trajectories_needed returns 0
 
         Note:
-            During normal training, last_target_weight_already_generated advances when training
-            CONSUMES a batch (in ReplayBuffer.sample()); checkpoint restore may reset it. This
-            prevents the race condition where a single trajectory for a higher target could skip
-            earlier incomplete targets, while still preventing over-generation for consumed targets.
+            During normal training, last_target_weight_already_generated advances when training CONSUMES a batch
+            (in ReplayBuffer.sample()); checkpoint restore may reset it. This prevents the race condition where a single
+            trajectory for a higher target could skip earlier incomplete targets, while still preventing over-generation
+            for consumed targets.
         """
         num_prompts = int(self.master_config["grpo"]["num_prompts_per_step"])
-        max_trajectory_age = int(
-            self.master_config["grpo"]["async_grpo"]["max_trajectory_age_steps"]
-        )
+        max_trajectory_age = int(self.master_config["grpo"]["async_grpo"]["max_trajectory_age_steps"])
 
         # Special handling for initial step: include current step as a target
         if generation_weight_version == self.initial_weight_version:
@@ -722,9 +627,7 @@ class AsyncTrajectoryCollector:
             target_end = generation_weight_version + max_trajectory_age + 1
 
         # Get the last target that training has consumed - skip anything at or below this
-        last_consumed_target = ray.get(
-            self.replay_buffer.get_last_target_weight_already_generated.remote()
-        )
+        last_consumed_target = ray.get(self.replay_buffer.get_last_target_weight_already_generated.remote())
 
         with self._generation_check_lock:
             for target_weight in range(target_start, target_end):
@@ -738,9 +641,7 @@ class AsyncTrajectoryCollector:
 
                 # Check if this target needs more trajectories (for gap-filling scenarios)
                 trajectories_needed = ray.get(
-                    self.replay_buffer.get_trajectories_needed.remote(
-                        target_weight, num_prompts
-                    )
+                    self.replay_buffer.get_trajectories_needed.remote(target_weight, num_prompts)
                 )
 
                 if trajectories_needed > 0:
@@ -777,9 +678,7 @@ class AsyncTrajectoryCollector:
         """
         try:
             num_prompts = int(self.master_config["grpo"]["num_prompts_per_step"])
-            max_trajectory_age = int(
-                self.master_config["grpo"]["async_grpo"]["max_trajectory_age_steps"]
-            )
+            max_trajectory_age = int(self.master_config["grpo"]["async_grpo"]["max_trajectory_age_steps"])
 
             # Special handling for initial step: include current step as a target
             if self.current_weight_version == self.initial_weight_version:
@@ -791,9 +690,7 @@ class AsyncTrajectoryCollector:
                 target_end = self.current_weight_version + max_trajectory_age + 1
 
             # Get the last target that training has consumed
-            last_consumed_target = ray.get(
-                self.replay_buffer.get_last_target_weight_already_generated.remote()
-            )
+            last_consumed_target = ray.get(self.replay_buffer.get_last_target_weight_already_generated.remote())
 
             with self._generation_check_lock:
                 for target_weight in range(target_start, target_end):
@@ -807,16 +704,12 @@ class AsyncTrajectoryCollector:
 
                     # Check if this target needs more trajectories
                     trajectories_needed = ray.get(
-                        self.replay_buffer.get_trajectories_needed.remote(
-                            target_weight, num_prompts
-                        )
+                        self.replay_buffer.get_trajectories_needed.remote(target_weight, num_prompts)
                     )
                     if trajectories_needed > 0:
                         return False  # Found a target that needs generation
 
-            print(
-                f"⏸️ All targets [{target_start}, {target_end}) complete or in progress, pausing"
-            )
+            print(f"⏸️ All targets [{target_start}, {target_end}) complete or in progress, pausing")
             return True
         except Exception:
             return False
@@ -842,11 +735,7 @@ class AsyncTrajectoryCollector:
         """Return a snapshot of the collector's internal state for driver-side diagnostics."""
         with self._threads_lock:
             inflight_workers = len(self._inflight_threads)
-        return {
-            "running": self.running,
-            "data_exhausted": self.data_exhausted,
-            "inflight_workers": inflight_workers,
-        }
+        return {"running": self.running, "data_exhausted": self.data_exhausted, "inflight_workers": inflight_workers}
 
     def _collection_loop(self):
         """Run the collection loop in background thread."""
@@ -871,22 +760,21 @@ class AsyncTrajectoryCollector:
                 if self._should_pause_for_generation_limits() and self.running:
                     # Only log warning once per weight version
                     if self._last_limit_warning_version != self.current_weight_version:
-                        async_cfg = self.master_config.get("grpo", {}).get(
-                            "async_grpo", {}
-                        )
+                        async_cfg = self.master_config.get("grpo", {}).get("async_grpo", {})
                         max_trajectory_age = async_cfg["max_trajectory_age_steps"]
 
                         # Show the actual targets being checked (consistent with logic above)
                         if self.current_weight_version == self.initial_weight_version:
-                            target_weights = list(range(
-                                self.current_weight_version,
-                                self.current_weight_version + max_trajectory_age + 1
-                            ))
+                            target_weights = list(
+                                range(self.current_weight_version, self.current_weight_version + max_trajectory_age + 1)
+                            )
                         else:
-                            target_weights = list(range(
-                                self.current_weight_version + 1,
-                                self.current_weight_version + max_trajectory_age + 1
-                            ))
+                            target_weights = list(
+                                range(
+                                    self.current_weight_version + 1,
+                                    self.current_weight_version + max_trajectory_age + 1,
+                                )
+                            )
 
                         print(
                             f"⏸️ Pausing collection: all target weights {target_weights} for weight version {self.current_weight_version} "
@@ -919,9 +807,7 @@ class AsyncTrajectoryCollector:
             traceback.print_exc()
         finally:
             if self._inflight_threads:
-                print(
-                    f"⏳ Waiting for {len(self._inflight_threads)} pending gap-fill workers to complete..."
-                )
+                print(f"⏳ Waiting for {len(self._inflight_threads)} pending gap-fill workers to complete...")
                 self.wait_for_pending_generations()
             self.running = False
             if dataloader_exhausted:
@@ -943,30 +829,22 @@ class AsyncTrajectoryCollector:
             num_prompts_per_step = int(self.master_config["grpo"]["num_prompts_per_step"])
 
             # Get the next target weight that needs generation
-            target_weight = self._get_next_target_for_generation(
-                generation_weight_version
-            )
+            target_weight = self._get_next_target_for_generation(generation_weight_version)
 
             if target_weight is None:
-                print(
-                    f"🔄 No targets need generation for weight {generation_weight_version}"
-                )
+                print(f"🔄 No targets need generation for weight {generation_weight_version}")
                 return
 
             # Check how many trajectories are actually needed for this target
             trajectories_needed = ray.get(
-                self.replay_buffer.get_trajectories_needed.remote(
-                    target_weight, num_prompts_per_step
-                )
+                self.replay_buffer.get_trajectories_needed.remote(target_weight, num_prompts_per_step)
             )
 
             # Limit generation to what's needed (for gap-filling scenarios)
             num_prompts_to_generate = min(num_prompts_in_batch, trajectories_needed)
 
             if num_prompts_to_generate == 0:
-                print(
-                    f"🔄 Target {target_weight} already has enough trajectories, skipping"
-                )
+                print(f"🔄 Target {target_weight} already has enough trajectories, skipping")
                 with self._generation_check_lock:
                     self._generating_targets.discard(target_weight)
                 return
@@ -990,9 +868,7 @@ class AsyncTrajectoryCollector:
                 print(
                     f"⏸️ Waiting for refit to complete before starting new generation ({active_threads} threads still active)"
                 )
-                print(
-                    "   Note: With vLLM V1 async engine, active threads can complete during weight update"
-                )
+                print("   Note: With vLLM V1 async engine, active threads can complete during weight update")
                 with self._efficiency_timer.time("idle/refit_event_wait"):
                     self._refit_pause_cleared.wait()
 
@@ -1003,9 +879,7 @@ class AsyncTrajectoryCollector:
             stamped_extra_env_info = []
             for offset, row in enumerate(batch["extra_env_info"]):
                 if not isinstance(row, dict):
-                    raise TypeError(
-                        f"Expected NeMo-Gym extra_env_info row to be a dict, got {type(row)}"
-                    )
+                    raise TypeError(f"Expected NeMo-Gym extra_env_info row to be a dict, got {type(row)}")
                 stamped_row = dict(row)
                 stamped_row[_NG_TASK_INDEX_KEY] = self._next_ng_task_index + offset
                 stamped_extra_env_info.append(stamped_row)
@@ -1020,19 +894,11 @@ class AsyncTrajectoryCollector:
             def _target():
                 asyncio_run(
                     self._run_prompt_group_worker(
-                        repeated_batch,
-                        generation_weight_version,
-                        target_weight,
-                        prompt_idx,
-                        num_generations,
-                        group_num,
+                        repeated_batch, generation_weight_version, target_weight, prompt_idx, num_generations, group_num
                     )
                 )
 
-            worker = _threading.Thread(
-                target=_target,
-                daemon=True,
-            )
+            worker = _threading.Thread(target=_target, daemon=True)
             with self._threads_lock:
                 self._inflight_threads.add(worker)
             worker.start()
@@ -1071,9 +937,8 @@ class AsyncTrajectoryCollector:
     def prepare_for_refit(self) -> None:
         """Pause new generation starts and optionally wait for pending generations.
 
-        For vLLM V1 async engine, leverages in-flight weight updates via collective_rpc,
-        allowing ongoing generations to continue with their current KV caches while
-        weights are updated. This significantly improves async performance.
+        For vLLM V1 async engine, leverages in-flight weight updates via collective_rpc, allowing ongoing generations to
+        continue with their current KV caches while weights are updated. This significantly improves async performance.
 
         For non-async engines, waits for all pending generations to complete before refit.
         """
@@ -1085,33 +950,21 @@ class AsyncTrajectoryCollector:
         print("⏸️ New generation starts paused")
 
         # Check if we're using vLLM async engine
-        vllm_cfg = (
-            self.master_config.get("policy", {})
-            .get("generation", {})
-            .get("vllm_cfg", {})
-        )
+        vllm_cfg = self.master_config.get("policy", {}).get("generation", {}).get("vllm_cfg", {})
         is_async_engine = vllm_cfg.get("async_engine", False)
         in_flight_weight_updates = (
-            self.master_config.get("grpo", {})
-            .get("async_grpo", {})
-            .get("in_flight_weight_updates", False)
+            self.master_config.get("grpo", {}).get("async_grpo", {}).get("in_flight_weight_updates", False)
         )
 
         if is_async_engine and in_flight_weight_updates:
             # vLLM V1 async engine supports in-flight weight updates
             # Ongoing generations will continue with their current KV caches
             # New generations (after weight update) will use the updated weights
-            print(
-                "🚀 Using vLLM V1 in-flight weight update - skipping wait for pending generations"
-            )
-            print(
-                f"   {len(self._inflight_threads)} ongoing generations will complete with current weights"
-            )
+            print("🚀 Using vLLM V1 in-flight weight update - skipping wait for pending generations")
+            print(f"   {len(self._inflight_threads)} ongoing generations will complete with current weights")
         else:
             # For non-async engines, wait for all pending generations to complete
-            print(
-                "⏸️ Non-async engine: waiting for all pending generations to complete..."
-            )
+            print("⏸️ Non-async engine: waiting for all pending generations to complete...")
             self.wait_for_pending_generations()
 
         elapsed = time.time() - start_time
@@ -1134,9 +987,7 @@ class AsyncTrajectoryCollector:
                 if invalidated:
                     print("✅ Invalidated vLLM prefix/KV caches after weight update")
                 else:
-                    print(
-                        "⚠️ vLLM cache invalidation reported partial/unsuccessful on some workers"
-                    )
+                    print("⚠️ vLLM cache invalidation reported partial/unsuccessful on some workers")
             except Exception as e:
                 print(f"⚠️ Failed to invalidate vLLM caches: {e}")
 
@@ -1159,9 +1010,7 @@ class AsyncTrajectoryCollector:
                 break
 
             elapsed = time.time() - start_time
-            print(
-                f"⏳ Waiting for {pending_count} pending generation threads... ({elapsed:.1f}s elapsed)"
-            )
+            print(f"⏳ Waiting for {pending_count} pending generation threads... ({elapsed:.1f}s elapsed)")
             time.sleep(0.5)
 
     def get_dataloader_state(self) -> dict:
@@ -1190,15 +1039,14 @@ class AsyncTrajectoryCollector:
     async def _compute_teacher_logprobs(self, input_ids, agent_refs, input_lengths=None):
         """Compute teacher logprobs via the remote vLLM teacher serves.
 
-        All trajectories in a prompt group belong to a single agent (asserted
-        by the rollout loop), so the whole group is scored on one serve.
+        All trajectories in a prompt group belong to a single agent (asserted by the rollout loop), so the whole group
+        is scored on one serve.
 
         Args:
             input_ids: [B, S] tokenized input tensor
             agent_refs: list of B agent reference dicts
-            input_lengths: [B] per-sample lengths (rows are trimmed before
-                being sent to the serve when provided). Rows of length 0
-                (empty message logs) are never sent to the serve.
+            input_lengths: [B] per-sample lengths (rows are trimmed before being sent to the serve when provided). Rows
+                of length 0 (empty message logs) are never sent to the serve.
 
         Returns:
             ([B, S] teacher logprobs tensor, total_time_seconds)
@@ -1209,7 +1057,8 @@ class AsyncTrajectoryCollector:
         strict = opd_cfg.get("strict_agent_name_match", False)
 
         teacher_specs = resolve_teacher_specs(
-            agent_refs, teacher_model_by_agent_name,
+            agent_refs,
+            teacher_model_by_agent_name,
             default_teacher_alias=default_teacher_alias,
             strict_agent_name_match=strict,
         )
@@ -1235,11 +1084,7 @@ class AsyncTrajectoryCollector:
         # rows keep the NaN sentinel, which OPDAdvantageEstimator zeroes so
         # the GRPO/ORM blending is unaffected.
         batch_size = input_ids.shape[0]
-        lengths = (
-            input_lengths.tolist()
-            if input_lengths is not None
-            else [input_ids.shape[1]] * batch_size
-        )
+        lengths = input_lengths.tolist() if input_lengths is not None else [input_ids.shape[1]] * batch_size
         non_empty_indices = [i for i in range(batch_size) if lengths[i] > 0]
         if len(non_empty_indices) < batch_size:
             print(
@@ -1251,23 +1096,13 @@ class AsyncTrajectoryCollector:
 
         t_start = time.time()
         if not non_empty_indices:
-            logprobs = torch.full(
-                input_ids.shape, float("nan"), dtype=torch.float32
-            )
+            logprobs = torch.full(input_ids.shape, float("nan"), dtype=torch.float32)
         else:
             sub_input_ids = input_ids[non_empty_indices]
-            sub_lengths = (
-                torch.tensor([lengths[i] for i in non_empty_indices])
-                if input_lengths is not None
-                else None
-            )
+            sub_lengths = torch.tensor([lengths[i] for i in non_empty_indices]) if input_lengths is not None else None
             try:
-                scored = await self._teacher_logprob_client.score_group(
-                    teacher, sub_input_ids, sub_lengths
-                )
-                logprobs = torch.full(
-                    input_ids.shape, float("nan"), dtype=torch.float32
-                )
+                scored = await self._teacher_logprob_client.score_group(teacher, sub_input_ids, sub_lengths)
+                logprobs = torch.full(input_ids.shape, float("nan"), dtype=torch.float32)
                 logprobs[non_empty_indices] = scored
             except TeacherContextLengthError as exc:
                 print(
@@ -1275,9 +1110,7 @@ class AsyncTrajectoryCollector:
                     f"zeroing OPD advantage for this group (GRPO/ORM unaffected).",
                     flush=True,
                 )
-                logprobs = torch.full(
-                    input_ids.shape, float("nan"), dtype=torch.float32
-                )
+                logprobs = torch.full(input_ids.shape, float("nan"), dtype=torch.float32)
         total_time = time.time() - t_start
         print(
             f"[teacher_logprob] teacher={teacher['url']} model={teacher['model']} "
@@ -1314,12 +1147,10 @@ class AsyncTrajectoryCollector:
                     from nemo_rl.data.llm_message_utils import batched_message_log_to_flat_message
 
                     flat_for_teacher, teacher_input_lengths = batched_message_log_to_flat_message(
-                        final_batch_cpu["message_log"],
-                        pad_value_dict={"token_ids": self.tokenizer.pad_token_id},
+                        final_batch_cpu["message_log"], pad_value_dict={"token_ids": self.tokenizer.pad_token_id}
                     )
                     teacher_logprobs, teacher_logprob_time = await self._compute_teacher_logprobs(
-                        flat_for_teacher["token_ids"], agent_refs,
-                        input_lengths=teacher_input_lengths,
+                        flat_for_teacher["token_ids"], agent_refs, input_lengths=teacher_input_lengths
                     )
                     # Store inside batch dict so from_batches handles
                     # variable-length padding across prompt groups
@@ -1327,9 +1158,7 @@ class AsyncTrajectoryCollector:
                     # NaN sentinel doubles as the skip signal; the existing
                     # rollout-metric aggregation averages it into a
                     # "fraction of groups skipped" metric.
-                    rollout_metrics["teacher_logprob_skipped"] = float(
-                        torch.isnan(teacher_logprobs).any()
-                    )
+                    rollout_metrics["teacher_logprob_skipped"] = float(torch.isnan(teacher_logprobs).any())
                     rollout_metrics["teacher_logprob_time"] = teacher_logprob_time
 
             # Record per-trajectory wall-clock duration for buffer starvation diagnostics
@@ -1337,11 +1166,7 @@ class AsyncTrajectoryCollector:
             rollout_metrics = dict(rollout_metrics)
             rollout_metrics["trajectory_duration_s"] = trajectory_duration_s
 
-            trajectory_group = {
-                "batch": final_batch_cpu,
-                "rollout_metrics": rollout_metrics,
-                "timestamp": time.time(),
-            }
+            trajectory_group = {"batch": final_batch_cpu, "rollout_metrics": rollout_metrics, "timestamp": time.time()}
             if prompt_group_task_index is not None:
                 trajectory_group[_NG_TASK_INDEX_KEY] = prompt_group_task_index
 
@@ -1351,9 +1176,7 @@ class AsyncTrajectoryCollector:
                 backoff_start = None
                 while self.running:
                     status = await self.replay_buffer.push_with_wait_signal.remote(
-                        trajectory_group,
-                        generation_weight_version,
-                        target_weight_version,
+                        trajectory_group, generation_weight_version, target_weight_version
                     )
                     if status == "success":
                         # Debug: track successfully buffered workers per target weight
@@ -1365,8 +1188,7 @@ class AsyncTrajectoryCollector:
                             spawned_count = self._spawned_per_target.get(target_weight_version, 0)
                         if backoff_start is not None:
                             self._efficiency_timer.record(
-                                "idle/buffer_full_backoff",
-                                time.perf_counter() - backoff_start,
+                                "idle/buffer_full_backoff", time.perf_counter() - backoff_start
                             )
                         print(
                             f"📦 Buffered per-prompt group (prompt_idx {prompt_idx}, target_weight {target_weight_version}) "
@@ -1388,14 +1210,9 @@ class AsyncTrajectoryCollector:
                 print(
                     f"❌ Failed to enqueue per-prompt group to buffer (prompt_idx={prompt_idx}, target_weight={target_weight_version}): {e}"
                 )
-                print(
-                    "   ⚠️ This trajectory will NOT be buffered - may cause stall if training expects it!"
-                )
+                print("   ⚠️ This trajectory will NOT be buffered - may cause stall if training expects it!")
                 if backoff_start is not None:
-                    self._efficiency_timer.record(
-                        "idle/buffer_full_backoff",
-                        time.perf_counter() - backoff_start,
-                    )
+                    self._efficiency_timer.record("idle/buffer_full_backoff", time.perf_counter() - backoff_start)
 
                 import traceback
 
@@ -1406,7 +1223,9 @@ class AsyncTrajectoryCollector:
             from nemo_rl.algorithms.grpo import _should_use_nemo_gym
             from nemo_rl.experience.rollouts import run_async_nemo_gym_rollout
 
-            assert _should_use_nemo_gym(self.master_config), "We currently only support the NeMo Gym path in Async GRPO!"
+            assert _should_use_nemo_gym(self.master_config), (
+                "We currently only support the NeMo Gym path in Async GRPO!"
+            )
 
             # Run rollout for this prompt group
             # Async engine supports concurrent generation; avoid locking
@@ -1435,11 +1254,7 @@ class AsyncTrajectoryCollector:
                 del final_batch
 
                 push_task = create_task(
-                    _run_rollouts_single(
-                        final_batch_cpu,
-                        rollout_metrics,
-                        nemo_gym_rollout_result.ng_task_index,
-                    )
+                    _run_rollouts_single(final_batch_cpu, rollout_metrics, nemo_gym_rollout_result.ng_task_index)
                 )
                 push_tasks.append(push_task)
 
@@ -1447,19 +1262,16 @@ class AsyncTrajectoryCollector:
 
         except Exception:
             import traceback
+
             print(
                 f"❌ Error in prompt group worker (prompt_idx={prompt_idx}, target_weight={target_weight_version}, retry={retry_count}): {traceback.format_exc()}"
             )
-            self._efficiency_timer.record(
-                "wasted/failed_trajectory", time.perf_counter() - worker_start
-            )
+            self._efficiency_timer.record("wasted/failed_trajectory", time.perf_counter() - worker_start)
 
             # Retry logic for transient errors (e.g., HTTP 500 from Penguin server)
             if retry_count < MAX_RETRIES and self.running:
-                retry_delay = RETRY_DELAY_BASE * (2 ** retry_count)  # Exponential backoff
-                print(
-                    f"   🔄 Retrying in {retry_delay:.1f}s (attempt {retry_count + 1}/{MAX_RETRIES})..."
-                )
+                retry_delay = RETRY_DELAY_BASE * (2**retry_count)  # Exponential backoff
+                print(f"   🔄 Retrying in {retry_delay:.1f}s (attempt {retry_count + 1}/{MAX_RETRIES})...")
                 await asyncio_sleep(retry_delay)
 
                 # Remove from thread tracking before recursive call
@@ -1479,13 +1291,10 @@ class AsyncTrajectoryCollector:
                     retry_count + 1,
                 )
             else:
-                print(
-                    f"   ⚠️ Max retries ({MAX_RETRIES}) exceeded - trajectory will NOT be buffered!"
-                )
-                print(
-                    "   ⚠️ This may cause training to stall if it expects this trajectory."
-                )
+                print(f"   ⚠️ Max retries ({MAX_RETRIES}) exceeded - trajectory will NOT be buffered!")
+                print("   ⚠️ This may cause training to stall if it expects this trajectory.")
                 import traceback
+
                 traceback.print_exc()
         finally:
             # Skip cleanup if we spawned a retry worker (it will handle cleanup)
@@ -1497,13 +1306,13 @@ class AsyncTrajectoryCollector:
             # This prevents gap-filling from spawning duplicate workers while the
             # initial batch is still in-flight.
             with self._counter_lock:
-                self._completed_per_target[target_weight_version] = (
-                    self._completed_per_target.get(target_weight_version, 0) + (repeated_batch.size // num_generations)
-                )
+                self._completed_per_target[target_weight_version] = self._completed_per_target.get(
+                    target_weight_version, 0
+                ) + (repeated_batch.size // num_generations)
                 completed_count = self._completed_per_target[target_weight_version]
                 spawned_count = self._spawned_per_target.get(target_weight_version, 0)
                 buffered_count = self._buffered_per_target.get(target_weight_version, 0)
-                should_release = (completed_count >= spawned_count)
+                should_release = completed_count >= spawned_count
 
             if should_release:
                 with self._generation_check_lock:

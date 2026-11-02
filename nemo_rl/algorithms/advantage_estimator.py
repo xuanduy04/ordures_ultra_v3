@@ -2,7 +2,8 @@
 
 This module provides different advantage estimation strategies:
 - GRPOAdvantageEstimator: Standard GRPO advantage with leave-one-out baseline
-- ReinforcePlusPlusAdvantageEstimator: REINFORCE++ with optional baseline subtraction (minus_baseline) and KL penalty in reward
+- ReinforcePlusPlusAdvantageEstimator: REINFORCE++ with optional baseline subtraction (minus_baseline) and KL penalty in
+  reward
 - OPDAdvantageEstimator: On-Policy Distillation (MOPD) token-level distillation advantages
 Reference papers:
 - ProRLv2: https://developer.nvidia.com/blog/scaling-llm-reinforcement-learning-with-prolonged-training-using-prorl-v2/
@@ -17,11 +18,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from nemo_rl.algorithms.utils import (
-    calculate_baseline_and_std_per_prompt,
-    calculate_batch_level_baseline,
-    calculate_kl,
-)
+from nemo_rl.algorithms.utils import calculate_baseline_and_std_per_prompt, calculate_batch_level_baseline, calculate_kl
 
 if TYPE_CHECKING:
     from torch import Tensor
@@ -29,6 +26,11 @@ if TYPE_CHECKING:
 
 class BaseAdvantageEstimator(ABC):
     name: str = "[Unknown Name]"
+
+    @property
+    def is_group_normalization(self) -> bool:
+        return False
+
     def __init__(self, estimator_config: dict | None = None, loss_config: dict | None = None):
         pass
 
@@ -39,9 +41,9 @@ class BaseAdvantageEstimator(ABC):
         Args:
             prompt_ids: Tensor of shape [batch_size] identifying which prompt each sample belongs to.
             rewards: Tensor of shape [batch_size] containing reward for each sample.
-            mask: Response token mask of shape [batch_size, seq_len], 1 for valid response tokens, 0 for padding.
-                    Used for: (1) expanding advantages to token-level shape, (2) global normalization
-                    that only considers valid tokens.
+            mask: Response token mask of shape [batch_size, seq_len], 1 for valid response tokens, 0 for padding. Used
+                for: (1) expanding advantages to token-level shape, (2) global normalization that only considers valid
+                tokens.
             **kwargs: Additional arguments.
 
         Returns:
@@ -57,6 +59,10 @@ class GRPOAdvantageEstimator(BaseAdvantageEstimator):
     Note: GRPO computes advantages over all responses for each prompt.
     """
 
+    @property
+    def is_group_normalization(self) -> bool:
+        return True
+
     def __init__(self, estimator_config: dict, loss_config: dict):
         self.use_leave_one_out_baseline = estimator_config["use_leave_one_out_baseline"]
         self.normalize_rewards = estimator_config["normalize_rewards"]
@@ -67,18 +73,15 @@ class GRPOAdvantageEstimator(BaseAdvantageEstimator):
         Args:
             prompt_ids: Tensor of shape [batch_size] identifying which prompt each sample belongs to.
             rewards: Tensor of shape [batch_size] containing reward for each sample.
-            mask: Response token mask of shape [batch_size, seq_len], 1 for valid response tokens, 0 for padding.
-                  Used only for expanding advantages to token-level shape.
+            mask: Response token mask of shape [batch_size, seq_len], 1 for valid response tokens, 0 for padding. Used
+                only for expanding advantages to token-level shape.
             **kwargs: Additional arguments (unused).
 
         Returns:
             Advantages tensor of shape [batch_size, seq_len].
         """
         baseline, std = calculate_baseline_and_std_per_prompt(
-            prompt_ids,
-            rewards,
-            torch.ones_like(rewards),
-            leave_one_out_baseline=self.use_leave_one_out_baseline,
+            prompt_ids, rewards, torch.ones_like(rewards), leave_one_out_baseline=self.use_leave_one_out_baseline
         )
         advantages = (rewards - baseline).unsqueeze(-1)
 
@@ -107,25 +110,21 @@ class ReinforceAdvantageEstimator(BaseAdvantageEstimator):
         self.leave_one_out_baseline = estimator_config.get("leave_one_out_baseline", False)
         self.batch_level_baseline = estimator_config.get("batch_level_baseline", False)
 
-        if (not self.minus_baseline) and(self.batch_level_baseline or self.leave_one_out_baseline):
+        if (not self.minus_baseline) and (self.batch_level_baseline or self.leave_one_out_baseline):
             print("[WARNING] minus_baseline=False. Ignoring batch_level_baseline and leave_one_out_baseline settings")
 
-    def compute_advantage(
-        self,
-        prompt_ids,
-        rewards,
-        mask,
-        **kwargs,
-    ):
+    @property
+    def is_group_normalization(self) -> bool:
+        return self.minus_baseline and not self.batch_level_baseline
+
+    def compute_advantage(self, prompt_ids, rewards, mask, **kwargs):
         """Compute traditional REINFORCE advantages.
 
         Args:
-            prompt_ids: Tensor of shape [batch_size] identifying which prompt
-                each sample belongs to.
-            rewards: Tensor of shape [batch_size] containing the sequence reward
-                for each sample.
-            mask: Response token mask of shape [batch_size, seq_len], with 1 for
-                valid response tokens and 0 for padding.
+            prompt_ids: Tensor of shape [batch_size] identifying which prompt each sample belongs to.
+            rewards: Tensor of shape [batch_size] containing the sequence reward for each sample.
+            mask: Response token mask of shape [batch_size, seq_len], with 1 for valid response tokens and 0 for
+                padding.
             **kwargs: Additional arguments (unused).
 
         Returns:
@@ -134,16 +133,11 @@ class ReinforceAdvantageEstimator(BaseAdvantageEstimator):
         if self.minus_baseline:
             if self.batch_level_baseline:
                 baseline = calculate_batch_level_baseline(
-                    rewards,
-                    torch.ones_like(rewards),
-                    leave_one_out_baseline=self.leave_one_out_baseline,
+                    rewards, torch.ones_like(rewards), leave_one_out_baseline=self.leave_one_out_baseline
                 )
             else:
                 baseline, _ = calculate_baseline_and_std_per_prompt(
-                    prompt_ids,
-                    rewards,
-                    torch.ones_like(rewards),
-                    leave_one_out_baseline=self.leave_one_out_baseline,
+                    prompt_ids, rewards, torch.ones_like(rewards), leave_one_out_baseline=self.leave_one_out_baseline
                 )
             advantages = rewards - baseline
         else:
@@ -174,25 +168,18 @@ class ReinforcePlusPlusAdvantageEstimator(BaseAdvantageEstimator):
         if self.minus_baseline:
             self.name += " w/ baseline"
 
-    def compute_advantage(
-        self,
-        prompt_ids,
-        rewards,
-        mask,
-        logprobs_policy=None,
-        logprobs_reference=None,
-        **kwargs,
-    ):
+    def compute_advantage(self, prompt_ids, rewards, mask, logprobs_policy=None, logprobs_reference=None, **kwargs):
         """Compute REINFORCE++ advantages with optional KL penalty.
 
         Args:
             prompt_ids: Tensor of shape [batch_size] identifying which prompt each sample belongs to.
             rewards: Tensor of shape [batch_size] containing reward for each sample.
-            mask: Response token mask of shape [batch_size, seq_len], 1 for valid response tokens, 0 for padding.
-                  Used for: (1) expanding advantages to token-level shape, (2) global normalization
-                  that only considers valid tokens.
+            mask: Response token mask of shape [batch_size, seq_len], 1 for valid response tokens, 0 for padding. Used
+                for: (1) expanding advantages to token-level shape, (2) global normalization that only considers valid
+                tokens.
             logprobs_policy: Policy log probabilities of shape [batch_size, seq_len], required if use_kl_in_reward.
-            logprobs_reference: Reference policy log probabilities of shape [batch_size, seq_len], required if use_kl_in_reward.
+            logprobs_reference: Reference policy log probabilities of shape [batch_size, seq_len], required if
+                use_kl_in_reward.
             **kwargs: Additional arguments (unused).
 
         Returns:
@@ -201,10 +188,7 @@ class ReinforcePlusPlusAdvantageEstimator(BaseAdvantageEstimator):
         # minus baseline
         if self.minus_baseline:
             mean, _ = calculate_baseline_and_std_per_prompt(
-                prompt_ids,
-                rewards,
-                torch.ones_like(rewards),
-                leave_one_out_baseline=False,
+                prompt_ids, rewards, torch.ones_like(rewards), leave_one_out_baseline=False
             )
             adv = rewards - mean
         else:
@@ -214,16 +198,8 @@ class ReinforcePlusPlusAdvantageEstimator(BaseAdvantageEstimator):
         adv = adv.expand(mask.shape)
 
         # add kl penalty to reward (token-level)
-        if (
-            self.use_kl_in_reward
-            and logprobs_policy is not None
-            and logprobs_reference is not None
-        ):
-            kl = calculate_kl(
-                logprobs_policy,
-                logprobs_reference,
-                kl_type=self.kl_type,
-            )
+        if self.use_kl_in_reward and logprobs_policy is not None and logprobs_reference is not None:
+            kl = calculate_kl(logprobs_policy, logprobs_reference, kl_type=self.kl_type)
             adv = adv - self.kl_coef * kl
 
         # global normalization across the batch
@@ -275,8 +251,7 @@ class OPDAdvantageEstimator(BaseAdvantageEstimator):
             orm_estimator_cfg = estimator_config.get("orm_advantage_estimator")
             if not orm_estimator_cfg:
                 raise ValueError(
-                    "OPD requires 'orm_advantage_estimator' in the estimator config "
-                    "when orm_advantage_weight > 0."
+                    "OPD requires 'orm_advantage_estimator' in the estimator config when orm_advantage_weight > 0."
                 )
             self.orm_estimator_name: str = orm_estimator_cfg["orm_estimator_name"]
             if self.orm_estimator_name not in ADVANTAGE_ESTIMATOR_MAPPING:
@@ -284,22 +259,12 @@ class OPDAdvantageEstimator(BaseAdvantageEstimator):
                     f"Unsupported ORM advantage estimator: {self.orm_estimator_name!r}. "
                     f"Supported estimators are: {sorted(ADVANTAGE_ESTIMATOR_MAPPING.keys())}"
                 )
-            self.orm_estimator = ADVANTAGE_ESTIMATOR_MAPPING[self.orm_estimator_name](
-                orm_estimator_cfg, loss_config
-            )
+            self.orm_estimator = ADVANTAGE_ESTIMATOR_MAPPING[self.orm_estimator_name](orm_estimator_cfg, loss_config)
             self.name += f"with {self.orm_estimator.name}"
 
         self.last_metrics: dict[str, float] = {}
 
-    def compute_advantage(
-        self,
-        prompt_ids,
-        rewards,
-        mask,
-        teacher_logprobs=None,
-        prev_logprobs=None,
-        **kwargs,
-    ):
+    def compute_advantage(self, prompt_ids, rewards, mask, teacher_logprobs=None, prev_logprobs=None, **kwargs):
         """Compute OPD distillation advantages, optionally blended with ORM.
 
         Args:
@@ -320,18 +285,14 @@ class OPDAdvantageEstimator(BaseAdvantageEstimator):
         # Â_MOPD,t = sg[log π_teacher - log π_student]  (Equation 8)
         # NaN = collection-time context-length sentinel → zero OPD contribution for
         # those rows; ORM blending below is unaffected.
-        distill_advantages = torch.nan_to_num(
-            (teacher_logprobs - prev_logprobs).detach(), nan=0.0
-        )
+        distill_advantages = torch.nan_to_num((teacher_logprobs - prev_logprobs).detach(), nan=0.0)
         distill_advantages = self._apply_advantage_bounds(
             distill_advantages, self.opd_advantage_clip_low, self.opd_advantage_clip_high
         )
         combined = self.opd_advantage_weight * distill_advantages
 
         if self.orm_advantage_weight > 0:
-            orm_advantages = self.orm_estimator.compute_advantage(
-                prompt_ids, rewards, mask, **kwargs
-            )
+            orm_advantages = self.orm_estimator.compute_advantage(prompt_ids, rewards, mask, **kwargs)
             orm_advantages = self._apply_advantage_bounds(
                 orm_advantages, self.orm_advantage_clip_low, self.orm_advantage_clip_high
             )
@@ -351,18 +312,17 @@ class OPDAdvantageEstimator(BaseAdvantageEstimator):
     def _apply_advantage_bounds(self, advantages: "Tensor", clip_low: float, clip_high: float) -> "Tensor":
         """Apply [clip_low, clip_high] bounds to advantages.
 
-        Clips by default; zeroes out-of-bounds values instead when
-        zero_out_of_bounds_advantages is enabled.
+        Clips by default; zeroes out-of-bounds values instead when zero_out_of_bounds_advantages is enabled.
         """
         if self.zero_out_of_bounds_advantages:
             return torch.where(
-                (advantages >= clip_low) & (advantages <= clip_high),
-                advantages,
-                torch.zeros_like(advantages),
+                (advantages >= clip_low) & (advantages <= clip_high), advantages, torch.zeros_like(advantages)
             )
         return advantages.clamp(min=clip_low, max=clip_high)
 
-    def _compute_metrics(self, distill_advantages: "Tensor", advantages: "Tensor", mask: "Tensor", orm_advantages: "Tensor" | None = None):
+    def _compute_metrics(
+        self, distill_advantages: "Tensor", advantages: "Tensor", mask: "Tensor", orm_advantages: "Tensor" | None = None
+    ):
         """Compute OPD logging metrics and store in self.last_metrics."""
         valid_bool = mask.bool()
         distill_valid = torch.masked_select(distill_advantages, valid_bool)
