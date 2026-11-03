@@ -133,6 +133,8 @@ def pilot_config(baseline, spec, arm, old_run, run, old_source, source, ray_addr
         if arm_spec["teacher_tokenizer"] is not None:
             teacher["tokenizer"]["name"] = arm_spec["teacher_tokenizer"]
             teacher["model_name"] = arm_spec["teacher_tokenizer"]
+        if "teacher_chat_template_kwargs" in arm_spec:
+            teacher["tokenizer"]["chat_template_kwargs"] = deepcopy(arm_spec["teacher_chat_template_kwargs"])
         if arm_spec["projection_path"] is not None:
             teacher["projection_matrix_path"] = arm_spec["projection_path"]
     if "pilot_batch" in spec:

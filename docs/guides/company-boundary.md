@@ -274,6 +274,14 @@ matching projection and its own tokenizer. The top-k element cap uses the
 teacher sequence limit because the scoring input is retokenized. The
 teacher HTTP microbatch still comes from the baseline.
 
+Use `pilot_cross_think_30.yaml` and the `cross` arm for Qwen student and Gemma
+teacher. This recipe inherits the A-on-11 projection and tokenizer assets.
+Its teacher template override enables thinking on the teacher-scoring prefix.
+Preflight rejects an installed teacher template that produces the same
+prefix with thinking enabled and disabled. Pass the live URL as
+`--teacher-url`. The existing `--teacher-model` option can set the served
+alias when the endpoint uses another name.
+
 Run `--check-only` before training. If the learner reports CUDA OOM,
 use a fresh run ID and `--train-micro-batch-size 16`. Keep the global
 batch at 128 and preserve the first run's logs. On four DP ranks,

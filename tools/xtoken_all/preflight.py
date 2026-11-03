@@ -145,6 +145,15 @@ def check(run):
     assert max(student.get_vocab().values()) < head
     projection_path = cfg["teachers"][0]["projection_matrix_path"]
     assert projection_digest(projection_path, sha256) == meta["projection_sha256"]
+    teacher_template = cfg["teachers"][0]["tokenizer"].get("chat_template_kwargs")
+    if projection_path is not None and teacher_template and teacher_template.get("enable_thinking") is True:
+        prompt = [{"role": "user", "content": "Compute 2 + 2."}]
+        thinking_prefix = teacher.apply_chat_template(prompt, tokenize=False, add_generation_prompt=True)
+        ordinary_prefix = teacher.apply_chat_template(
+            prompt, tokenize=False, add_generation_prompt=True, enable_thinking=False,
+        )
+        if thinking_prefix == ordinary_prefix:
+            raise ValueError("The installed cross-tokenizer teacher template ignores enable_thinking")
     projection_shape = None
     if projection_path is None:
         validate_identity(student, teacher, cfg["policy"], cfg["teachers"][0])

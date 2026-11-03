@@ -466,8 +466,8 @@ def test_arm_b_thinking_30_step_batch(micro):
 
 @pytest.mark.parametrize("micro", [32, 16])
 def test_cross_pilot_batch_uses_teacher_context_and_keeps_projection(micro):
-    settings = spec()
-    settings["pilot_batch"] = {"global_batch_size": 128, "micro_batch_size": micro}
+    settings = yaml.safe_load((TOOLS / "pilot_cross_think_30.yaml").read_text())
+    settings["pilot_batch"]["micro_batch_size"] = micro
     old = baseline()
     old["teachers"][0]["remote"].update(score_mode="topk", top_k=20, max_score_elements=4000000)
     old["teachers"][0]["train_micro_batch_size"] = 1
@@ -475,7 +475,11 @@ def test_cross_pilot_batch_uses_teacher_context_and_keeps_projection(micro):
                             PurePosixPath("/old-source"), PurePosixPath("/new-source"), "host:6379")
     teacher = cfg["teachers"][0]
     assert teacher["projection_matrix_path"] == old["teachers"][0]["projection_matrix_path"]
-    assert teacher["tokenizer"] == old["teachers"][0]["tokenizer"]
+    assert teacher["tokenizer"] == {**old["teachers"][0]["tokenizer"],
+                                    "chat_template_kwargs": {"enable_thinking": True}}
+    assert cfg["policy"]["tokenizer"]["chat_template_kwargs"] == {"enable_thinking": True}
+    assert cfg["distillation"]["max_num_steps"] == 30
+    assert cfg["checkpointing"]["save_period"] == 10
     assert teacher["remote"]["max_score_elements"] == 128 * 4096 * 21
     assert teacher["train_micro_batch_size"] == 1
     assert cfg["policy"]["train_micro_batch_size"] == micro
