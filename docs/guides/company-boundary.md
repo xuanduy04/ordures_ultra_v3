@@ -256,3 +256,22 @@ The final lightweight suite completed with 274 passed and 15 skipped. These
 counts do not include unavailable CUDA/Torch or archive-bound tests. The previous
 ten mode/arm passes on source `449332a` do not substitute for fresh minimal-company
 results. Full qualification of every requested mode remains incomplete.
+
+## Arm B with thinking for 30 updates
+
+Use `tools/xtoken_all/pilot_b_think_30.yaml` with the existing `same` arm and
+pass the live Qwen3-32B endpoint as `--teacher-url`. The recipe uses the
+A-on-11 initial student and data contract, 128 fresh prompts per optimizer
+update, learner microbatch 32, three warmup updates, and checkpoints at
+steps 10, 20 and 30. Both template configs use `enable_thinking: true`.
+Same-tokenizer scoring sends the sampled student IDs to the teacher.
+The teacher HTTP microbatch is inherited independently of the learner
+microbatch. The top-k element cap covers one batch at the configured
+student context limit.
+
+Run `--check-only` before training. If the learner reports CUDA OOM,
+use a fresh run ID and `--train-micro-batch-size 16`. Keep the global
+batch at 128 and preserve the first run's logs. On four DP ranks,
+microbatch 32 uses one microbatch per rank per update and microbatch 16
+uses two. Treat endpoint, Ray and teacher response errors separately
+from learner OOM.

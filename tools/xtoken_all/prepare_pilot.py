@@ -135,6 +135,21 @@ def pilot_config(baseline, spec, arm, old_run, run, old_source, source, ray_addr
             teacher["model_name"] = arm_spec["teacher_tokenizer"]
         if arm_spec["projection_path"] is not None:
             teacher["projection_matrix_path"] = arm_spec["projection_path"]
+    if "pilot_batch" in spec:
+        batch = spec["pilot_batch"]
+        global_size, micro_size = batch["global_batch_size"], batch["micro_batch_size"]
+        if any(type(size) is not int or size <= 0 for size in (global_size, micro_size)):
+            raise ValueError("Pilot batch sizes must be positive integers")
+        teacher = cfg["teachers"][0]
+        remote = teacher["remote"]
+        if teacher["projection_matrix_path"] is not None or remote["score_mode"] != "topk":
+            raise ValueError("pilot_batch currently requires same-tokenizer remote top-k scoring")
+        cfg["policy"]["train_global_batch_size"] = global_size
+        cfg["policy"]["train_micro_batch_size"] = micro_size
+        cfg["distillation"]["num_prompts_per_step"] = global_size
+        teacher["train_global_batch_size"] = global_size
+        # Keep the inherited teacher HTTP request batch independent of the learner microbatch.
+        remote["max_score_elements"] = global_size * cfg["policy"]["max_total_sequence_length"] * (remote["top_k"] + 1)
     return cfg
 
 
@@ -262,6 +277,7 @@ def main():
     parser.add_argument("--teacher-tokenizer", type=Path)
     parser.add_argument("--teacher-api-key-env")
     parser.add_argument("--gpu-indices", type=int, nargs="+")
+    parser.add_argument("--train-micro-batch-size", type=int)
     args = parser.parse_args()
     if args.check_only and not args.run:
         parser.error("--check-only requires --run")
@@ -270,6 +286,12 @@ def main():
     spec = yaml.safe_load(spec_path.read_text())
     if args.arm not in spec["arms"]:
         parser.error("Unknown arm in the selected YAML")
+    if args.train_micro_batch_size is not None:
+        if "pilot_batch" not in spec or args.train_micro_batch_size <= 0:
+            parser.error("--train-micro-batch-size requires a pilot_batch recipe and a positive value")
+        spec["pilot_batch"]["micro_batch_size"] = args.train_micro_batch_size
+    if "pilot_batch" in spec and spec["arms"][args.arm]["teacher_url"] is None and not args.teacher_url:
+        parser.error("This recipe requires --teacher-url for the live teacher")
     if args.gpu_indices is not None:
         old_indices = spec["runtime"]["gpu_indices"]
         if not args.gpu_indices or len(set(args.gpu_indices)) != len(args.gpu_indices) or not set(args.gpu_indices).issubset(old_indices):
@@ -326,6 +348,15 @@ def main():
             cfg["on_policy"]["nemo_gym"]["global_config"][name]["responses_api_models"]["vllm_model"]["num_workers"] = len(spec["runtime"]["gpu_indices"])
         for key, runtime_key in (("actor_python", "gym_actor_python"), ("source_root", "gym_source"), ("venv_dir", "gym_venvs")):
             cfg["on_policy"]["nemo_gym"][key] = spec["runtime"][runtime_key]
+    if "pilot_batch" in spec:
+        policy = cfg["policy"]
+        dtensor = policy["dtensor_cfg"]
+        workers = cfg["cluster"]["num_nodes"] * cfg["cluster"]["gpus_per_node"]
+        model_parallel = dtensor["tensor_parallel_size"] * dtensor["context_parallel_size"]
+        if workers % model_parallel or policy["train_global_batch_size"] % (
+            (workers // model_parallel) * policy["train_micro_batch_size"]
+        ):
+            raise ValueError("Pilot global batch must divide evenly into DP ranks and microbatches")
     if args.teacher_model is not None:
         cfg["teachers"][0]["remote"]["model"] = args.teacher_model
     if args.teacher_url is not None:
@@ -377,6 +408,10 @@ def main():
         "projection_reuse": projection_reuse,
         "tokenizer_mode": spec["arms"][args.arm]["tokenizer_mode"],
         "baseline_schedule_preserved": False, "baseline_run_modified": False}
+    if "pilot_batch" in spec:
+        receipt["pilot_batch"] = deepcopy(spec["pilot_batch"])
+        receipt["teacher_request_micro_batch_size"] = teacher["train_micro_batch_size"]
+        receipt["teacher_chat_template_kwargs"] = teacher["tokenizer"]["chat_template_kwargs"]
     (run / "pilot-plan.json").write_text(json.dumps(receipt, indent=2) + "\n")
     print(json.dumps(receipt, indent=2))
     if args.run:

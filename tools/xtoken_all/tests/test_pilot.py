@@ -437,3 +437,28 @@ def test_pilot_checker_is_not_the_two_step_smoke_checker(tmp_path, failure):
     result = checker.assess(tmp_path)
     assert result["success"] is (failure is None)
     assert result["steps_expected"] == 200
+
+@pytest.mark.parametrize("micro", [32, 16])
+def test_arm_b_thinking_30_step_batch(micro):
+    settings = yaml.safe_load((TOOLS / "pilot_b_think_30.yaml").read_text())
+    assert settings["pilot_batch"]["micro_batch_size"] == 32
+    settings["pilot_batch"]["micro_batch_size"] = micro
+    old = baseline()
+    old["teachers"][0]["remote"].update(score_mode="topk", top_k=20, max_score_elements=4000000)
+    old["teachers"][0]["train_micro_batch_size"] = 1
+    cfg = pilot.pilot_config(old, settings, "same", PurePosixPath("/root/old"), PurePosixPath("/root/new"),
+                            PurePosixPath("/old-source"), PurePosixPath("/new-source"), "host:6379")
+    assert cfg["distillation"]["max_num_steps"] == 30
+    assert cfg["checkpointing"]["save_period"] == 10
+    assert cfg["policy"]["scheduler"][0]["kwargs"]["total_iters"] == 3
+    assert cfg["policy"]["scheduler"][1]["kwargs"]["T_max"] == 27
+    assert cfg["distillation"]["num_prompts_per_step"] == cfg["policy"]["train_global_batch_size"] == 128
+    assert cfg["policy"]["train_micro_batch_size"] == micro
+    assert cfg["teachers"][0]["train_micro_batch_size"] == 1
+    assert cfg["teachers"][0]["remote"]["max_score_elements"] == 128 * 2048 * 21
+    assert cfg["teachers"][0]["projection_matrix_path"] is None
+    assert cfg["policy"]["tokenizer"]["chat_template_kwargs"] == {"enable_thinking": True}
+    assert cfg["teachers"][0]["tokenizer"]["chat_template_kwargs"] == {"enable_thinking": True}
+    for model in ("policy_model", "policy_model_reasoning_off"):
+        assert cfg["on_policy"]["nemo_gym"]["global_config"][model]["responses_api_models"]["vllm_model"]["chat_template_kwargs"] == {"enable_thinking": True}
+    assert old["policy"]["train_global_batch_size"] == 4
