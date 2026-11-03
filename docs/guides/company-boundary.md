@@ -269,6 +269,11 @@ The teacher HTTP microbatch is inherited independently of the learner
 microbatch. The top-k element cap covers one batch at the configured
 student context limit.
 
+For a cross-tokenizer recipe with `pilot_batch`, the teacher must retain a
+matching projection and its own tokenizer. The top-k element cap uses the
+teacher sequence limit because the scoring input is retokenized. The
+teacher HTTP microbatch still comes from the baseline.
+
 Run `--check-only` before training. If the learner reports CUDA OOM,
 use a fresh run ID and `--train-micro-batch-size 16`. Keep the global
 batch at 128 and preserve the first run's logs. On four DP ranks,

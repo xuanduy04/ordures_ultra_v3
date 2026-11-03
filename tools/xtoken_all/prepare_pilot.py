@@ -142,14 +142,19 @@ def pilot_config(baseline, spec, arm, old_run, run, old_source, source, ray_addr
             raise ValueError("Pilot batch sizes must be positive integers")
         teacher = cfg["teachers"][0]
         remote = teacher["remote"]
-        if teacher["projection_matrix_path"] is not None or remote["score_mode"] != "topk":
-            raise ValueError("pilot_batch currently requires same-tokenizer remote top-k scoring")
+        if remote["score_mode"] != "topk":
+            raise ValueError("pilot_batch requires remote top-k scoring")
+        cross = spec["arms"][arm]["tokenizer_mode"] == "cross"
+        if cross and teacher["projection_matrix_path"] is None:
+            raise ValueError("Cross-tokenizer pilot_batch requires a matching projection")
         cfg["policy"]["train_global_batch_size"] = global_size
         cfg["policy"]["train_micro_batch_size"] = micro_size
         cfg["distillation"]["num_prompts_per_step"] = global_size
         teacher["train_global_batch_size"] = global_size
         # Keep the inherited teacher HTTP request batch independent of the learner microbatch.
-        remote["max_score_elements"] = global_size * cfg["policy"]["max_total_sequence_length"] * (remote["top_k"] + 1)
+        score_length = (cfg["on_policy"]["teacher_max_total_sequence_length"] if cross
+                        else cfg["policy"]["max_total_sequence_length"])
+        remote["max_score_elements"] = global_size * score_length * (remote["top_k"] + 1)
     return cfg
 
 

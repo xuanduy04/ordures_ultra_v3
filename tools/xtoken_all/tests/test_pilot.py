@@ -462,3 +462,32 @@ def test_arm_b_thinking_30_step_batch(micro):
     for model in ("policy_model", "policy_model_reasoning_off"):
         assert cfg["on_policy"]["nemo_gym"]["global_config"][model]["responses_api_models"]["vllm_model"]["chat_template_kwargs"] == {"enable_thinking": True}
     assert old["policy"]["train_global_batch_size"] == 4
+
+
+@pytest.mark.parametrize("micro", [32, 16])
+def test_cross_pilot_batch_uses_teacher_context_and_keeps_projection(micro):
+    settings = spec()
+    settings["pilot_batch"] = {"global_batch_size": 128, "micro_batch_size": micro}
+    old = baseline()
+    old["teachers"][0]["remote"].update(score_mode="topk", top_k=20, max_score_elements=4000000)
+    old["teachers"][0]["train_micro_batch_size"] = 1
+    cfg = pilot.pilot_config(old, settings, "cross", PurePosixPath("/root/old"), PurePosixPath("/root/new"),
+                            PurePosixPath("/old-source"), PurePosixPath("/new-source"), "host:6379")
+    teacher = cfg["teachers"][0]
+    assert teacher["projection_matrix_path"] == old["teachers"][0]["projection_matrix_path"]
+    assert teacher["tokenizer"] == old["teachers"][0]["tokenizer"]
+    assert teacher["remote"]["max_score_elements"] == 128 * 4096 * 21
+    assert teacher["train_micro_batch_size"] == 1
+    assert cfg["policy"]["train_micro_batch_size"] == micro
+    assert cfg["distillation"]["num_prompts_per_step"] == cfg["policy"]["train_global_batch_size"] == 128
+
+
+def test_cross_pilot_batch_refuses_missing_projection():
+    settings = spec()
+    settings["pilot_batch"] = {"global_batch_size": 128, "micro_batch_size": 32}
+    old = baseline()
+    old["teachers"][0]["remote"]["score_mode"] = "topk"
+    old["teachers"][0]["projection_matrix_path"] = None
+    with pytest.raises(ValueError, match="requires a matching projection"):
+        pilot.pilot_config(old, settings, "cross", PurePosixPath("/root/old"), PurePosixPath("/root/new"),
+                           PurePosixPath("/old-source"), PurePosixPath("/new-source"), "host:6379")
