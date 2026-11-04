@@ -289,10 +289,10 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
                 and "text" in output_item_dict["summary"][0]
             )
 
-            # Malformed thinking-tag detection moved to apply_reward_penalties in
-            # nemo_rl/experience/rollouts.py (token-ID + string checks). The
+            # Malformed thinking-tag detection moved to apply_penalty_detection in
+            # nemo_rl/algorithms/advantage_penalties/detectors.py (token-ID + string checks). The
             # per-message has_malformed_thinking flag is now set there when
-            # grpo.penalize_malformed_thinking is enabled.
+            # grpo.advantage_penalty.malformed_thinking.enabled is true.
 
             if is_output_message:
                 assistant_message_content = output_item_dict["content"][0]["text"]

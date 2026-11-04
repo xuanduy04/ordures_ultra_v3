@@ -24,7 +24,6 @@ from nemo_rl.algorithms.advantage_estimator import (
     OPDAdvantageEstimator,
 )
 from nemo_rl.algorithms.advantage_penalties import (
-    DEFAULT_MAX_ADVANTAGE_PENALTY,
     AdvantagePenaltyConfig,
     apply_advantage_penalties,
     create_advantage_penalties,
@@ -1417,7 +1416,7 @@ def async_grpo_train(
     )
     for penalty in advantage_penalties:
         for config in penalty.penalties:
-            print(f"  ✓ {config.name} uses {config.normalizer.name} normalization for advantage penalties")
+            print(f"  ✓ {config.name} uses {config.settings.normalizer.name} normalization for advantage penalties")
 
     assert not colocated_inference, (
         "Colocated inference is not supported for async GRPO. Please use non-colocated inference."
@@ -2013,74 +2012,6 @@ def async_grpo_train(
                     )
                     del prompt_ids_for_adv
 
-                    # 2. N-gram repetition penalty
-                    advantage_penalty_cfg = master_config["grpo"].get("advantage_penalty", {})
-                    n_gram_cfg = advantage_penalty_cfg.get("n_gram_repetition", {})
-                    if n_gram_cfg.get("enabled", False):
-                        n_gram_repetition_weight = n_gram_cfg.get(
-                            "weight", advantage_penalty_cfg.get("default_weight", 0.1)
-                        )
-                        n_gram_repetition_size = n_gram_cfg.get("size", 20)
-                        n_gram_repetition_threshold = n_gram_cfg.get("threshold", 4)
-                        max_advantage_penalty = -abs(
-                            n_gram_cfg.get(
-                                "max_advantage_penalty",
-                                advantage_penalty_cfg.get(
-                                    "default_max_advantage_penalty", DEFAULT_MAX_ADVANTAGE_PENALTY
-                                ),
-                            )
-                        )
-                        n_gram_repetition_degree = torch.tensor(
-                            apply_reward_shaping(
-                                repeated_batch,
-                                cfg=cast(
-                                    RewardShapingConfig,
-                                    {
-                                        "enabled": True,
-                                        "n_gram_repetition_weight": 1.0,
-                                        "n_gram_size": n_gram_repetition_size,
-                                        "n_gram_threshold": n_gram_repetition_threshold,
-                                    },
-                                ),
-                                dry_run=True,
-                                verbose=False,
-                            )["n_gram_penalty"],
-                            dtype=torch.float64,
-                        ).abs()  # abs: higher = more repetition
-
-                        # Norm over the batch, same as the flags: least repetitive -> 0, the rest pushed down
-                        std = n_gram_repetition_degree.std(unbiased=False)
-                        if std > 0:
-                            n_gram_penalties = (
-                                -(n_gram_repetition_degree - n_gram_repetition_degree.min()) / (2 * std)
-                            ).clamp(min=max_advantage_penalty)
-                        else:  # everyone repeats equally: no signal to learn from this anyways
-                            n_gram_penalties = torch.zeros_like(n_gram_repetition_degree)
-                        # Add to adv_penalties for logging
-                        adv_penalties[f"{n_gram_repetition_size}-gram repetition (max penality of sequence)"] = (
-                            n_gram_penalties
-                        )
-
-                        # Spread each rollout's penalty over its repeated tokens, in proportion to their repetition degree
-                        for i, message_log in enumerate(repeated_batch["message_log"]):
-                            token_offset = 0
-                            for j, message in enumerate(message_log):
-                                msg_len = len(message["token_ids"])
-                                is_assistant = message["role"] == "assistant" and "generation_logprobs" in message
-                                if is_assistant and "n_gram_repetition_mask" in message:
-                                    repeat_mask = message["n_gram_repetition_mask"].to(
-                                        device=train_data["advantages"].device, dtype=train_data["advantages"].dtype
-                                    )
-                                    if repeat_mask.max() > 0:
-                                        penalty = n_gram_repetition_weight * n_gram_penalties[i].item()
-                                        print(
-                                            f"Setting negative advantage (max_penalty={penalty:.3f}) for {n_gram_repetition_size}-gram repetition in assistant message {i} turn {j}",
-                                            flush=True,
-                                        )
-                                        train_data["advantages"][i, token_offset : token_offset + msg_len].add_(
-                                            repeat_mask / repeat_mask.max() * penalty
-                                        )
-                                token_offset += msg_len
                     if adv_penalties:
                         print(
                             "  📊 Advantage penalties stats:\n"

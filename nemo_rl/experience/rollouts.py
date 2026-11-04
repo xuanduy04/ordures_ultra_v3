@@ -14,6 +14,7 @@ import torch
 from transformers import PreTrainedTokenizerBase
 from wandb import Histogram
 
+from nemo_rl.algorithms.advantage_penalties.detectors import apply_penalty_detection
 from nemo_rl.data.interfaces import DatumSpec, FlatMessagesType, LLMMessageLogType
 from nemo_rl.data.llm_message_utils import batched_message_log_to_flat_message, get_keys_from_message_log
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
@@ -960,308 +961,6 @@ def apply_empty_generation_gate(results: list[dict], master_config: dict | None)
     return num_gated
 
 
-def _n_gram_repetition_mask(token_ids: torch.Tensor, n_gram_size: int, repetition_threshold: int) -> torch.Tensor:
-    """Per-token overlap-count mask for repeated N-grams via rolling hash.
-
-    Each position holds how many N-gram windows, whose occurrence rank is at least `repetition_threshold`, cover it. The
-    first `repetition_threshold - 1` occurrences of each distinct N-gram are exempt.
-
-    Uses a single-modulus polynomial hash (2^61 - 1) for O(T) counting.
-    """
-    _N_GRAM_HASH_BASE = 1_000_003
-    _N_GRAM_HASH_MODULUS = (1 << 61) - 1
-
-    token_id_list = token_ids.tolist()
-    num_tokens = len(token_id_list)
-    repetition_mask = torch.zeros(num_tokens)
-    if num_tokens < n_gram_size:
-        return repetition_mask
-    rolling_hash = 0
-    for token_id in token_id_list[:n_gram_size]:
-        rolling_hash = (rolling_hash * _N_GRAM_HASH_BASE + token_id) % _N_GRAM_HASH_MODULUS
-    oldest_token_multiplier = pow(_N_GRAM_HASH_BASE, n_gram_size - 1, _N_GRAM_HASH_MODULUS)
-    occurrence_counts = {}
-    for window_end in range(n_gram_size - 1, num_tokens):
-        occurrence_counts[rolling_hash] = occurrence_counts.get(rolling_hash, 0) + 1
-        if occurrence_counts[rolling_hash] >= repetition_threshold:
-            repetition_mask[window_end - n_gram_size + 1 : window_end + 1] += 1.0
-        if window_end < num_tokens - 1:
-            rolling_hash = (
-                (rolling_hash - token_id_list[window_end - n_gram_size + 1] * oldest_token_multiplier)
-                * _N_GRAM_HASH_BASE
-                + token_id_list[window_end + 1]
-            ) % _N_GRAM_HASH_MODULUS
-    return repetition_mask
-
-
-def apply_reward_penalties(results: list[dict], master_config: dict | None) -> dict[str, int]:
-    """Apply reward penalties to results, setting reward to 0.0 when triggered.
-
-    All penalties are gated by master_config flags. Returns a dict of penalty counts keyed by penalty name.
-
-    NOTE: These penalties assume Gym-path message_log structure where roles strictly alternate "user" → "assistant".
-    Tool responses are folded into user prompt tokens by _postprocess_nemo_gym_to_nemo_rl_result and never appear as
-    separate message_log entries. Do not call from non-Gym rollout paths.
-
-    Penalties:
-      1. penalize_duplicated_reasoning (text-based) Checks response["output"] items. If a "reasoning" item's summary
-         text exactly matches the next item's content text (after strip), the model is copying its thinking into the
-         final answer verbatim. Data: full_result["response"]["output"] — reasoning has summary[0]["text"], message has
-         content[0]["text"].
-
-      2. penalize_empty_final_answer (text-based) Walks response["output"] in reverse to find the last message-type
-         item. If no message item exists or its content text is empty, the model failed to produce a final answer.
-         Skipped when the last output item is a function_call (model was mid-agentic-loop, not producing an empty
-         answer). Data: full_result["response"]["output"] — message items have content[0]["text"]. Advantage-level flag
-         (grpo.advantage_penalty.empty_final_answer.enabled): additionally marks the final assistant message with
-         has_empty_final_answer for the negative-advantage clamp in grpo.py.
-
-      3. penalize_eos_token (token-based) The EOS token(s) (default ids "2,11", configurable via token_ids.eos as a
-         single integer or comma-separated integers, e.g. "2,177") should never appear in any assistant generation.
-         Checks message_log assistant entries. Data: message_log[i]["token_ids"] where role == "assistant".
-         Advantage-level flag (grpo.advantage_penalty.eos_token.enabled): additionally marks every assistant message
-         from the first EOS-bearing message to the final message with has_eos_token for the negative-advantage clamp in
-         grpo.py.
-
-      4. penalize_malformed_thinking (token-based + string-based) Two complementary checks to catch malformed think
-         tags: a) Token ID check: infers thinking mode from prompt token counts. If prompt has open==close:
-         enable_thinking=False, expect 0 open and 0 close in generation. If prompt has open==close+1:
-         enable_thinking=True, expect 0 open and 1 close in generation. Any other prompt pattern or mismatched
-         generation counts is a violation. Token IDs configurable via token_ids.think_open / token_ids.think_close. b)
-         String check: the model can spell out <think>/</think> with piecemeal regular tokens (e.g. "<", "/", "thi",
-         "nk", ">") that bypass special token IDs. Checks generation_str (decoded generation text) per output item:
-         "<think>" count must be 0 (always in prompt, never generated), "</think>" count must be 0 or 1. Data:
-         message_log pairs for token IDs, full_result output items for strings. Advantage-level flag
-         (grpo.advantage_penalty.malformed_thinking.enabled): additionally marks each violative assistant message with
-         has_malformed_thinking for the negative-advantage clamp in grpo.py
-
-      5. penalize_n_gram_repetition (token-based) Counts repeated N-gram windows
-         (grpo.advantage_penalty.n_gram_repetition.size / grpo.advantage_penalty.n_gram_repetition.threshold) within
-         each assistant generation via rolling hash and attaches a per-token overlap-count mask (n_gram_repetition_mask)
-         to each assistant message. grpo.py subtracts (mask).clamp(min=0) *
-         grpo.advantage_penalty.n_gram_repetition.weight from the token advantages. Data: message_log[i]["token_ids"]
-         where role == "assistant".
-    """
-    counts = {
-        "duplicated_reasoning": 0,
-        "empty_final_answer": 0,
-        "eos_token": 0,
-        "malformed_thinking": 0,
-        "n_gram_repetition": 0,
-    }
-    if not master_config or not results:
-        return counts
-
-    grpo_cfg = master_config.get("grpo") or {}
-    advantage_penalty_cfg = grpo_cfg.get("advantage_penalty") or {}
-
-    # Guard: penalties rely on Gym-path message_log (strictly alternating user/assistant roles).
-    # Non-Gym paths may have "environment", "tool", or "system" roles which these checks don't handle.
-    any_penalty_enabled = any(
-        master_config.get(flag, False)
-        for flag in (
-            "penalize_duplicated_reasoning",
-            "penalize_empty_final_answer",
-            "penalize_eos_token",
-            "penalize_malformed_thinking",
-        )
-    )
-    any_penalty_enabled = any_penalty_enabled or any(
-        advantage_penalty_cfg.get(flag, {}).get("enabled", False)
-        for flag in ("empty_final_answer", "eos_token", "malformed_thinking", "n_gram_repetition")
-    )
-    if any_penalty_enabled:
-        for result in results:
-            roles = {msg.get("role") for msg in result["message_log"]}
-            assert roles <= {"user", "assistant"}, (
-                f"apply_reward_penalties requires Gym-path message_log with only 'user' and 'assistant' roles, "
-                f"but found roles: {roles}. These penalties are not supported for non-Gym rollout paths."
-            )
-
-    # --- Penalty 1: Duplicated reasoning / final answer ---
-    if master_config.get("penalize_duplicated_reasoning", False):
-        for result in results:
-            output_items = result["full_result"].get("response", {}).get("output", [])
-            is_duplicated = False
-            for item1, item2 in zip(output_items, output_items[1:]):
-                if item1.get("type") != "reasoning":
-                    continue
-                summary = item1.get("summary", [])
-                if not summary or "text" not in summary[0]:
-                    continue
-                reasoning_text = summary[0]["text"].strip()
-                content = item2.get("content", "")
-                if isinstance(content, list) and content and "text" in content[0]:
-                    chat_text = content[0]["text"].strip()
-                elif isinstance(content, str):
-                    chat_text = content.strip()
-                else:
-                    continue
-                if reasoning_text and chat_text and reasoning_text == chat_text:
-                    is_duplicated = True
-                    break
-            if is_duplicated:
-                result["full_result"]["reward"] = 0.0
-
-                counts["duplicated_reasoning"] += 1
-
-    # --- Penalty 2: Empty final answer ---
-    if master_config.get("penalize_empty_final_answer", False) or advantage_penalty_cfg.get(
-        "empty_final_answer", {}
-    ).get("enabled", False):
-        for result in results:
-            output_items = result["full_result"].get("response", {}).get("output", [])
-            # Skip if the last output item is a function_call — it is legit for model to
-            # produce reasoning and then a function_call as the last output item in PivotRL
-            if output_items and output_items[-1].get("type") == "function_call":
-                continue
-            final_answer_text = None
-            for item in reversed(output_items):
-                # Skip items without content (function_call, function_call_output, etc.)
-                if "content" not in item:
-                    continue
-                content = item["content"]
-                if isinstance(content, list) and content and "text" in content[0]:
-                    final_answer_text = content[0]["text"].strip()
-                    break
-                elif isinstance(content, str):
-                    final_answer_text = content.strip()
-                    break
-            if final_answer_text is None or final_answer_text.strip() == "":
-                counts["empty_final_answer"] += 1
-                if master_config.get("penalize_empty_final_answer", False):
-                    result["full_result"]["reward"] = 0.0
-
-                if advantage_penalty_cfg.get("empty_final_answer", {}).get("enabled", False):
-                    for msg in reversed(result["message_log"]):
-                        if msg["role"] == "assistant":
-                            msg["has_empty_final_answer"] = True
-                            break
-
-    # --- Penalty 3: EOS token in generation ---
-    if master_config.get("penalize_eos_token", False) or advantage_penalty_cfg.get("eos_token", {}).get(
-        "enabled", False
-    ):
-        token_ids_cfg = master_config.get("token_ids", {})
-        eos_cfg = token_ids_cfg.get("eos", "2,11")
-        if isinstance(eos_cfg, str):
-            eos_token_ids: set[int] = set()
-            for part in eos_cfg.split(","):
-                part = part.strip()
-                if not part:
-                    continue
-                try:
-                    eos_token_ids.add(int(part))
-                except ValueError:
-                    raise ValueError(
-                        f"Invalid token_ids.eos entry {part!r} in {eos_cfg!r}; "
-                        "expected comma-separated integer token IDs."
-                    ) from None
-            if not eos_token_ids:
-                raise ValueError(f"token_ids.eos value {eos_cfg!r} contains no token IDs.")
-        else:
-            try:
-                eos_token_ids: set[int] = {int(eos_cfg)}
-            except ValueError:
-                raise ValueError(f"Invalid token_ids.eos entry '{eos_cfg!r}'; expected integer token IDs.") from None
-
-        for result in results:
-            first_eos_idx = None
-            for idx, msg in enumerate(result["message_log"]):
-                if msg["role"] == "assistant" and any(
-                    eos_token_id in msg["token_ids"] for eos_token_id in eos_token_ids
-                ):
-                    first_eos_idx = idx
-                    counts["eos_token"] += 1
-                    break
-            if first_eos_idx is not None:
-                if master_config.get("penalize_eos_token", False):
-                    result["full_result"]["reward"] = 0.0
-                if advantage_penalty_cfg.get("eos_token", {}).get("enabled", False):
-                    # Advantage-level flag: punish from the literal first EOS token in
-                    # generation until the final token, assistant turns only.
-                    for msg in result["message_log"][first_eos_idx:]:
-                        if msg["role"] == "assistant":
-                            msg["has_eos_token"] = True
-
-    # --- Penalty 4: Malformed think tags (token ID + string) ---
-    if master_config.get("penalize_malformed_thinking", False) or advantage_penalty_cfg.get(
-        "malformed_thinking", {}
-    ).get("enabled", False):
-        token_ids_cfg = master_config.get("token_ids", {})
-        think_open_token_id = token_ids_cfg.get("think_open", 12)
-        think_close_token_id = token_ids_cfg.get("think_close", 13)
-        for result in results:
-            has_violation = False
-            # 4a) Token ID check per (user, assistant) turn pair
-            # Infer thinking mode from prompt token counts:
-            #   enable_thinking=True:  prompt has open=close+1 (trailing <think>), expect asst: 0 open, 1 close
-            #   enable_thinking=False: prompt has open=close (balanced), expect asst: 0 open, 0 close
-            msgs = result["message_log"]
-            for i in range(len(msgs) - 1):
-                if msgs[i]["role"] == "user" and msgs[i + 1]["role"] == "assistant":
-                    user_ids = msgs[i]["token_ids"]
-                    asst_ids = msgs[i + 1]["token_ids"]
-                    prompt_open = (user_ids == think_open_token_id).sum().item()
-                    prompt_close = (user_ids == think_close_token_id).sum().item()
-                    asst_open = (asst_ids == think_open_token_id).sum().item()
-                    asst_close = (asst_ids == think_close_token_id).sum().item()
-                    if prompt_open == prompt_close:
-                        # enable_thinking=False: both tags in prompt, none in generation
-                        expected_open, expected_close = 0, 0
-                    elif prompt_open == prompt_close + 1:
-                        # enable_thinking=True: trailing <think> in prompt, expect </think> in generation
-                        expected_open, expected_close = 0, 1
-                    else:
-                        # Unexpected prompt pattern — flag as violation
-                        has_violation = True
-                        if advantage_penalty_cfg.get("malformed_thinking", {}).get("enabled", False):
-                            msgs[i + 1]["has_malformed_thinking"] = True
-                        continue
-                    if asst_open != expected_open or asst_close != expected_close:
-                        has_violation = True
-                        if advantage_penalty_cfg.get("malformed_thinking", {}).get("enabled", False):
-                            msgs[i + 1]["has_malformed_thinking"] = True
-            # 4b) String check on generation_str per output item
-            output_items = result["full_result"].get("response", {}).get("output", [])
-            assistant_msgs = [msg for msg in msgs if msg["role"] == "assistant"]
-            gen_item_idx = 0
-            for item in output_items:
-                gen_str = item.get("generation_str", "")
-                if not gen_str:
-                    continue
-                if gen_str.count("<think>") > 0 or gen_str.count("</think>") > 1:
-                    has_violation = True
-                    if advantage_penalty_cfg.get("malformed_thinking", {}).get("enabled", False) and gen_item_idx < len(
-                        assistant_msgs
-                    ):
-                        assistant_msgs[gen_item_idx]["has_malformed_thinking"] = True
-                gen_item_idx += 1  # increment idx only for generation turns
-            if has_violation:
-                counts["malformed_thinking"] += 1
-                if master_config.get("penalize_malformed_thinking", False):
-                    result["full_result"]["reward"] = 0.0
-
-    # --- Penalty 5: N-gram repetition (token-based, advantage-level) ---
-    n_gram_cfg = advantage_penalty_cfg.get("n_gram_repetition", {})
-    if n_gram_cfg.get("enabled", False):
-        n_gram_size = int(n_gram_cfg.get("size", 4))
-        n_gram_threshold = int(n_gram_cfg.get("threshold", 2))
-        for result in results:
-            sample_repeated = False
-            for msg in result["message_log"]:
-                if msg["role"] != "assistant":
-                    continue
-                repeat_mask = _n_gram_repetition_mask(msg["token_ids"], n_gram_size, n_gram_threshold)
-                msg["n_gram_repetition_mask"] = repeat_mask
-                if bool(repeat_mask.any()):
-                    sample_repeated = True
-            if sample_repeated:
-                counts["n_gram_repetition"] += 1
-
-    return counts
-
-
 async def run_async_nemo_gym_rollout(
     policy_generation: GenerationInterface,
     input_batch: BatchedDataDict[DatumSpec],
@@ -1436,7 +1135,7 @@ def _postprocess_single_group(
                 else:
                     lengths3[2].append(lengths[i])
 
-    penalty_counts = apply_reward_penalties(results, master_config)
+    penalty_counts = apply_penalty_detection(results, master_config)
 
     # Prepare for the rollout metrics calculation below. Not strictly necessary here, but good to have parity with `run_async_multi_turn_rollout`
     with timer.time(f"{timer_prefix}/prepare_for_metrics_calculation", should_log=False):
@@ -1576,21 +1275,18 @@ def _postprocess_single_group(
         rollout_metrics["mean_length_high"] = sum(lengths3[2]) / len(lengths3[2])
         rollout_metrics["median_length_high"] = float(np.median(lengths3[2]))
 
-    # Penalty metrics — map count keys to (config flag, metric name)
+    # Penalty metrics — map detection count keys to rollout metric names
     _PENALTY_METRICS = {
-        "duplicated_reasoning": ("penalize_duplicated_reasoning", None, "reasoning_equal_to_final_answer_rate"),
-        "empty_final_answer": ("penalize_empty_final_answer", "empty_final_answer", "empty_final_answer_rate"),
-        "eos_token": ("penalize_eos_token", "eos_token", "eos_token_rate"),
-        "malformed_thinking": ("penalize_malformed_thinking", "malformed_thinking", "malformed_thinking_rate"),
-        "n_gram_repetition": (None, "n_gram_repetition", "n_gram_repetition_rate"),
+        "empty_final_answer": "empty_final_answer_rate",
+        "eos_token": "eos_token_rate",
+        "malformed_thinking": "malformed_thinking_rate",
+        "n_gram_repetition": "n_gram_repetition_rate",
     }
     if master_config and results:
         grpo_cfg = master_config.get("grpo") or {}
         advantage_penalty_cfg = grpo_cfg.get("advantage_penalty") or {}
-        for key, (top_level_flag, penalty_block_key, metric_name) in _PENALTY_METRICS.items():
-            if (top_level_flag and master_config.get(top_level_flag, False)) or (
-                penalty_block_key and advantage_penalty_cfg.get(penalty_block_key, {}).get("enabled", False)
-            ):
+        for key, metric_name in _PENALTY_METRICS.items():
+            if advantage_penalty_cfg.get(key, {}).get("enabled", False):
                 rollout_metrics[metric_name] = penalty_counts[key] / len(results)
 
     ng_task_index = None

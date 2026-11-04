@@ -7,13 +7,17 @@ from nemo_rl.algorithms.advantage_estimator import (
     ReinforcePlusPlusAdvantageEstimator,
 )
 from nemo_rl.algorithms.advantage_penalties import (
-    DEFAULT_ADVANTAGE_PENALTY_WEIGHT,
     FlagAdvantagePenalty,
-    FlagAdvantagePenaltySpec,
     apply_advantage_penalties,
     create_advantage_penalties,
     normalize_penalty_signal,
 )
+from nemo_rl.algorithms.advantage_penalties.base_advantage_penalty import (
+    DEFAULT_ADVANTAGE_PENALTY_WEIGHT,
+    AdvantagePenaltySpec,
+    BaseAdvantagePenaltySettings,
+)
+from nemo_rl.algorithms.advantage_penalties.flag_advantage_penalty import FlagAdvantagePenaltyDefinition
 
 
 def _make_normalizer(name: str):
@@ -34,6 +38,19 @@ def _make_message(role, n_tokens, flag_keys, generated):
     for key in flag_keys:
         message[key] = True
     return message
+
+
+def _make_flag_spec(
+    name, config_key, message_key, assistant_only, weight=1.0, normalizer=None, max_advantage_penalty=6767
+):
+    return AdvantagePenaltySpec(
+        definition=FlagAdvantagePenaltyDefinition(
+            name=name, config_key=config_key, message_key=message_key, assistant_only=assistant_only
+        ),
+        settings=BaseAdvantagePenaltySettings(
+            weight=weight, normalizer=normalizer, max_advantage_penalty=max_advantage_penalty
+        ),
+    )
 
 
 def test_normalize_penalty_signal_matches_old_batch_formula():
@@ -141,8 +158,8 @@ def test_reinforce_group_normalization_flag_reflects_baseline_mode():
 def test_flag_compute_signal_assistant_only_and_any_role():
     penalty = FlagAdvantagePenalty(
         penalties=[
-            FlagAdvantagePenaltySpec(name="any", config_key="any", message_key="flag_any", assistant_only=False),
-            FlagAdvantagePenaltySpec(name="asst", config_key="asst", message_key="flag_asst", assistant_only=True),
+            _make_flag_spec("any", "any", "flag_any", assistant_only=False),
+            _make_flag_spec("asst", "asst", "flag_asst", assistant_only=True),
         ]
     )
     batch = {
@@ -165,7 +182,7 @@ def test_flag_compute_signal_assistant_only_and_any_role():
 
 
 def test_flag_apply_adds_penalty_to_offending_message_only():
-    configs = [FlagAdvantagePenaltySpec(name="c", config_key="c", message_key="flag", assistant_only=False, weight=2.0)]
+    configs = [_make_flag_spec("c", "c", "flag", assistant_only=False, weight=2.0)]
     penalty = FlagAdvantagePenalty(penalties=configs)
     batch = {
         "message_log": [
@@ -184,7 +201,7 @@ def test_flag_apply_adds_penalty_to_offending_message_only():
 
 
 def test_flag_apply_skips_zero_penalties():
-    configs = [FlagAdvantagePenaltySpec(name="c", config_key="c", message_key="flag", assistant_only=False, weight=1.0)]
+    configs = [_make_flag_spec("c", "c", "flag", assistant_only=False, weight=1.0)]
     penalty = FlagAdvantagePenalty(penalties=configs)
     batch = {"message_log": [[_make_message("assistant", 4, ["flag"], generated=True)]]}
     advantages = torch.zeros(1, 4)
@@ -209,10 +226,10 @@ def test_apply_advantage_penalties_matches_old_inline_code():
     penalties = [
         FlagAdvantagePenalty(
             penalties=[
-                FlagAdvantagePenaltySpec(
-                    name="c",
-                    config_key="c",
-                    message_key="flag",
+                _make_flag_spec(
+                    "c",
+                    "c",
+                    "flag",
                     assistant_only=False,
                     weight=1.0,
                     normalizer=_make_normalizer("reinforce_plus_plus"),
@@ -257,9 +274,9 @@ def test_create_advantage_penalties_flag_configs():
     assert isinstance(flag, FlagAdvantagePenalty)
     configs = {c.name: c for c in flag.penalties}
     assert set(configs) == {"invalid_tool_call", "generate_eos_token", "empty_final_answer"}
-    assert configs["invalid_tool_call"].weight == 0.3
-    assert configs["generate_eos_token"].weight == DEFAULT_ADVANTAGE_PENALTY_WEIGHT
-    assert configs["empty_final_answer"].weight == DEFAULT_ADVANTAGE_PENALTY_WEIGHT
+    assert configs["invalid_tool_call"].settings.weight == 0.3
+    assert configs["generate_eos_token"].settings.weight == DEFAULT_ADVANTAGE_PENALTY_WEIGHT
+    assert configs["empty_final_answer"].settings.weight == DEFAULT_ADVANTAGE_PENALTY_WEIGHT
 
 
 def test_create_advantage_penalties_default_weight_fallback():
@@ -268,7 +285,7 @@ def test_create_advantage_penalties_default_weight_fallback():
 
     penalties = create_advantage_penalties(grpo_config, loss_config)
 
-    assert penalties[0].penalties[0].weight == 0.1
+    assert penalties[0].penalties[0].settings.weight == 0.1
 
 
 def test_create_advantage_penalties_grpo_normalizer():
@@ -279,7 +296,7 @@ def test_create_advantage_penalties_grpo_normalizer():
 
     penalties = create_advantage_penalties(grpo_config, loss_config)
 
-    assert isinstance(penalties[0].penalties[0].normalizer, GRPOAdvantageEstimator)
+    assert isinstance(penalties[0].penalties[0].settings.normalizer, GRPOAdvantageEstimator)
 
 
 def test_create_advantage_penalties_per_penalty_normalizer_override():
@@ -295,7 +312,7 @@ def test_create_advantage_penalties_per_penalty_normalizer_override():
     penalties = create_advantage_penalties(grpo_config, loss_config)
 
     assert len(penalties) == 1
-    normalizers_by_penalty = {spec.name: type(spec.normalizer) for spec in penalties[0].penalties}
+    normalizers_by_penalty = {spec.name: type(spec.settings.normalizer) for spec in penalties[0].penalties}
     assert normalizers_by_penalty["invalid_tool_call"] is ReinforcePlusPlusAdvantageEstimator
     assert normalizers_by_penalty["malformed_thinking"] is GRPOAdvantageEstimator
 
@@ -313,9 +330,9 @@ def test_create_advantage_penalties_per_penalty_max_override():
     penalties = create_advantage_penalties(grpo_config, loss_config)
 
     assert len(penalties) == 1
-    max_by_penalty = {spec.name: spec.max_advantage_penalty for spec in penalties[0].penalties}
+    max_by_penalty = {spec.name: spec.settings.max_advantage_penalty for spec in penalties[0].penalties}
     assert max_by_penalty["invalid_tool_call"] == 200
-    assert max_by_penalty["empty_final_answer"] == -1.67
+    assert max_by_penalty["empty_final_answer"] == 1.67
 
 
 def test_create_advantage_penalties_rejects_unknown_normalizer():
