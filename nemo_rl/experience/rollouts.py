@@ -933,7 +933,7 @@ def _make_histogram(values: list[float], num_buckets: int = 20) -> dict[str, Any
 
 
 def _calculate_single_metric(
-    values: list[float], batch_size: int, key_name: str, percentile: list[int] | None = None, histogram: bool = False
+    values: list[float], batch_size: int, key_name: str, *, percentile: list[int] | None = None, histogram: bool = False
 ) -> dict[str, Any]:
     """Compute the standard summary metrics (mean/max/min/median/stddev) for a list of sample values.
 
@@ -1229,7 +1229,7 @@ def _postprocess_single_group(
                 batch_size,
                 "gen_tokens_per_sample",
                 percentile=[60, 70, 80, 90],
-                historgram=True,
+                histogram=True,
             ),
             **_calculate_single_metric(max_gen_tokens_per_turn_values, batch_size, "max_gen_tokens_per_turn"),
             **_calculate_single_metric(

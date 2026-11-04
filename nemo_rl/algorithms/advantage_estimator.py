@@ -13,15 +13,29 @@ Reference papers:
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+import warnings
 
 import torch
+
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, Any, Mapping, NotRequired, TypedDict
 
 from nemo_rl.algorithms.utils import calculate_baseline_and_std_per_prompt, calculate_batch_level_baseline, calculate_kl
 
 if TYPE_CHECKING:
     from torch import Tensor
+
+
+class AdvantageEstimatorConfig(TypedDict):
+    """Configuration for advantage estimator."""
+
+    name: str
+
+    # GRPO specific
+    normalize_rewards: NotRequired[bool]
+    use_leave_one_out_baseline: NotRequired[bool]
+    # Reinforce++ specific
+    minus_baseline: NotRequired[bool]
 
 
 class BaseAdvantageEstimator(ABC):
@@ -356,3 +370,70 @@ ADVANTAGE_ESTIMATOR_MAPPING: dict[str, type[BaseAdvantageEstimator]] = {
     "reinforce_plus_plus": ReinforcePlusPlusAdvantageEstimator,
     # "opd": OPDAdvantageEstimator,  # OPD is removed from this dict due to it requiring unique configurations
 }
+
+
+def create_advantage_estimator(master_config: Mapping[str, Any]) -> BaseAdvantageEstimator:
+    """Create and return an advantage estimator based on configuration.
+
+    Args:
+        master_config: The master configuration dictionary.
+
+    Returns:
+        An advantage estimator instance.
+
+    Raises:
+        ValueError: If the advantage estimator name is not recognized.
+    """
+    grpo_config = master_config["grpo"]
+    loss_config = master_config["loss_fn"]
+
+    # Provide backward-compatible defaults when advantage_estimator is not in config.
+    # Fall back to top-level grpo.normalize_rewards / grpo.use_leave_one_out_baseline
+    # which older configs still use.
+    advantage_estimator_config = grpo_config.get(
+        "advantage_estimator",
+        # default =
+        {
+            "name": "grpo",
+            "normalize_rewards": grpo_config.get("normalize_rewards", True),
+            "use_leave_one_out_baseline": grpo_config.get("use_leave_one_out_baseline", False),
+            "minus_baseline": True,
+        },
+    )
+
+    advantage_estimator_name = advantage_estimator_config["name"]
+    if advantage_estimator_name == "opd":
+        opd_cfg = master_config.get("on_policy_distillation", {})
+        opd_estimator_config = {
+            "name": "opd",
+            "opd_advantage_weight": opd_cfg.get("opd_advantage_weight", 1.0),
+            "opd_advantage_clip_low": opd_cfg.get("opd_advantage_clip_low", -6767),
+            "opd_advantage_clip_high": opd_cfg.get("opd_advantage_clip_high", 6767),
+            "orm_advantage_estimator": opd_cfg.get("orm_advantage_estimator", {}),
+            "orm_advantage_weight": opd_cfg.get("orm_advantage_weight", 0.0),
+            "orm_advantage_clip_low": opd_cfg.get("orm_advantage_clip_low", -6767),
+            "orm_advantage_clip_high": opd_cfg.get("orm_advantage_clip_high", 6767),
+            "zero_out_of_bounds_advantages": opd_cfg.get("zero_out_of_bounds_advantages", False),
+        }
+        advantage_estimator = OPDAdvantageEstimator(opd_estimator_config, loss_config)
+        print("  ✓ Using OPD advantage estimator")
+
+        # Warn if loss_fn is not configured per MOPD paper recommendations
+        if not loss_config.get("disable_ppo_ratio", False):
+            warnings.warn("OPD recommends loss_fn.disable_ppo_ratio: true (REINFORCE-style, MOPD Eq. 7)")
+        if not loss_config.get("use_importance_sampling_correction", False):
+            warnings.warn("OPD recommends loss_fn.use_importance_sampling_correction: true (MOPD Eq. 8 w_t)")
+        if loss_config.get("truncated_importance_sampling_type", "default") != "icepop":
+            warnings.warn("OPD recommends loss_fn.truncated_importance_sampling_type: 'icepop' (hard gate, MOPD Eq. 8)")
+    else:
+        if advantage_estimator_name not in ADVANTAGE_ESTIMATOR_MAPPING:
+            raise ValueError(
+                f"Invalid advantage_estimator name: {advantage_estimator_name}. "
+                f"Supported estimators are: {sorted(ADVANTAGE_ESTIMATOR_MAPPING.keys())} and 'opd'"
+            )
+        advantage_estimator = ADVANTAGE_ESTIMATOR_MAPPING[advantage_estimator_name](
+            advantage_estimator_config, loss_config
+        )
+        print(f"  ✓ Using {advantage_estimator.name} advantage estimator")
+
+    return advantage_estimator

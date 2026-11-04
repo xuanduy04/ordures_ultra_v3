@@ -18,11 +18,7 @@ from transformers import AutoProcessor
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 from nemo_rl.algorithms import opd_outsource as opd_module
-from nemo_rl.algorithms.advantage_estimator import (
-    ADVANTAGE_ESTIMATOR_MAPPING,
-    BaseAdvantageEstimator,
-    OPDAdvantageEstimator,
-)
+from nemo_rl.algorithms.advantage_estimator import AdvantageEstimatorConfig, create_advantage_estimator
 from nemo_rl.algorithms.advantage_penalties import (
     AdvantagePenaltyConfig,
     apply_advantage_penalties,
@@ -109,17 +105,6 @@ class AsyncGRPOConfig(TypedDict):
     max_inflight_prompt_groups_override: NotRequired[int]
 
 
-class AdvEstimatorConfig(TypedDict):
-    """Configuration for advantage estimator (GRPO or Reinforce++)."""
-
-    name: str  # "grpo" or "reinforce_plus_plus"
-    # GRPO specific
-    normalize_rewards: NotRequired[bool]
-    use_leave_one_out_baseline: NotRequired[bool]
-    # Reinforce++ specific
-    minus_baseline: NotRequired[bool]
-
-
 class GRPOConfig(TypedDict):
     num_prompts_per_step: int
     num_generations_per_prompt: int
@@ -160,11 +145,11 @@ class GRPOConfig(TypedDict):
     # Sequence-level logprob error masking for training stability. If set, mask sequences with mult_prob_error exceeding this threshold (same scale as token_mult_prob_error metric, e.g., 1.5)
     # Note that this is slightly different than Masked Importance Sampling (MIS) because this uses the absolute value of the difference between the training and generation logprobs, whereas MIS just uses the difference between the training and generation logprobs.
     seq_logprob_error_threshold: float | None
-    # ---- Advantage penalties ----
+    # Advantage penalties
     advantage_penalty: NotRequired[AdvantagePenaltyConfig]
 
     # Advantage estimator configuration (grpo or reinforce_plus_plus)
-    adv_estimator: NotRequired[AdvEstimatorConfig]
+    advantage_estimator: NotRequired[AdvantageEstimatorConfig]
 
 
 class GRPOSaveState(TypedDict):
@@ -940,71 +925,6 @@ def _should_log_hashed_nemo_gym_responses(master_config: MasterConfig) -> bool:
     return should_log_hashed_nemo_gym_responses
 
 
-def _create_advantage_estimator(master_config: MasterConfig) -> BaseAdvantageEstimator:
-    """Create and return an advantage estimator based on configuration.
-
-    Args:
-        master_config: The master configuration dictionary.
-
-    Returns:
-        An advantage estimator instance.
-
-    Raises:
-        ValueError: If the advantage estimator name is not recognized.
-    """
-    grpo_config = master_config["grpo"]
-    loss_config = master_config["loss_fn"]
-
-    # Provide backward-compatible defaults when adv_estimator is not in config.
-    # Fall back to top-level grpo.normalize_rewards / grpo.use_leave_one_out_baseline
-    # which older configs still use.
-    adv_estimator_config = grpo_config.get(
-        "adv_estimator",
-        # default =
-        {
-            "name": "grpo",
-            "normalize_rewards": grpo_config.get("normalize_rewards", True),
-            "use_leave_one_out_baseline": grpo_config.get("use_leave_one_out_baseline", False),
-            "minus_baseline": True,
-        },
-    )
-
-    adv_estimator_name = adv_estimator_config["name"]
-    if adv_estimator_name == "opd":
-        opd_cfg = master_config.get("on_policy_distillation", {})
-        opd_estimator_config = {
-            "name": "opd",
-            "opd_advantage_weight": opd_cfg.get("opd_advantage_weight", 1.0),
-            "opd_advantage_clip_low": opd_cfg.get("opd_advantage_clip_low", -6767),
-            "opd_advantage_clip_high": opd_cfg.get("opd_advantage_clip_high", 6767),
-            "orm_advantage_estimator": opd_cfg.get("orm_advantage_estimator", {}),
-            "orm_advantage_weight": opd_cfg.get("orm_advantage_weight", 0.0),
-            "orm_advantage_clip_low": opd_cfg.get("orm_advantage_clip_low", -6767),
-            "orm_advantage_clip_high": opd_cfg.get("orm_advantage_clip_high", 6767),
-            "zero_out_of_bounds_advantages": opd_cfg.get("zero_out_of_bounds_advantages", False),
-        }
-        adv_estimator = OPDAdvantageEstimator(opd_estimator_config, loss_config)
-        print("  ✓ Using OPD advantage estimator")
-
-        # Warn if loss_fn is not configured per MOPD paper recommendations
-        if not loss_config.get("disable_ppo_ratio", False):
-            warnings.warn("OPD recommends loss_fn.disable_ppo_ratio: true (REINFORCE-style, MOPD Eq. 7)")
-        if not loss_config.get("use_importance_sampling_correction", False):
-            warnings.warn("OPD recommends loss_fn.use_importance_sampling_correction: true (MOPD Eq. 8 w_t)")
-        if loss_config.get("truncated_importance_sampling_type", "default") != "icepop":
-            warnings.warn("OPD recommends loss_fn.truncated_importance_sampling_type: 'icepop' (hard gate, MOPD Eq. 8)")
-    else:
-        if adv_estimator_name not in ADVANTAGE_ESTIMATOR_MAPPING:
-            raise ValueError(
-                f"Invalid adv_estimator name: {adv_estimator_name}. "
-                f"Supported estimators are: {sorted(ADVANTAGE_ESTIMATOR_MAPPING.keys())} and 'opd'"
-            )
-        adv_estimator = ADVANTAGE_ESTIMATOR_MAPPING[adv_estimator_name](adv_estimator_config, loss_config)
-        print(f"  ✓ Using {adv_estimator.name} advantage estimator")
-
-    return adv_estimator
-
-
 def _malloc_trim() -> None:
     """Return freed glibc heap arenas to the OS to reduce RSS.
 
@@ -1408,13 +1328,9 @@ def async_grpo_train(
         )
     colocated_inference = master_config["policy"]["generation"]["colocated"]["enabled"]
 
-    # Initialize advantage estimator
-    adv_estimator = _create_advantage_estimator(master_config)
-
-    # Initialize advantage penalties
-    advantage_penalties = create_advantage_penalties(
-        cast(dict[str, Any], master_config["grpo"]), cast(dict, master_config["loss_fn"])
-    )
+    # Initialize advantage estimator and advantage penalties
+    advantage_estimator = create_advantage_estimator(master_config)
+    advantage_penalties = create_advantage_penalties(master_config["grpo"], cast(dict, master_config["loss_fn"]))
     for penalty in advantage_penalties:
         for config in penalty.penalties:
             print(f"  ✓ {config.name} uses {config.settings.normalizer.name} normalization for advantage penalties")
@@ -1973,7 +1889,7 @@ def async_grpo_train(
                     if seq_error_result["updated_sample_mask"] is not None:
                         train_data["sample_mask"] = seq_error_result["updated_sample_mask"]
 
-                # Compute advantages with adv_estimator using correct mask and logprobs
+                # Compute advantages with advantage_estimator using correct mask and logprobs
                 with timer.time("advantage_calculation"):
                     print("▶ Computing advantages...", flush=True)
                     # Get token-level mask: token_mask * sample_mask
@@ -1981,7 +1897,7 @@ def async_grpo_train(
                     sample_mask = train_data["sample_mask"]
                     mask = token_mask * sample_mask.unsqueeze(-1)
 
-                    train_data["advantages"] = adv_estimator.compute_advantage(
+                    train_data["advantages"] = advantage_estimator.compute_advantage(
                         prompt_ids=prompt_ids_for_adv,
                         rewards=rewards,
                         mask=mask,
@@ -2114,8 +2030,14 @@ def async_grpo_train(
                     "loss": train_results["loss"].numpy(),
                     "grad_norm": train_results["grad_norm"].numpy(),
                     "mean_prompt_length": repeated_batch["length"].numpy(),
+                    "total_num_tokens": input_lengths.numpy(),
                     # Add masked advantages tracking metrics (only for valid response tokens)
-                    **_calculate_single_metric(response_advantages.detach().cpu().tolist() if response_advantages.numel() > 0 else [0.0, 0.0], response_advantages.numel(), "final_advantages"),
+                    **_calculate_single_metric(
+                        response_advantages.detach().cpu().tolist() if response_advantages.numel() > 0 else [0.0, 0.0],
+                        response_advantages.numel() if response_advantages.numel() > 0 else 2,
+                        "final_advantages",
+                        percentile=[10, 90],
+                    ),
                 }
                 del flat_advantages
                 del flat_token_mask
@@ -2143,8 +2065,8 @@ def async_grpo_train(
                 metrics.update(rollout_metrics)
                 del rollout_metrics, aggregated_rollout_metrics
 
-                if hasattr(adv_estimator, "last_metrics") and adv_estimator.last_metrics:
-                    metrics.update(adv_estimator.last_metrics)
+                if hasattr(advantage_estimator, "last_metrics") and advantage_estimator.last_metrics:
+                    metrics.update(advantage_estimator.last_metrics)
                 if hasattr(policy_generation, "get_step_metrics"):
                     gen_step_metrics = policy_generation.get_step_metrics()
                     metrics.update(gen_step_metrics)

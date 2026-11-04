@@ -668,7 +668,7 @@ def mock_grpo_components():
                 "max_trajectory_age_steps": 1,
             },
             "seq_logprob_error_threshold": None,
-            "adv_estimator": {
+            "advantage_estimator": {
                 "name": "grpo",
                 "use_leave_one_out_baseline": False,
                 "normalize_rewards": True,
