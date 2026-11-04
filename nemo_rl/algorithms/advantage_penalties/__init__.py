@@ -49,6 +49,7 @@ class AdvantagePenaltyConfig(TypedDict):
     empty_final_answer: NotRequired[FlagAdvantagePenaltyConfig]
     # 5. N-gram repetition, subtracted from token advantages.
     n_gram_repetition: NotRequired[NGramAdvantagePenaltyConfig]
+    
     # Weight used by any enabled penalty that does not set its own weight.
     default_weight: NotRequired[float]
     # Advantage estimator used to normalize the penalty channels' pseudo-rewards.

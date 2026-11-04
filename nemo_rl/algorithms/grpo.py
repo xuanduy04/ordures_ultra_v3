@@ -56,6 +56,7 @@ from nemo_rl.distributed.virtual_cluster import (
 )
 from nemo_rl.environments.interfaces import EnvironmentInterface
 from nemo_rl.environments.nemo_gym import NemoGym, NemoGymConfig, get_nemo_gym_uv_cache_dir, get_nemo_gym_venv_dir
+from nemo_rl.experience.rollouts import _calculate_single_metric
 from nemo_rl.models.generation.interfaces import GenerationInterface
 from nemo_rl.models.generation.vllm import VllmConfig, VllmGeneration
 from nemo_rl.models.policy import PolicyConfig
@@ -2002,8 +2003,8 @@ def async_grpo_train(
 
                     # Apply advantage-level penalties (GDPO-style)
 
-                    # 1. Flag based penalties
-                    # adv_penalties serves as a helper variable for penalty assignment and logging
+                    # adv_penalties currently serves as a helper variable for penalty assignment and logging
+                    # TODO: of course, remove or do some more things with this data (e.g. running a bunch of `_calculate_single_metric` in the below `metric` for more detailed logging). To be considered in the future
                     adv_penalties = apply_advantage_penalties(
                         advantages=train_data["advantages"],
                         batch=repeated_batch,
@@ -2111,20 +2112,10 @@ def async_grpo_train(
 
                 metrics = {
                     "loss": train_results["loss"].numpy(),
-                    "reward": rewards.numpy(),
                     "grad_norm": train_results["grad_norm"].numpy(),
                     "mean_prompt_length": repeated_batch["length"].numpy(),
-                    "total_num_tokens": input_lengths.numpy(),
                     # Add masked advantages tracking metrics (only for valid response tokens)
-                    "advantages/mean": torch.mean(response_advantages).detach().item()
-                    if response_advantages.numel() > 0
-                    else 0.0,
-                    "advantages/max": torch.max(response_advantages).detach().item()
-                    if response_advantages.numel() > 0
-                    else 0.0,
-                    "advantages/min": torch.min(response_advantages).detach().item()
-                    if response_advantages.numel() > 0
-                    else 0.0,
+                    **_calculate_single_metric(response_advantages.detach().cpu().tolist() if response_advantages.numel() > 0 else [0.0, 0.0], response_advantages.numel(), "final_advantages"),
                 }
                 del flat_advantages
                 del flat_token_mask

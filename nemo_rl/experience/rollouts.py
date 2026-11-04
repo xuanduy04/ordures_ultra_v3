@@ -12,7 +12,6 @@ from typing import Any, AsyncGenerator, Optional
 import ray
 import torch
 from transformers import PreTrainedTokenizerBase
-from wandb import Histogram
 
 from nemo_rl.algorithms.advantage_penalties.detectors import apply_penalty_detection
 from nemo_rl.data.interfaces import DatumSpec, FlatMessagesType, LLMMessageLogType
@@ -25,6 +24,7 @@ from nemo_rl.models.generation.interfaces import (
     GenerationInterface,
     GenerationOutputSpec,
 )
+from nemo_rl.utils.logger import _pct
 from nemo_rl.utils.timer import Timer
 import numpy as np
 
@@ -817,14 +817,6 @@ def run_async_multi_turn_rollout(
             if key not in final_batch:
                 final_batch[key] = input_batch[key]
 
-        # Helper for percentile (buffer starvation diagnostics)
-        def _pct(values: list[float], p: float) -> float:
-            if not values:
-                return 0.0
-            sorted_v = sorted(values)
-            idx = min(int(len(sorted_v) * p / 100), len(sorted_v) - 1)
-            return float(sorted_v[idx])
-
         turn_counts = [m["turn_count"] for m in all_sample_metrics]
         max_gen_tokens_per_turn_values = [m["max_gen_tokens_per_turn"] for m in all_sample_metrics]
 
@@ -892,15 +884,82 @@ class AsyncNemoGymRolloutResult:
     ng_task_index: Optional[int]
 
 
-def _calculate_single_metric(values: list[float], batch_size: int, key_name: str) -> dict:
+def _make_histogram(values: list[float], num_buckets: int = 20) -> dict[str, Any]:
+    """Build a compact quantile-bucket histogram from raw sample values.
+
+    Buckets are quantile-based so the representation is fixed-size and cheap to store. The returned dict is understood
+    by the TensorBoard logger backend.
+
+    Args:
+        values: Raw sample values.
+        num_buckets: Number of quantile buckets.
+
+    Returns:
+        Dict with ``bins`` (num_buckets + 1 edges), ``counts`` (num_buckets), and the exact summary stats ``min``,
+        ``max``, ``num``, ``sum``, ``sum_squares``.
+    """
+    if not values:
+        bins: list[float] = []
+        counts: list[float] = []
+        vmin = vmax = 0.0
+        num = 0
+        total = total_squares = 0.0
+    else:
+        vmin = min(values)
+        vmax = max(values)
+        quantiles = np.quantile(values, np.linspace(0.0, 1.0, num_buckets + 1))
+        edges = np.unique(quantiles)
+        if edges.size == 1:
+            # All values identical: widen to a single non-degenerate bucket.
+            edges = np.array([edges[0], edges[0] + 1.0])
+        elif edges.size < num_buckets + 1:
+            # Tied values collapsed some quantile edges; re-spread them evenly so the bucket count stays fixed.
+            edges = np.linspace(edges[0], edges[-1], num_buckets + 1)
+        bins = [float(edge) for edge in edges]
+        counts = [float(count) for count in np.histogram(values, bins=edges)[0]]
+        num = len(values)
+        total = float(sum(values))
+        total_squares = float(sum(v * v for v in values))
+
     return {
-        f"{key_name}/mean": sum(values) / batch_size,
-        f"{key_name}/max": max(values),
+        "bins": bins,
+        "counts": counts,
+        "min": vmin,
+        "max": vmax,
+        "num": num,
+        "sum": total,
+        "sum_squares": total_squares,
+    }
+
+
+def _calculate_single_metric(
+    values: list[float], batch_size: int, key_name: str, percentile: list[int] | None = None, histogram: bool = False
+) -> dict[str, Any]:
+    """Compute the standard summary metrics (mean/max/min/median/stddev) for a list of sample values.
+
+    Args:
+        values: Raw sample values.
+        batch_size: Number of samples the metric is normalized against.
+        key_name: Metric name used as the key prefix.
+        histogram: If True, also emit a compact quantile histogram under ``f"{key_name}/histogram"``.
+
+    Returns:
+        Dict mapping metric names to values.
+    """
+    metrics: dict[str, Any] = {
         f"{key_name}/min": min(values),
+        f"{key_name}/max": max(values),
+        f"{key_name}/mean": sum(values) / batch_size,
         f"{key_name}/median": statistics.median(values),
         f"{key_name}/stddev": statistics.stdev(values) if len(values) > 1 else math.nan,
-        f"{key_name}/histogram": Histogram(values),
     }
+    if percentile:
+        for p in percentile:
+            if 0 <= p <= 100:
+                metrics[f"{key_name}/p{p}"] = _pct(values, p)
+    if histogram:
+        metrics[f"{key_name}/histogram"] = _make_histogram(values)
+    return metrics
 
 
 def apply_empty_generation_gate(results: list[dict], master_config: dict | None) -> int:
@@ -1158,29 +1217,24 @@ def _postprocess_single_group(
 
     # Aggregate metrics across all samples
     with timer.time(f"{timer_prefix}/aggregate_metrics", should_log=False):
-        turn_counts = [m["turn_count"] for m in all_sample_metrics]
         max_gen_tokens_per_turn_values = [m["max_gen_tokens_per_turn"] for m in all_sample_metrics]
 
-        def _pct(values: list[float], p: float) -> float:
-            if not values:
-                return 0.0
-            sorted_v = sorted(values)
-            idx = min(int(len(sorted_v) * p / 100), len(sorted_v) - 1)
-            return float(sorted_v[idx])
-
         rollout_metrics = {
-            **_calculate_single_metric(turn_counts, batch_size, "turns_per_sample"),
-            "turns_per_sample/p95": _pct(turn_counts, 95),
-            "turns_per_sample/p99": _pct(turn_counts, 99),
+            **_calculate_single_metric([m["turn_count"] for m in all_sample_metrics], batch_size, "turns_per_sample"),
             **_calculate_single_metric(
                 [m["total_tokens"] for m in all_sample_metrics], batch_size, "total_tokens_per_sample"
             ),
             **_calculate_single_metric(
-                [m["assistant_tokens"] for m in all_sample_metrics], batch_size, "gen_tokens_per_sample"
+                [m["assistant_tokens"] for m in all_sample_metrics],
+                batch_size,
+                "gen_tokens_per_sample",
+                percentile=[60, 70, 80, 90],
+                historgram=True,
             ),
             **_calculate_single_metric(max_gen_tokens_per_turn_values, batch_size, "max_gen_tokens_per_turn"),
-            "max_gen_tokens_per_turn/p95": _pct(max_gen_tokens_per_turn_values, 95),
-            **_calculate_single_metric([m["total_reward"] for m in all_sample_metrics], batch_size, "total_reward"),
+            **_calculate_single_metric(
+                [m["total_reward"] for m in all_sample_metrics], batch_size, "total_reward", histogram=True
+            ),
             "natural_termination_rate": sum(not m["hit_max_tokens"] for m in all_sample_metrics) / batch_size,
             "truncation_rate": sum(m["hit_max_tokens"] for m in all_sample_metrics) / batch_size,
             # TODO enable this metric. We don't have a clear handle on which tokens are user or tool role.

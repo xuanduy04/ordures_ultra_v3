@@ -150,6 +150,25 @@ class TensorboardLogger(LoggerInterface):
             if prefix:
                 name = f"{prefix}/{name}"
 
+            if isinstance(value, dict) and all(
+                key in value for key in ["min", "max", "num", "sum", "sum_squares", "bins", "counts"]
+            ):
+                try:
+                    self.writer.add_histogram_raw(
+                        name,
+                        min=value["min"],
+                        max=value["max"],
+                        num=value["num"],
+                        sum=value["sum"],
+                        sum_squares=value["sum_squares"],
+                        bucket_limits=value["bins"][1:],
+                        bucket_counts=value["counts"],
+                        global_step=step,
+                    )
+                except Exception as e:
+                    print(f"Warning: Failed to log histogram '{name}' to TensorBoard: {e}")
+                continue
+
             scalar = self._coerce_to_scalar(value)
             if scalar is None:
                 print(
@@ -1385,3 +1404,12 @@ def log_container_init_timing() -> None:
         print(f"  driver_startup (launch+python+imports): {driver_startup:.1f}s")
     print(f"  total: {total:.1f}s")
     print("=" * 60 + "\n", flush=True)
+
+
+# Helper for percentile logging
+def _pct(values: list[float], p: float) -> float:
+    if not values:
+        return 0.0
+    sorted_v = sorted(values)
+    idx = min(int(len(sorted_v) * p / 100), len(sorted_v) - 1)
+    return float(sorted_v[idx])

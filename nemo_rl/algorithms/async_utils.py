@@ -23,6 +23,7 @@ from nemo_rl.data.interfaces import DatumSpec
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.environments.interfaces import EnvironmentInterface
 from nemo_rl.models.generation.interfaces import GenerationInterface
+from nemo_rl.utils.logger import _pct
 from nemo_rl.utils.timer import ThreadSafeTimer
 
 TokenizerType = PreTrainedTokenizerBase
@@ -120,13 +121,6 @@ class ReplayBuffer:
                 tc = self._rollout_metrics_turn_count_for_diagnostics(rm)
                 if tc is not None:
                     turn_counts_list.append(tc)
-
-            def _pct(values: list[float], p: float) -> float:
-                if not values:
-                    return 0.0
-                sorted_v = sorted(values)
-                idx = min(int(len(sorted_v) * p / 100), len(sorted_v) - 1)
-                return float(sorted_v[idx])
 
             info["starvation_diagnostics"] = {
                 "trajectory_duration_s": {
