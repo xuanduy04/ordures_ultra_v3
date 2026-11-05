@@ -1,5 +1,3 @@
-
-
 from typing import Any, Literal, NotRequired, TypedDict
 
 from nemo_rl.models.generation.interfaces import GenerationConfig

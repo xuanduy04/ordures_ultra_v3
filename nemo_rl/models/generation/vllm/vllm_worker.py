@@ -1,5 +1,3 @@
-
-
 import copy
 import gc
 import logging
@@ -17,11 +15,7 @@ from transformers import AutoConfig
 
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.distributed.worker_group_utils import get_nsight_config_if_pattern_matches
-from nemo_rl.models.generation.interfaces import (
-    GenerationDatumSpec,
-    GenerationOutputSpec,
-    verify_right_padding,
-)
+from nemo_rl.models.generation.interfaces import GenerationDatumSpec, GenerationOutputSpec, verify_right_padding
 from nemo_rl.models.generation.vllm.config import VllmConfig
 from nemo_rl.models.generation.vllm.utils import format_prompt_for_vllm_generation
 from nemo_rl.models.huggingface.common import ModelFlag
@@ -45,8 +39,8 @@ class BaseVllmGenerationWorker:
     ) -> tuple[dict[str, Any], dict[str, str], dict[str, Any]]:
         """Provides complete worker configuration for vLLM tensor and pipeline parallelism.
 
-        This method configures the worker based on its role in tensor and pipeline parallelism,
-        which is determined directly from the bundle_indices parameter.
+        This method configures the worker based on its role in tensor and pipeline parallelism, which is determined
+        directly from the bundle_indices parameter.
 
         Args:
             num_gpus: Original GPU allocation for this worker based on the placement group
@@ -87,7 +81,9 @@ class BaseVllmGenerationWorker:
             init_kwargs["seed"] = seed
             # Need to give each DP group its own vllm cache to address:
             # https://github.com/vllm-project/vllm/issues/18851
-            env_vars["VLLM_CACHE_ROOT"] = os.environ.get("VLLM_CACHE_ROOT", os.path.expanduser("~/.cache/vllm")) + f"_{seed}"
+            env_vars["VLLM_CACHE_ROOT"] = (
+                os.environ.get("VLLM_CACHE_ROOT", os.path.expanduser("~/.cache/vllm")) + f"_{seed}"
+            )
 
             # Give each vLLM engine a deterministic starting port for TP/DP
             # rendezvous, below the OS ephemeral range floor (9000 on OCI-HSG,
@@ -153,12 +149,12 @@ class BaseVllmGenerationWorker:
 
         Args:
             config: Configuration dictionary for the policy
-            bundle_indices: List of local bundle indices within a node for parallelism.
-                          Only needed for the first worker in each tied worker group.
+            bundle_indices: List of local bundle indices within a node for parallelism. Only needed for the first worker
+                in each tied worker group.
             fraction_of_gpus: Fraction of GPUs to use for this worker
             seed: Random seed for initialization
-            defer_model_load: If True, skip model loading during init. Call
-                _load_model() later to perform the heavy model loading.
+            defer_model_load: If True, skip model loading during init. Call _load_model() later to perform the heavy
+                model loading.
         """
         from nemo_rl.distributed.numa_utils import bind_to_gpu_numa
 
@@ -180,11 +176,7 @@ class BaseVllmGenerationWorker:
             self._load_model(bundle_indices, seed)
 
     def _init_config(
-        self,
-        config: VllmConfig,
-        bundle_indices: Optional[list[int]],
-        fraction_of_gpus: float,
-        seed: Optional[int],
+        self, config: VllmConfig, bundle_indices: Optional[list[int]], fraction_of_gpus: float, seed: Optional[int]
     ):
         """Lightweight config setup. No model loading, no heavy imports."""
         self.cfg = config
@@ -218,9 +210,8 @@ class BaseVllmGenerationWorker:
     def _apply_vllm_patches(self):
         """Apply file-on-disk patches to vLLM and flashinfer source files.
 
-        These patches are idempotent (check before writing) and applied
-        early during ``_init_config`` so that **all** workers -- including
-        non-model-owners -- see the patched files before any vLLM import.
+        These patches are idempotent (check before writing) and applied early during ``_init_config`` so that **all**
+        workers -- including non-model-owners -- see the patched files before any vLLM import.
         """
         from vllm.logger import init_logger
 
@@ -229,9 +220,8 @@ class BaseVllmGenerationWorker:
         def _get_vllm_file(relative_path: str) -> str:
             """Return absolute path to a vLLM file or raise if it cannot be found.
 
-            The relative_path should be a POSIX-style path under the vllm
-            package root, e.g. "v1/executor/ray_executor.py" or
-            "attention/layer.py".
+            The relative_path should be a POSIX-style path under the vllm package root, e.g.
+            "v1/executor/ray_executor.py" or "attention/layer.py".
             """
             spec = find_spec("vllm")
             if spec is None or not spec.submodule_search_locations:
@@ -258,10 +248,9 @@ class BaseVllmGenerationWorker:
         def _locked_file_patch(file_path: str):
             """Yield (content, writer) under an exclusive file lock.
 
-            Multiple workers on the same node call _apply_vllm_patches
-            concurrently.  Without a lock, one worker's ``open(path, "w")``
-            truncates the file while another is reading it, causing spurious
-            "expected code snippet not found" warnings.
+            Multiple workers on the same node call _apply_vllm_patches concurrently.  Without a lock, one worker's
+            ``open(path, "w")`` truncates the file while another is reading it, causing spurious "expected code snippet
+            not found" warnings.
 
             Usage::
 
@@ -298,12 +287,11 @@ class BaseVllmGenerationWorker:
             2. Add NCCL_CUMEM_ENABLE and NCCL_NVLS_ENABLE to vLLM ADDITIONAL_ENV_VARS.
                 - This is a workaround to fix async vllm in some scenarios.
                 - See https://github.com/NVIDIA-NeMo/RL/pull/898 for more details.
-            3. Wrap the TP rendezvous RPC chain (init_worker + init_device) in an
-               EADDRINUSE retry loop.
-                - vLLM's _get_open_port() closes the socket before TCPStore.bind(),
-                  leaving a TOCTOU window where another process can grab the port.
-                - On EADDRINUSE we regenerate distributed_init_method with a fresh
-                  port and retry. load_model stays outside the retry (non-network).
+            3. Wrap the TP rendezvous RPC chain (init_worker + init_device) in an EADDRINUSE retry loop.
+                - vLLM's _get_open_port() closes the socket before TCPStore.bind(), leaving a TOCTOU window where
+                  another process can grab the port.
+                - On EADDRINUSE we regenerate distributed_init_method with a fresh port and retry. load_model stays
+                  outside the retry (non-network).
             """
             file_to_patch = _get_vllm_file("v1/executor/ray_executor.py")
 
@@ -361,20 +349,15 @@ class BaseVllmGenerationWorker:
                 if need_replace:
                     write_back(content)
 
- 
         def _patch_vllm_hermes_tool_parser_thread_safety():
             """Patch Hermes2ProToolParser.__init__ to cache tokenizer calls.
 
-            The HuggingFace tokenizer's Rust backend does not support concurrent
-            access. When multiple async requests call _preprocess_chat concurrently,
-            each one constructs a new Hermes2ProToolParser which calls
-            tokenizer.encode() and tokenizer.decode() in __init__, causing
-            "RuntimeError: Already borrowed".
+            The HuggingFace tokenizer's Rust backend does not support concurrent access. When multiple async requests
+            call _preprocess_chat concurrently, each one constructs a new Hermes2ProToolParser which calls
+            tokenizer.encode() and tokenizer.decode() in __init__, causing "RuntimeError: Already borrowed".
 
-            This patch caches the encode/decode results so only the first
-            instantiation (protected by a lock) touches the tokenizer. All
-            subsequent instantiations read from cache without any tokenizer
-            access.
+            This patch caches the encode/decode results so only the first instantiation (protected by a lock) touches
+            the tokenizer. All subsequent instantiations read from cache without any tokenizer access.
 
             Related:
             - https://github.com/vllm-project/vllm/pull/30264
@@ -383,15 +366,8 @@ class BaseVllmGenerationWorker:
             """
             file_to_patch = _get_vllm_file("tool_parsers/hermes_tool_parser.py")
 
-            old_import = (
-                "import json\n"
-                "from collections.abc import Sequence"
-            )
-            new_import = (
-                "import json\n"
-                "import threading\n"
-                "from collections.abc import Sequence"
-            )
+            old_import = "import json\nfrom collections.abc import Sequence"
+            new_import = "import json\nimport threading\nfrom collections.abc import Sequence"
 
             old_class_line = "class Hermes2ProToolParser(ToolParser):"
             new_class_line = (
@@ -486,19 +462,16 @@ class BaseVllmGenerationWorker:
         def _patch_flashinfer_mnnvl_cluster_uuid():
             """Patch flashinfer mnnvl.py to guard against empty/undecodable clusterUuid.
 
-            On single-node NVSwitch clusters, clusterUuid is all-zero bytes
-            (no multi-node NVLink domain). ctypes truncates at the first null
-            byte, producing an empty string — then ``clusterUuid[0]`` raises
-            ``IndexError``. On some hardware the raw bytes are not valid UTF-8,
-            causing ``UnicodeDecodeError`` in pynvml's ``__getattribute__``
-            before the index is even reached.
+            On single-node NVSwitch clusters, clusterUuid is all-zero bytes (no multi-node NVLink domain). ctypes
+            truncates at the first null byte, producing an empty string — then ``clusterUuid[0]`` raises ``IndexError``.
+            On some hardware the raw bytes are not valid UTF-8, causing ``UnicodeDecodeError`` in pynvml's
+            ``__getattribute__`` before the index is even reached.
 
-            Fix: wrap the clusterUuid access in a try/except so that either
-            failure safely returns ``False`` (falling back to
-            PosixFDHandleExchanger for single-node topologies).
+            Fix: wrap the clusterUuid access in a try/except so that either failure safely returns ``False`` (falling
+            back to PosixFDHandleExchanger for single-node topologies).
 
-            Upstream fix: https://github.com/flashinfer-ai/flashinfer/pull/2626
-            Related issue: https://github.com/flashinfer-ai/flashinfer/issues/2633
+            Upstream fix: https://github.com/flashinfer-ai/flashinfer/pull/2626 Related issue:
+            https://github.com/flashinfer-ai/flashinfer/issues/2633
             """
             spec = find_spec("flashinfer")
             if spec is None or not spec.submodule_search_locations:
@@ -548,11 +521,10 @@ class BaseVllmGenerationWorker:
         def _patch_nemotron_h_isinstance_check():
             """Remove the no-op isinstance branch in NemotronHModel.forward.
 
-            Tomer's vLLM fork added an ``isinstance(layer, NemotronHMoEDecoderLayer)``
-            check inside the layer loop where both branches are identical.  This
-            confuses torch.compile graph tracing on Blackwell GPUs, causing Triton
-            to fail with ``KeyError: "Unknown key: 'cubin'"`` during autotuning of
-            the Mamba SSM kernels.  Reverting to the original simple loop fixes it.
+            Tomer's vLLM fork added an ``isinstance(layer, NemotronHMoEDecoderLayer)`` check inside the layer loop where
+            both branches are identical.  This confuses torch.compile graph tracing on Blackwell GPUs, causing Triton to
+            fail with ``KeyError: "Unknown key: 'cubin'"`` during autotuning of the Mamba SSM kernels.  Reverting to the
+            original simple loop fixes it.
             """
             file_path = _get_vllm_file("model_executor/models/nemotron_h.py")
 
@@ -624,16 +596,12 @@ class BaseVllmGenerationWorker:
             # Configure vLLM for tensor/pipeline parallelism within Ray
             # Reset CUDA_VISIBLE_DEVICES to allow vLLM to manage GPU assignment
             os.environ.pop("CUDA_VISIBLE_DEVICES", None)
-            os.environ["VLLM_RAY_PER_WORKER_GPUS"] = str(
-                self.fraction_of_gpus / model_parallel_size
-            )
+            os.environ["VLLM_RAY_PER_WORKER_GPUS"] = str(self.fraction_of_gpus / model_parallel_size)
 
             # Set bundle indices for parallel workers
             bundle_indices_str = ",".join(map(str, bundle_indices))
             os.environ["VLLM_RAY_BUNDLE_INDICES"] = bundle_indices_str
-            print(
-                f"VLLM_RAY_BUNDLE_INDICES environment variable set to: {os.environ.get('VLLM_RAY_BUNDLE_INDICES')}"
-            )
+            print(f"VLLM_RAY_BUNDLE_INDICES environment variable set to: {os.environ.get('VLLM_RAY_BUNDLE_INDICES')}")
 
             # Use Ray for distributed execution in parallel mode
             vllm_kwargs["distributed_executor_backend"] = "ray"
@@ -680,9 +648,7 @@ class BaseVllmGenerationWorker:
         if self.cfg["vllm_cfg"]["precision"] == "fp8":
             from nemo_rl.models.generation.vllm.quantization.fp8 import init_fp8
 
-            fp8_kwargs = init_fp8(
-                self.cfg["vllm_cfg"], self.model_name, model_parallel_size
-            )
+            fp8_kwargs = init_fp8(self.cfg["vllm_cfg"], self.model_name, model_parallel_size)
 
             vllm_kwargs.update(fp8_kwargs)
             # overriden by quant config, however vllm complains if this not passed
@@ -690,10 +656,12 @@ class BaseVllmGenerationWorker:
 
         if not isinstance(vllm_kwargs.get("hf_overrides"), dict):
             vllm_kwargs["hf_overrides"] = {}
-        vllm_kwargs["hf_overrides"].update(
-            self.cfg["vllm_cfg"].get("hf_overrides", {}) or {}
-        )
-        if "speculative_config" in vllm_kwargs and "num_speculative_tokens" in vllm_kwargs["speculative_config"] and vllm_kwargs["speculative_config"]["num_speculative_tokens"] == 0:
+        vllm_kwargs["hf_overrides"].update(self.cfg["vllm_cfg"].get("hf_overrides", {}) or {})
+        if (
+            "speculative_config" in vllm_kwargs
+            and "num_speculative_tokens" in vllm_kwargs["speculative_config"]
+            and vllm_kwargs["speculative_config"]["num_speculative_tokens"] == 0
+        ):
             vllm_kwargs["speculative_config"] = None
 
             if not vllm_kwargs.get("enable_prefix_caching", True):
@@ -709,9 +677,7 @@ class BaseVllmGenerationWorker:
                 )
                 # disable quantization
                 vllm_kwargs["hf_overrides"]["quantization_config"] = {}
-        elif "Gemma3ForConditionalGeneration" in getattr(
-            hf_config, "architectures", []
-        ):
+        elif "Gemma3ForConditionalGeneration" in getattr(hf_config, "architectures", []):
             if self.cfg["vllm_cfg"]["skip_tokenizer_init"]:
                 print(
                     "Gemma3ForConditionalGeneration models may crash when skip_tokenizer_init is True. NeMo-RL is forcing it to False for this architecture. See https://github.com/NVIDIA-NeMo/RL/issues/1681 for more details."
@@ -774,21 +740,13 @@ class BaseVllmGenerationWorker:
 
         return list(stop_set) if stop_set else None
 
-    def _build_sampling_params(
-        self,
-        *,
-        greedy: bool,
-        stop_strings,
-        max_new_tokens: Optional[int] = None,
-    ):
+    def _build_sampling_params(self, *, greedy: bool, stop_strings, max_new_tokens: Optional[int] = None):
         top_k_cfg = self.cfg["top_k"]
         top_k_val = 1 if greedy else (top_k_cfg if top_k_cfg is not None else -1)
 
         temperature = 0.0 if greedy else self.cfg["temperature"]
 
-        max_tokens = (
-            max_new_tokens if max_new_tokens is not None else self.cfg["max_new_tokens"]
-        )
+        max_tokens = max_new_tokens if max_new_tokens is not None else self.cfg["max_new_tokens"]
 
         return self.SamplingParams(
             temperature=temperature,
@@ -816,12 +774,12 @@ class BaseVllmGenerationWorker:
     def _get_raw_spec_counters(self) -> dict[str, float | list[float]]:
         """Get speculative decoding metrics from the vLLM engine.
 
-        Collects spec decode counters including number of drafts,
-        draft tokens, and accepted tokens for monitoring acceptance rates.
+        Collects spec decode counters including number of drafts, draft tokens, and accepted tokens for monitoring
+        acceptance rates.
 
         Returns:
-            Dictionary mapping metric names to their values.
-            Values may be floats or lists of floats (for per-position metrics).
+            Dictionary mapping metric names to their values. Values may be floats or lists of floats (for per-position
+            metrics).
 
         Raises:
             AssertionError: If called before vLLM engine is initialized.
@@ -843,9 +801,7 @@ class BaseVllmGenerationWorker:
         return metrics
 
 
-@ray.remote(
-    runtime_env={**get_nsight_config_if_pattern_matches("vllm_generation_worker")}
-)  # pragma: no cover
+@ray.remote(runtime_env={**get_nsight_config_if_pattern_matches("vllm_generation_worker")})  # pragma: no cover
 class VllmGenerationWorker(BaseVllmGenerationWorker):
     def _create_engine(self, llm_kwargs: dict[str, Any]) -> None:
         import vllm
@@ -857,24 +813,8 @@ class VllmGenerationWorker(BaseVllmGenerationWorker):
             self.llm.collective_rpc("bind_numa", args=tuple())
         self.vllm_device_ids = self.report_device_id()
 
-    def init_collective(
-        self,
-        rank_prefix: int,
-        ip: str,
-        port: int,
-        world_size: int,
-        train_world_size: int,
-    ) -> None:
-        self.llm.collective_rpc(
-            "init_collective",
-            args=(
-                rank_prefix,
-                ip,
-                port,
-                world_size,
-                train_world_size,
-            ),
-        )
+    def init_collective(self, rank_prefix: int, ip: str, port: int, world_size: int, train_world_size: int) -> None:
+        self.llm.collective_rpc("init_collective", args=(rank_prefix, ip, port, world_size, train_world_size))
 
     @wrap_with_nvtx_name("vllm_genertion_worker/generate")
     def generate(
@@ -910,10 +850,7 @@ class VllmGenerationWorker(BaseVllmGenerationWorker):
         input_lengths = data["input_lengths"]
         batch_stop_strings: list[list[str]] = data.get("stop_strings", [])
         stop_strings = self._merge_stop_strings(batch_stop_strings)
-        sampling_params = self._build_sampling_params(
-            greedy=greedy,
-            stop_strings=stop_strings,
-        )
+        sampling_params = self._build_sampling_params(greedy=greedy, stop_strings=stop_strings)
 
         # verify inputs have correct padding
         verify_right_padding(data, pad_value=self.cfg["_pad_token_id"])
@@ -925,9 +862,7 @@ class VllmGenerationWorker(BaseVllmGenerationWorker):
         prompts = format_prompt_for_vllm_generation(data)
 
         # Generate outputs
-        assert self.llm is not None, (
-            "Attempting to generate with either an uninitialized vLLM or non-model-owner"
-        )
+        assert self.llm is not None, "Attempting to generate with either an uninitialized vLLM or non-model-owner"
         outputs = self.llm.generate(prompts, sampling_params)
 
         # Process the outputs - but preserve the original input padding structure
@@ -950,17 +885,13 @@ class VllmGenerationWorker(BaseVllmGenerationWorker):
             total_length = padded_input_length + max_length
 
             # Create a new tensor with the right size and fill with padding token
-            full_output = torch.full(
-                (total_length,), self.cfg["_pad_token_id"], dtype=input_ids.dtype
-            )
+            full_output = torch.full((total_length,), self.cfg["_pad_token_id"], dtype=input_ids.dtype)
 
             # Copy original input (with padding) into the beginning
             full_output[:sequence_length] = input_ids[i][:sequence_length]
 
             # Add generated tokens after the original input
-            full_output[sequence_length : sequence_length + len(generated_tokens)] = (
-                torch.tensor(generated_tokens)
-            )
+            full_output[sequence_length : sequence_length + len(generated_tokens)] = torch.tensor(generated_tokens)
 
             output_ids_list.append(full_output)
             full_logprobs = torch.zeros(total_length, dtype=torch.float32)
@@ -969,9 +900,7 @@ class VllmGenerationWorker(BaseVllmGenerationWorker):
                     for idx, logprob_dict in enumerate(generation.logprobs):
                         if logprob_dict:
                             position = sequence_length + idx
-                            full_logprobs[position] = next(iter(logprob_dict.items()))[
-                                1
-                            ].logprob
+                            full_logprobs[position] = next(iter(logprob_dict.items()))[1].logprob
                 except Exception:
                     import traceback
 
@@ -999,12 +928,8 @@ class VllmGenerationWorker(BaseVllmGenerationWorker):
             {
                 "output_ids": output_ids,
                 "logprobs": logprobs,
-                "generation_lengths": torch.tensor(
-                    generation_lengths, dtype=torch.long
-                ),
-                "unpadded_sequence_lengths": torch.tensor(
-                    unpadded_sequence_lengths, dtype=torch.long
-                ),
+                "generation_lengths": torch.tensor(generation_lengths, dtype=torch.long),
+                "unpadded_sequence_lengths": torch.tensor(unpadded_sequence_lengths, dtype=torch.long),
                 "truncated": torch.tensor(truncated_list, dtype=torch.bool),
             }
         )
@@ -1027,9 +952,7 @@ class VllmGenerationWorker(BaseVllmGenerationWorker):
         """
         # Check if async engine is enabled
         if self.cfg["vllm_cfg"]["async_engine"]:
-            raise RuntimeError(
-                "generate_text cannot be used with async_engine=True. Use generate_text_async instead."
-            )
+            raise RuntimeError("generate_text cannot be used with async_engine=True. Use generate_text_async instead.")
 
         # Extract stop_strings if provided, else use default from config
         batch_stop_strings: list[list[str] | None] = data.get(
@@ -1061,16 +984,12 @@ class VllmGenerationWorker(BaseVllmGenerationWorker):
         )
 
         # Generate outputs
-        assert self.llm is not None, (
-            "Attempting to generate with either an uninitialized vLLM or non-model-owner"
-        )
+        assert self.llm is not None, "Attempting to generate with either an uninitialized vLLM or non-model-owner"
         outputs = self.llm.generate(data["prompts"], sampling_params)
         texts = [output.outputs[0].text for output in outputs]
 
         # Convert to BatchedDataDict
-        return_data: BatchedDataDict[GenerationOutputSpec] = BatchedDataDict(
-            {"texts": texts}
-        )
+        return_data: BatchedDataDict[GenerationOutputSpec] = BatchedDataDict({"texts": texts})
         return return_data
 
     def report_device_id(self) -> list[str]:
@@ -1084,9 +1003,7 @@ class VllmGenerationWorker(BaseVllmGenerationWorker):
                 "report_device_id cannot be used with async_engine=True. Use report_device_id_async instead."
             )
 
-        list_of_worker_results = self.llm.collective_rpc(
-            "report_device_id", args=tuple()
-        )
+        list_of_worker_results = self.llm.collective_rpc("report_device_id", args=tuple())
         return cast(list[str], list_of_worker_results)
 
     def prepare_refit_info(self, state_dict_info: dict[str, Any]) -> None:
@@ -1106,17 +1023,12 @@ class VllmGenerationWorker(BaseVllmGenerationWorker):
                     "update_weights_via_ipc_zmq cannot be used with async_engine=True. Use update_weights_via_ipc_zmq_async instead."
                 )
 
-            result_or_coro = self.llm.collective_rpc(
-                "update_weights_via_ipc_zmq",
-                args=tuple(),
-            )
+            result_or_coro = self.llm.collective_rpc("update_weights_via_ipc_zmq", args=tuple())
             all_success = all([result[0] for result in result_or_coro])
             exceptions_or_none = [result[1] for result in result_or_coro]
 
             if not all_success:
-                print(
-                    f"Error: Worker failed to update weights. Result: {exceptions_or_none}"
-                )
+                print(f"Error: Worker failed to update weights. Result: {exceptions_or_none}")
                 return False
             return True
         except Exception as e:
@@ -1139,16 +1051,12 @@ class VllmGenerationWorker(BaseVllmGenerationWorker):
                     "update_weights_from_collective can only be used with async_engine=False. Use update_weights_from_collective_async instead."
                 )
 
-            result_or_coro = self.llm.collective_rpc(
-                "update_weights_from_collective", args=tuple()
-            )
+            result_or_coro = self.llm.collective_rpc("update_weights_from_collective", args=tuple())
             all_success = all([result[0] for result in result_or_coro])
             exceptions_or_none = [result[1] for result in result_or_coro]
 
             if not all_success:
-                print(
-                    f"Error: Worker failed to update weights. Result: {exceptions_or_none}"
-                )
+                print(f"Error: Worker failed to update weights. Result: {exceptions_or_none}")
                 return False
             return True
         except Exception as e:
@@ -1175,14 +1083,10 @@ class VllmGenerationWorker(BaseVllmGenerationWorker):
 
     def sleep(self):
         """Put the vLLM engine to sleep."""
-        assert self.llm is not None, (
-            "Attempting to sleep with either an uninitialized vLLM or non-model-owner"
-        )
+        assert self.llm is not None, "Attempting to sleep with either an uninitialized vLLM or non-model-owner"
 
         if self.cfg["vllm_cfg"]["async_engine"]:
-            raise RuntimeError(
-                "sleep cannot be used with async_engine=True. Use sleep_async instead."
-            )
+            raise RuntimeError("sleep cannot be used with async_engine=True. Use sleep_async instead.")
 
         # Reset the prefix cache to ensure that prefix cache is not reused after weights are updated
         self.llm.llm_engine.reset_prefix_cache()
@@ -1193,14 +1097,10 @@ class VllmGenerationWorker(BaseVllmGenerationWorker):
 
     def wake_up(self, **kwargs):
         """Wake up the vLLM engine."""
-        assert self.llm is not None, (
-            "Attempting to wake up with either an uninitialized vLLM or non-model-owner"
-        )
+        assert self.llm is not None, "Attempting to wake up with either an uninitialized vLLM or non-model-owner"
 
         if self.cfg["vllm_cfg"]["async_engine"]:
-            raise RuntimeError(
-                "wake_up cannot be used with async_engine=True. Use wake_up_async instead."
-            )
+            raise RuntimeError("wake_up cannot be used with async_engine=True. Use wake_up_async instead.")
 
         tags = kwargs.get("tags")
 

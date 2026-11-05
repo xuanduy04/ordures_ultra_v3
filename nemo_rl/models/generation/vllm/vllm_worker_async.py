@@ -1,5 +1,3 @@
-
-
 import asyncio
 import copy
 import gc
@@ -22,62 +20,44 @@ from nemo_rl.distributed.virtual_cluster import (
     _get_node_ip_local,
 )
 from nemo_rl.distributed.worker_group_utils import get_nsight_config_if_pattern_matches
-from nemo_rl.models.generation.interfaces import (
-    GenerationDatumSpec,
-    GenerationOutputSpec,
-    verify_right_padding,
-)
+from nemo_rl.models.generation.interfaces import GenerationDatumSpec, GenerationOutputSpec, verify_right_padding
 from nemo_rl.models.generation.vllm.utils import format_prompt_for_vllm_generation
 from nemo_rl.models.generation.vllm.vllm_worker import BaseVllmGenerationWorker
 
 
 def _replace_prefix_tokens(
-    tokenizer,
-    model_prefix_token_ids: list[int],
-    template_prefix_token_ids: list[int],
-    template_token_ids: list[int],
+    tokenizer, model_prefix_token_ids: list[int], template_prefix_token_ids: list[int], template_token_ids: list[int]
 ) -> list[int]:
     """This is a subroutine used inside the vLLM Chat Completion server.
 
-    This function is for fixing up the chat template-tokenized messages history
-    to match the model output tokenization up to the last assistant turn,
-    in order to preserve the monotonic tokens property for optimized multi-turn
-    training.
+    This function is for fixing up the chat template-tokenized messages history to match the model output tokenization
+    up to the last assistant turn, in order to preserve the monotonic tokens property for optimized multi-turn training.
 
-    Some environments (namely NeMo-Gym) require an OpenAI compatible server
-    endpoint rather than an inference engine handle. This is fine for the most
-    part, but it may cause issues when the environment is used as a part of
-    training.
+    Some environments (namely NeMo-Gym) require an OpenAI compatible server endpoint rather than an inference engine
+    handle. This is fine for the most part, but it may cause issues when the environment is used as a part of training.
 
-    RL training frameworks train models on token IDs, but the OpenAI compatible
-    server communicates in what is basically de-tokenized text. When multiple
-    model calls are made to the OpenAI compatible server in a single trajectory,
-    model generations in previous model calls may be re-tokenized to something
-    that is different than what was generated. This is not too big of an issue
-    (that we know of) at inference time, but the log probs the model produces
-    are different enough for the differently re-tokenized generation result that
-    it causes the training to be off policy. Off policy isn't necessarily a bad
-    thing in isolation, but this source of off-policyness may cause unexpected
-    issues if not properly accounted for. It also mis-aligns the token ID
-    sequences across model calls, which feels very strange during training.
+    RL training frameworks train models on token IDs, but the OpenAI compatible server communicates in what is basically
+    de-tokenized text. When multiple model calls are made to the OpenAI compatible server in a single trajectory, model
+    generations in previous model calls may be re-tokenized to something that is different than what was generated. This
+    is not too big of an issue (that we know of) at inference time, but the log probs the model produces are different
+    enough for the differently re-tokenized generation result that it causes the training to be off policy. Off policy
+    isn't necessarily a bad thing in isolation, but this source of off-policyness may cause unexpected issues if not
+    properly accounted for. It also mis-aligns the token ID sequences across model calls, which feels very strange
+    during training.
 
-    There are real cases where the model output string _does not match_ the chat
-    template tokenization of the parsed model output. A concrete example is
-    inconsistent whitespace tokens around tool call special tokens.
+    There are real cases where the model output string _does not match_ the chat template tokenization of the parsed
+    model output. A concrete example is inconsistent whitespace tokens around tool call special tokens.
 
-    TODO When NeMo RL supports training image generation models, we want to
-    revisit and possibly update this function. This issue occurs when the model
-    generates tokens that are de-tokenized into text or images, and then
-    re-tokenized into tokens. So if there is a situation like that with images
-    and image tokenization is non-unique, then we will need to uppdate this
-    function.
+    TODO When NeMo RL supports training image generation models, we want to revisit and possibly update this function.
+    This issue occurs when the model generates tokens that are de-tokenized into text or images, and then re-tokenized
+    into tokens. So if there is a situation like that with images and image tokenization is non-unique, then we will
+    need to uppdate this function.
 
     Example (turn-by-turn, concise; eos_token_id = 2):
         Turn 1:
             - prefill_T1 (template prefill) = [11,12,13,40,41]
             - model output = [220,17,2]  # decodes to " 4" + EOS
-            - model_prefix_token_ids = prefill_T1 + model output
-              => [11,12,13,40,41,220,17,2]
+            - model_prefix_token_ids = prefill_T1 + model output => [11,12,13,40,41,220,17,2]
 
         Turn 2 (template retokenizes prior assistant text differently):
             - template_prefix_token_ids = [11,12,13,40,41,1001,2]  # 1001 decodes to " 4"
@@ -101,10 +81,7 @@ def _replace_prefix_tokens(
             model_cut_end -= 1
 
     # Assert here to prepare for the logic below
-    if len(template_token_ids) <= len(
-        template_prefix_token_ids
-    ):
-
+    if len(template_token_ids) <= len(template_prefix_token_ids):
         error_message = f"""Found possibly non-monotonically increasing trajectory!
 Template prefix token IDs (everything before the final assistant message): {template_prefix_token_ids}
 
@@ -127,9 +104,7 @@ Template repr (detokenized): {repr(tokenizer.decode(template_token_ids))}
             break
 
     # This should never be the case, but
-    if (
-        template_cut_start < 0
-    ):
+    if template_cut_start < 0:
         error_message = f"""No EOS token ID found in the chat-templated messages!
 Template prefix token IDs (everything before the final assistant message): {template_prefix_token_ids}
 
@@ -142,28 +117,18 @@ Template repr (detokenized): {repr(tokenizer.decode(template_token_ids))}"""
             f.write(error_message)
         raise ValueError(error_message)
 
-    return (
-        model_prefix_token_ids[:model_cut_end] + template_token_ids[template_cut_start:]
-    )
+    return model_prefix_token_ids[:model_cut_end] + template_token_ids[template_cut_start:]
 
 
-@ray.remote(
-    runtime_env={**get_nsight_config_if_pattern_matches("vllm_async_generation_worker")}
-)  # pragma: no cover
+@ray.remote(runtime_env={**get_nsight_config_if_pattern_matches("vllm_async_generation_worker")})  # pragma: no cover
 class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
     def __init__(
-        self,
-        config,
-        bundle_indices=None,
-        fraction_of_gpus: float = 1.0,
-        seed=None,
-        defer_model_load: bool = False,
+        self, config, bundle_indices=None, fraction_of_gpus: float = 1.0, seed=None, defer_model_load: bool = False
     ):
         """Initialize an async vLLM worker.
 
-        When defer_model_load=True, only stores config and reserves a port
-        for the HTTP server (if expose_http_server is enabled). Call
-        load_model() later to perform the heavy model loading.
+        When defer_model_load=True, only stores config and reserves a port for the HTTP server (if expose_http_server is
+        enabled). Call load_model() later to perform the heavy model loading.
 
         Args:
             config: Configuration dictionary for the policy
@@ -203,10 +168,9 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
     def _reserve_port(self):
         """Bind and listen on a TCP socket to reserve a free port from the OS.
 
-        The socket is held open in LISTENING state and passed directly to
-        uvicorn via the ``sockets=`` parameter in ``server.serve()``.
-        The socket is never closed and re-opened, so there is zero gap
-        where another process could steal the port.
+        The socket is held open in LISTENING state and passed directly to uvicorn via the ``sockets=`` parameter in
+        ``server.serve()``. The socket is never closed and re-opened, so there is zero gap where another process could
+        steal the port.
         """
         import socket
 
@@ -219,20 +183,16 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
         self._reserved_socket.listen(128)
         self._reserved_socket.setblocking(False)
         self._reserved_node_ip = _get_node_ip_local()
-        print(
-            f"Reserved port {self._reserved_port} on {self._reserved_node_ip} "
-            f"for vLLM HTTP server"
-        )
+        print(f"Reserved port {self._reserved_port} on {self._reserved_node_ip} for vLLM HTTP server")
 
     def _seed_vllm_cache(self):
         """Seed local vLLM compile cache from a warm directory if available.
 
-        Reads NRL_VLLM_CACHE_SEED_DIR and rsyncs it into VLLM_CACHE_ROOT.
-        Both are env vars set by the launch script — keeping them in the
-        same system avoids the inconsistency of mixing env vars and config.
+        Reads NRL_VLLM_CACHE_SEED_DIR and rsyncs it into VLLM_CACHE_ROOT. Both are env vars set by the launch script —
+        keeping them in the same system avoids the inconsistency of mixing env vars and config.
 
-        Retries up to 3 times on transient failures. Timeout is controlled
-        by NRL_VLLM_CACHE_SEED_TIMEOUT (default 300s).
+        Retries up to 3 times on transient failures. Timeout is controlled by NRL_VLLM_CACHE_SEED_TIMEOUT (default
+        300s).
         """
         import os
         import shutil
@@ -263,9 +223,7 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
             except subprocess.TimeoutExpired:
                 elapsed = time.perf_counter() - t0
                 print(
-                    f"[CACHE SEED] rsync timed out after {elapsed:.0f}s "
-                    f"(attempt {attempt}/{max_attempts})",
-                    flush=True,
+                    f"[CACHE SEED] rsync timed out after {elapsed:.0f}s (attempt {attempt}/{max_attempts})", flush=True
                 )
                 continue
 
@@ -275,11 +233,7 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
                 return
 
             stderr = result.stderr.decode(errors="replace")[:200]
-            print(
-                f"[CACHE SEED] rsync failed (attempt {attempt}/{max_attempts}, "
-                f"{elapsed:.1f}s): {stderr}",
-                flush=True,
-            )
+            print(f"[CACHE SEED] rsync failed (attempt {attempt}/{max_attempts}, {elapsed:.1f}s): {stderr}", flush=True)
 
         print("[CACHE SEED] all attempts failed, proceeding with cold compile", flush=True)
 
@@ -302,24 +256,16 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
 
         # (TODO: zhiyul) Remove this workaround after upgrading vLLM where the compilation_config passing issue is resolved.
         if llm_kwargs.get("compilation_config", None):
-            llm_kwargs["compilation_config"] = CompilationConfig(
-                **llm_kwargs["compilation_config"]
-            )
+            llm_kwargs["compilation_config"] = CompilationConfig(**llm_kwargs["compilation_config"])
 
         self.llm_async_engine_args = AsyncEngineArgs(**llm_kwargs)
         self.stat_loggers = (
-            [PrometheusStatLogger]
-            if self.cfg["vllm_cfg"].get("enable_vllm_metrics_logger", False)
-            else []
+            [PrometheusStatLogger] if self.cfg["vllm_cfg"].get("enable_vllm_metrics_logger", False) else []
         )
-        self.llm = AsyncLLM.from_engine_args(
-            self.llm_async_engine_args, stat_loggers=self.stat_loggers
-        )
+        self.llm = AsyncLLM.from_engine_args(self.llm_async_engine_args, stat_loggers=self.stat_loggers)
 
         if self.cfg["vllm_cfg"].get("expose_http_server"):
-            self.server_thread, self.base_url, self.http_server = (
-                self._setup_vllm_server()
-            )
+            self.server_thread, self.base_url, self.http_server = self._setup_vllm_server()
 
         # vLLM Metrics Logger
         # Metrics logger only enabled for per-actor, model-owner only
@@ -330,8 +276,7 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
     def _start_vllm_metrics_logger(self) -> None:
         """Start a background thread that periodically collects vLLM logger metrics.
 
-        Controlled by vllm_metrics_logger_interval (default: 0.5) in vllm_cfg.
-        Runs only on the model-owner actor.
+        Controlled by vllm_metrics_logger_interval (default: 0.5) in vllm_cfg. Runs only on the model-owner actor.
         """
         from vllm.v1.metrics.reader import Gauge, Counter, get_metrics_snapshot
 
@@ -346,9 +291,7 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
             "vllm_metrics_logger_interval must be set in vllm_cfg if enable_vllm_metrics_logger is True"
         )
         interval_s = self.cfg["vllm_cfg"]["vllm_metrics_logger_interval"]
-        assert interval_s > 0, (
-            f"vllm_metrics_logger_interval must be a positive float, got {interval_s}"
-        )
+        assert interval_s > 0, f"vllm_metrics_logger_interval must be a positive float, got {interval_s}"
 
         # Lazy import inside thread target to avoid import overhead if disabled
         stop_event = threading.Event()
@@ -380,22 +323,14 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
                                 if m.name == "vllm:generation_tokens":
                                     self.generation_tokens.append(int(m.value))
                 except Exception:
-                    print(
-                        "⚠️[vLLM Metric Logger] Exception in vLLM metrics logger",
-                        flush=True,
-                    )
+                    print("⚠️[vLLM Metric Logger] Exception in vLLM metrics logger", flush=True)
                     pass
                 time.sleep(interval_s)
 
-        t = threading.Thread(
-            target=_logger_loop, name="vllm-metrics-logger", daemon=True
-        )
+        t = threading.Thread(target=_logger_loop, name="vllm-metrics-logger", daemon=True)
         t.start()
         self._vllm_metrics_logger_thread = t
-        print(
-            "📋[vLLM Metric Logger] vLLM metrics logger thread started",
-            flush=True,
-        )
+        print("📋[vLLM Metric Logger] vLLM metrics logger thread started", flush=True)
 
     def get_vllm_logger_metrics(self) -> dict[str, Any]:
         if not self.cfg["vllm_cfg"].get("enable_vllm_metrics_logger", False):
@@ -443,13 +378,8 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
 
         from fastapi import Request
         from fastapi.responses import JSONResponse, StreamingResponse
-        from vllm.entrypoints.openai.chat_completion.protocol import (
-            ChatCompletionRequest,
-            ChatCompletionResponse,
-        )
-        from vllm.entrypoints.openai.chat_completion.serving import (
-            OpenAIServingChat,
-        )
+        from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest, ChatCompletionResponse
+        from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
         from vllm.entrypoints.openai.engine.protocol import ErrorResponse
         from vllm.entrypoints.openai.models.protocol import BaseModelPath
         from vllm.entrypoints.openai.models.serving import OpenAIServingModels
@@ -458,9 +388,7 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
             TokenizeCompletionRequest,
             TokenizeResponse,
         )
-        from vllm.entrypoints.serve.tokenize.serving import (
-            OpenAIServingTokenization,
-        )
+        from vllm.entrypoints.serve.tokenize.serving import OpenAIServingTokenization
         from vllm.tool_parsers.abstract_tool_parser import ToolParserManager
         from vllm.v1.engine.async_llm import logger as vllm_async_llm_logger
 
@@ -471,16 +399,12 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
         engine_client = self.llm
         model_config = self.llm_async_engine_args.create_model_config()
         base_model_paths = [
-            BaseModelPath(
-                name=model_config.served_model_name, model_path=model_config.model
-            ),
+            BaseModelPath(name=model_config.served_model_name, model_path=model_config.model),
             BaseModelPath(name=model_config.model, model_path=model_config.model),
         ]
 
         openai_serving_models_kwargs = dict(
-            engine_client=engine_client,
-            base_model_paths=base_model_paths,
-            lora_modules=None,
+            engine_client=engine_client, base_model_paths=base_model_paths, lora_modules=None
         )
         openai_serving_models = OpenAIServingModels(**openai_serving_models_kwargs)
 
@@ -491,8 +415,7 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
                     for message in reversed(self.messages):
                         if "prompt_token_ids" in message:
                             self.required_prefix_token_ids = (
-                                message["prompt_token_ids"]
-                                + message["generation_token_ids"]
+                                message["prompt_token_ids"] + message["generation_token_ids"]
                             )
                             break
 
@@ -526,11 +449,7 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
 
                 # Deepcopy messages here since _preprocess_chat may be destructive.
                 # messages_for_replace_prefix_tokens = deepcopy(messages)
-                exclude_fields = {
-                    "prompt_token_ids",
-                    "generation_token_ids",
-                    "generation_log_probs",
-                }
+                exclude_fields = {"prompt_token_ids", "generation_token_ids", "generation_log_probs"}
                 messages_for_replace_prefix_tokens = []
                 for msg in messages:
                     if isinstance(msg, dict):
@@ -559,9 +478,7 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
 
                         # Print a clean one-liner warning that max model length has been exceeded
                         # The exception is still raised, but later filtered out by the MaxContextLengthFilter
-                        logging.getLogger(__name__).warning(
-                            "Prompt exceeds max_model_len: %s", e
-                        )
+                        logging.getLogger(__name__).warning("Prompt exceeds max_model_len: %s", e)
                     raise
 
                 if request.required_prefix_token_ids is None:
@@ -576,24 +493,18 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
 
                 if last_assistant_message_idx is None:
                     # If there's no assistant message, we just use the entire thing.
-                    messages_to_last_assistant_message = (
-                        messages_for_replace_prefix_tokens
-                    )
+                    messages_to_last_assistant_message = messages_for_replace_prefix_tokens
                 else:
                     # Include the last assistant message itself.
-                    messages_to_last_assistant_message = (
-                        messages_for_replace_prefix_tokens[
-                            : last_assistant_message_idx + 1
-                        ]
-                    )
+                    messages_to_last_assistant_message = messages_for_replace_prefix_tokens[
+                        : last_assistant_message_idx + 1
+                    ]
 
                 # For the prefix token calculation, we need add_generation_prompt=False
                 # to get tokens up to (and including) the last assistant message only.
                 # add_generation_prompt is a field on the request that gets embedded
                 # into ChatParams via build_chat_params().
-                modified_request = request.model_copy(
-                    update={"add_generation_prompt": False}
-                )
+                modified_request = request.model_copy(update={"add_generation_prompt": False})
 
                 # Call the actual preprocess chat subroutine so we don't miss anything. Whatever they do is whatever we do since we literally do what they do.
                 corresponding_res = await super()._preprocess_chat(
@@ -605,13 +516,9 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
                     tool_dicts=tool_dicts,
                     tool_parser=tool_parser,
                 )
-                actual_corresponding_token_ids = corresponding_res[1][0][
-                    "prompt_token_ids"
-                ]
+                actual_corresponding_token_ids = corresponding_res[1][0]["prompt_token_ids"]
 
-                engine_prompt = res[1][
-                    0
-                ]  # We need to modify engine_prompt.prompt_token_ids
+                engine_prompt = res[1][0]  # We need to modify engine_prompt.prompt_token_ids
 
                 final_prompt_token_ids = _replace_prefix_tokens(
                     tokenizer=self.renderer.tokenizer,
@@ -629,9 +536,7 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
         ########################################
 
         # This MRO is necessary i.e. NeMoRLOpenAIChatRequestMixin > ChatCompletionRequest
-        class NeMoRLChatCompletionRequest(
-            NeMoRLOpenAIChatRequestMixin, ChatCompletionRequest
-        ):
+        class NeMoRLChatCompletionRequest(NeMoRLOpenAIChatRequestMixin, ChatCompletionRequest):
             required_prefix_token_ids: Optional[List[int]] = None
 
         # This MRO is necessary i.e. NeMoRLOpenAIServingMixin > OpenAIServingChat
@@ -639,26 +544,20 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
             pass
 
         serving_chat_default_kwargs = dict(
-            response_role="assistant",
-            request_logger=None,
-            chat_template=None,
-            chat_template_content_format="auto",
+            response_role="assistant", request_logger=None, chat_template=None, chat_template_content_format="auto"
         )
         serving_chat_kwargs = serving_chat_default_kwargs | self.cfg["vllm_cfg"].get(
             "http_server_serving_chat_kwargs", dict()
         )
         serving_chat_kwargs.update(
-            dict(
-                engine_client=engine_client,
-                models=openai_serving_models,
-                return_tokens_as_token_ids=True,
-            )
+            dict(engine_client=engine_client, models=openai_serving_models, return_tokens_as_token_ids=True)
         )
 
         # Load custom reasoning parser plugin if specified
         reasoning_parser_plugin = serving_chat_kwargs.pop("reasoning_parser_plugin", None)
         if reasoning_parser_plugin:
             from vllm.reasoning.abs_reasoning_parsers import ReasoningParserManager
+
             ReasoningParserManager.import_reasoning_parser(reasoning_parser_plugin)
 
         openai_serving_chat = NeMoRLOpenAIServingChat(**serving_chat_kwargs)
@@ -667,9 +566,7 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
 
         # The create_chat_completion and tokenize methods are taken from vllm/entrypoints/openai/api_server.py
         @app.post("/v1/chat/completions")
-        async def create_chat_completion(
-            request: NeMoRLChatCompletionRequest, raw_request: Request
-        ):
+        async def create_chat_completion(request: NeMoRLChatCompletionRequest, raw_request: Request):
             # This needs to match the behavior in nemo_rl/models/generation/vllm/vllm_worker.py::BaseVllmGenerationWorker::_build_sampling_params
             # Right now we explicitly assert set this to -1.
             assert request.top_k in (None, -1), (
@@ -682,14 +579,10 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
             assert request.temperature == generation_config["temperature"]
             assert request.top_p == generation_config["top_p"]
 
-            generator = await openai_serving_chat.create_chat_completion(
-                request, raw_request
-            )
+            generator = await openai_serving_chat.create_chat_completion(request, raw_request)
 
             if isinstance(generator, ErrorResponse):
-                return JSONResponse(
-                    content=generator.model_dump(), status_code=generator.error.code
-                )
+                return JSONResponse(content=generator.model_dump(), status_code=generator.error.code)
 
             elif isinstance(generator, ChatCompletionResponse):
                 return JSONResponse(content=generator.model_dump())
@@ -701,44 +594,30 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
         ########################################
 
         # This MRO is necessary i.e. NeMoRLOpenAIChatRequestMixin > TokenizeRequest
-        class NeMoRLTokenizeChatRequest(
-            NeMoRLOpenAIChatRequestMixin, TokenizeChatRequest
-        ):
+        class NeMoRLTokenizeChatRequest(NeMoRLOpenAIChatRequestMixin, TokenizeChatRequest):
             required_prefix_token_ids: Optional[List[int]] = None
 
-        NeMoRLTokenizeRequest = Union[
-            TokenizeCompletionRequest, NeMoRLTokenizeChatRequest
-        ]
+        NeMoRLTokenizeRequest = Union[TokenizeCompletionRequest, NeMoRLTokenizeChatRequest]
 
         # This MRO is necessary i.e. NeMoRLOpenAIServingMixin > OpenAIServingTokenization
-        class NeMoRLOpenAIServingTokenization(
-            NeMoRLOpenAIServingMixin, OpenAIServingTokenization
-        ):
+        class NeMoRLOpenAIServingTokenization(NeMoRLOpenAIServingMixin, OpenAIServingTokenization):
             pass
 
         serving_tokenization_kwargs = dict(
             request_logger=serving_chat_kwargs["request_logger"],
             chat_template=serving_chat_kwargs["chat_template"],
-            chat_template_content_format=serving_chat_kwargs[
-                "chat_template_content_format"
-            ],
+            chat_template_content_format=serving_chat_kwargs["chat_template_content_format"],
             engine_client=serving_chat_kwargs["engine_client"],
             models=serving_chat_kwargs["models"],
         )
-        openai_serving_tokenization = NeMoRLOpenAIServingTokenization(
-            **serving_tokenization_kwargs
-        )
+        openai_serving_tokenization = NeMoRLOpenAIServingTokenization(**serving_tokenization_kwargs)
 
         @app.post("/tokenize")
         async def tokenize(request: NeMoRLTokenizeRequest, raw_request: Request):
-            generator = await openai_serving_tokenization.create_tokenize(
-                request, raw_request
-            )
+            generator = await openai_serving_tokenization.create_tokenize(request, raw_request)
 
             if isinstance(generator, ErrorResponse):
-                return JSONResponse(
-                    content=generator.model_dump(), status_code=generator.error.code
-                )
+                return JSONResponse(content=generator.model_dump(), status_code=generator.error.code)
             elif isinstance(generator, TokenizeResponse):
                 return JSONResponse(content=generator.model_dump())
 
@@ -776,9 +655,7 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
                         return False
                 return True
 
-        _getLogger("vllm.entrypoints.openai.serving_chat").addFilter(
-            MaxContextLengthFilter()
-        )
+        _getLogger("vllm.entrypoints.openai.serving_chat").addFilter(MaxContextLengthFilter())
 
         return app
 
@@ -858,28 +735,12 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
         return thread, base_url, server
 
     async def init_collective_async(
-        self,
-        rank_prefix: int,
-        ip: str,
-        port: int,
-        world_size: int,
-        train_world_size: int,
+        self, rank_prefix: int, ip: str, port: int, world_size: int, train_world_size: int
     ) -> None:
-        await self.llm.collective_rpc(
-            "init_collective",
-            args=(
-                rank_prefix,
-                ip,
-                port,
-                world_size,
-                train_world_size,
-            ),
-        )
+        await self.llm.collective_rpc("init_collective", args=(rank_prefix, ip, port, world_size, train_world_size))
 
     async def generate_async(
-        self,
-        data: BatchedDataDict[GenerationDatumSpec],
-        greedy: bool = False,
+        self, data: BatchedDataDict[GenerationDatumSpec], greedy: bool = False
     ) -> AsyncGenerator[tuple[int, BatchedDataDict[GenerationOutputSpec]], None]:
         """Generate a batch of data using vLLM's AsyncLLMEngine, yielding results as they are ready.
 
@@ -891,9 +752,7 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
             Tuple of (original_index, BatchedDataDict conforming to GenerationOutputSpec for the single sequence)
         """
         if not self.cfg["vllm_cfg"]["async_engine"]:
-            raise RuntimeError(
-                "generate_async can only be used when async_engine is enabled in vLLM config."
-            )
+            raise RuntimeError("generate_async can only be used when async_engine is enabled in vLLM config.")
 
         # Handle empty input case
         if len(data["input_ids"]) == 0:
@@ -911,9 +770,7 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
             f"but received batch_size={batch_size}. Please handle batching outside this method."
         )
 
-        batch_specific_stop_strings_list = data.get(
-            "stop_strings", [[] for _ in range(batch_size)]
-        )
+        batch_specific_stop_strings_list = data.get("stop_strings", [[] for _ in range(batch_size)])
 
         # Create tasks for each sample in the batch
         async def process_single_sample(sample_idx):
@@ -922,18 +779,14 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
             prompt = format_prompt_for_vllm_generation(data, sample_idx)
 
             per_sample_stop_strings = None
-            if batch_specific_stop_strings_list and sample_idx < len(
-                batch_specific_stop_strings_list
-            ):
+            if batch_specific_stop_strings_list and sample_idx < len(batch_specific_stop_strings_list):
                 per_sample_stop_strings = batch_specific_stop_strings_list[sample_idx]
 
             final_stop_strings_for_sample = self._merge_stop_strings(
                 [per_sample_stop_strings] if per_sample_stop_strings else None
             )
 
-            remaining_ctx = (
-                self.cfg["vllm_cfg"]["max_model_len"] - current_input_actual_length
-            )
+            remaining_ctx = self.cfg["vllm_cfg"]["max_model_len"] - current_input_actual_length
             allowed_new_tokens = max(0, min(self.cfg["max_new_tokens"], remaining_ctx))
 
             # Handle case where no tokens can be generated due to length constraints
@@ -942,30 +795,20 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
                 input_ids_single_row = input_ids_batch[sample_idx]
 
                 # Create output tensors with just the input (no generated tokens)
-                output_ids_single_item_batched = input_ids_single_row[
-                    :current_input_actual_length
-                ].unsqueeze(0)
+                output_ids_single_item_batched = input_ids_single_row[:current_input_actual_length].unsqueeze(0)
 
                 logprobs_single_item = torch.zeros(
-                    (1, current_input_actual_length),
-                    dtype=torch.float32,
-                    device=input_ids_single_row.device,
+                    (1, current_input_actual_length), dtype=torch.float32, device=input_ids_single_row.device
                 )
 
-                generation_lengths_tensor = torch.tensor(
-                    [0], dtype=torch.long, device=input_ids_single_row.device
-                )
+                generation_lengths_tensor = torch.tensor([0], dtype=torch.long, device=input_ids_single_row.device)
 
                 unpadded_sequence_lengths_tensor = torch.tensor(
-                    [current_input_actual_length],
-                    dtype=torch.long,
-                    device=input_ids_single_row.device,
+                    [current_input_actual_length], dtype=torch.long, device=input_ids_single_row.device
                 )
 
                 # Not truncated since no generation was attempted (length constraint)
-                truncated_tensor = torch.tensor(
-                    [False], dtype=torch.bool, device=input_ids_single_row.device
-                )
+                truncated_tensor = torch.tensor([False], dtype=torch.bool, device=input_ids_single_row.device)
 
                 result_batch = BatchedDataDict[GenerationOutputSpec](
                     {
@@ -980,18 +823,14 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
                 return (sample_idx, result_batch)
 
             sampling_params_for_request = self._build_sampling_params(
-                greedy=greedy,
-                stop_strings=final_stop_strings_for_sample,
-                max_new_tokens=allowed_new_tokens,
+                greedy=greedy, stop_strings=final_stop_strings_for_sample, max_new_tokens=allowed_new_tokens
             )
 
             request_id = str(uuid.uuid4())
 
             # Generate using vLLM async engine
             vllm_request_generator = self.llm.generate(
-                prompt=prompt,
-                sampling_params=sampling_params_for_request,
-                request_id=request_id,
+                prompt=prompt, sampling_params=sampling_params_for_request, request_id=request_id
             )
 
             # Get the final result from the generator
@@ -1018,17 +857,16 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
                 device=original_input_ids_single_row.device,
             )
             # Copy original input (up to its actual length)
-            output_ids_single_item[:current_input_actual_length] = (
-                original_input_ids_single_row[:current_input_actual_length]
-            )
+            output_ids_single_item[:current_input_actual_length] = original_input_ids_single_row[
+                :current_input_actual_length
+            ]
             # Add generated tokens after the actual input
-            output_ids_single_item[
-                current_input_actual_length : current_input_actual_length
-                + num_generated_tokens
-            ] = torch.tensor(
-                generated_token_ids,
-                dtype=original_input_ids_single_row.dtype,
-                device=original_input_ids_single_row.device,
+            output_ids_single_item[current_input_actual_length : current_input_actual_length + num_generated_tokens] = (
+                torch.tensor(
+                    generated_token_ids,
+                    dtype=original_input_ids_single_row.dtype,
+                    device=original_input_ids_single_row.device,
+                )
             )
 
             # Reshape to (1, seq_len) for BatchedDataDict
@@ -1036,49 +874,33 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
 
             # Create logprobs tensor for this single item
             logprobs_single_item = torch.zeros(
-                (1, final_output_tensor_len),
-                dtype=torch.float32,
-                device=original_input_ids_single_row.device,
+                (1, final_output_tensor_len), dtype=torch.float32, device=original_input_ids_single_row.device
             )
             if hasattr(generation_details, "logprobs") and generation_details.logprobs:
-                for idx, logprob_dict_per_token in enumerate(
-                    generation_details.logprobs
-                ):
+                for idx, logprob_dict_per_token in enumerate(generation_details.logprobs):
                     if logprob_dict_per_token and idx < len(generated_token_ids):
                         token_id_at_idx = generated_token_ids[idx]
                         if token_id_at_idx in logprob_dict_per_token:
-                            logprob_value = logprob_dict_per_token[
-                                token_id_at_idx
-                            ].logprob
-                            position_in_output_tensor = (
-                                current_input_actual_length + idx
-                            )
+                            logprob_value = logprob_dict_per_token[token_id_at_idx].logprob
+                            position_in_output_tensor = current_input_actual_length + idx
                             if position_in_output_tensor < final_output_tensor_len:
-                                logprobs_single_item[0, position_in_output_tensor] = (
-                                    logprob_value
-                                )
+                                logprobs_single_item[0, position_in_output_tensor] = logprob_value
 
             # Generation lengths
             generation_lengths_tensor = torch.tensor(
-                [num_generated_tokens],
-                dtype=torch.long,
-                device=original_input_ids_single_row.device,
+                [num_generated_tokens], dtype=torch.long, device=original_input_ids_single_row.device
             )
 
             # Unpadded sequence lengths (actual_input + actual_generated)
             unpadded_total_length = current_input_actual_length + num_generated_tokens
             unpadded_sequence_lengths_tensor = torch.tensor(
-                [unpadded_total_length],
-                dtype=torch.long,
-                device=original_input_ids_single_row.device,
+                [unpadded_total_length], dtype=torch.long, device=original_input_ids_single_row.device
             )
 
             # Check if response was truncated (hit max_tokens length limit)
             is_truncated = generation_details.finish_reason == "length"
             truncated_tensor = torch.tensor(
-                [is_truncated],
-                dtype=torch.bool,
-                device=original_input_ids_single_row.device,
+                [is_truncated], dtype=torch.bool, device=original_input_ids_single_row.device
             )
 
             result_batch = BatchedDataDict[GenerationOutputSpec](
@@ -1094,9 +916,7 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
             return (sample_idx, result_batch)
 
         # Create tasks for all samples and yield results as they complete
-        sample_tasks = [
-            asyncio.create_task(process_single_sample(i)) for i in range(batch_size)
-        ]
+        sample_tasks = [asyncio.create_task(process_single_sample(i)) for i in range(batch_size)]
 
         # Yield results as they become available
         for completed_task in asyncio.as_completed(sample_tasks):
@@ -1124,9 +944,7 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
             Tuple of (original_index, BatchedDataDict containing single text response)
         """
         if not self.cfg["vllm_cfg"]["async_engine"]:
-            raise RuntimeError(
-                "generate_text_async can only be used when async_engine is enabled in vLLM config."
-            )
+            raise RuntimeError("generate_text_async can only be used when async_engine is enabled in vLLM config.")
 
         # Handle empty input case
         if len(data["prompts"]) == 0:
@@ -1171,9 +989,7 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
 
             # Generate using vLLM async engine
             vllm_request_generator = self.llm.generate(
-                prompt=prompt,
-                sampling_params=sampling_params,
-                request_id=request_id,
+                prompt=prompt, sampling_params=sampling_params, request_id=request_id
             )
 
             # Get the final result from the generator
@@ -1188,16 +1004,12 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
             generated_text = final_request_output.outputs[0].text
 
             # Create result in BatchedDataDict format
-            result_batch = BatchedDataDict[GenerationOutputSpec](
-                {"texts": [generated_text]}
-            )
+            result_batch = BatchedDataDict[GenerationOutputSpec]({"texts": [generated_text]})
 
             return (prompt_idx, result_batch)
 
         # Create tasks for all prompts and yield results as they complete
-        prompt_tasks = [
-            asyncio.create_task(process_single_prompt(i)) for i in range(batch_size)
-        ]
+        prompt_tasks = [asyncio.create_task(process_single_prompt(i)) for i in range(batch_size)]
 
         # Yield results as they become available
         for completed_task in asyncio.as_completed(prompt_tasks):
@@ -1236,9 +1048,7 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
         """Async version of prepare_refit_info."""
         await self.llm.collective_rpc("prepare_refit_info", args=(state_dict_info,))
 
-    async def update_weights_via_ipc_zmq_async(
-        self,
-    ) -> bool:
+    async def update_weights_via_ipc_zmq_async(self) -> bool:
         """Async version of update_weights_via_ipc_zmq."""
         try:
             assert self.llm is not None, (
@@ -1251,22 +1061,18 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
                 )
 
             # TODO: switch to update_weights_from_local_ipc_handles for better performance once collectively report_device_id is supported in asyncLLM initialization
-            result_or_coro = await self.llm.collective_rpc(
-                "update_weights_via_ipc_zmq", args=tuple()
-            )
+            result_or_coro = await self.llm.collective_rpc("update_weights_via_ipc_zmq", args=tuple())
 
             if asyncio.iscoroutine(result_or_coro):
                 worker_results = await result_or_coro
             else:
                 worker_results = result_or_coro
-            
+
             all_success = all([result[0] for result in worker_results])
             exceptions_or_none = [result[1] for result in worker_results]
 
             if not all_success:
-                print(
-                    f"Error: Worker failed to update weights. Result: {exceptions_or_none}"
-                )
+                print(f"Error: Worker failed to update weights. Result: {exceptions_or_none}")
                 return False
             return True
         except Exception as e:
@@ -1288,9 +1094,7 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
                     "update_weights_from_collective_async can only be used with async_engine=True. Use update_weights_from_collective instead."
                 )
 
-            result_or_coro = await self.llm.collective_rpc(
-                "update_weights_from_collective", args=tuple()
-            )
+            result_or_coro = await self.llm.collective_rpc("update_weights_from_collective", args=tuple())
 
             if asyncio.iscoroutine(result_or_coro):
                 worker_results = await result_or_coro
@@ -1301,9 +1105,7 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
             exceptions_or_none = [result[1] for result in worker_results]
 
             if not all_success:
-                print(
-                    f"Error: Worker failed to update weights. Result: {exceptions_or_none}"
-                )
+                print(f"Error: Worker failed to update weights. Result: {exceptions_or_none}")
                 return False
             return True
         except Exception as e:
@@ -1330,14 +1132,10 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
 
     async def sleep_async(self):
         """Async version of sleep."""
-        assert self.llm is not None, (
-            "Attempting to sleep with either an uninitialized vLLM or non-model-owner"
-        )
+        assert self.llm is not None, "Attempting to sleep with either an uninitialized vLLM or non-model-owner"
 
         if not self.cfg["vllm_cfg"]["async_engine"]:
-            raise RuntimeError(
-                "sleep_async can only be used with async_engine=True. Use sleep instead."
-            )
+            raise RuntimeError("sleep_async can only be used with async_engine=True. Use sleep instead.")
 
         # Reset the prefix cache to ensure that prefix cache is not reused after weights are updated
         await self.llm.reset_prefix_cache()
@@ -1348,14 +1146,10 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
 
     async def wake_up_async(self, **kwargs):
         """Async version of wake_up."""
-        assert self.llm is not None, (
-            "Attempting to wake up with either an uninitialized vLLM or non-model-owner"
-        )
+        assert self.llm is not None, "Attempting to wake up with either an uninitialized vLLM or non-model-owner"
 
         if not self.cfg["vllm_cfg"]["async_engine"]:
-            raise RuntimeError(
-                "wake_up_async can only be used with async_engine=True. Use wake_up instead."
-            )
+            raise RuntimeError("wake_up_async can only be used with async_engine=True. Use wake_up instead.")
 
         tags = kwargs.get("tags")
 
