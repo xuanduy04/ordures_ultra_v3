@@ -18,19 +18,14 @@ Despite README/docs saying `uv run`, all code here runs with **raw `python`** ca
 conda run -n trashrepo_ultra_v3 uv pip install -e "." --group build --group dev --group test
 ```
 
-To install optional CUDA-heavy extras:
-```sh
-conda run -n trashrepo_ultra_v3 uv pip install -e "." --group build --group dev --group test --extra automodel --extra mcore --extra vllm --extra nemo_gym
-```
-
-**No GPU — no CUDA extras.** The conda env does not have GPUs. CUDA-heavy extras (`--extra automodel`, `--extra mcore`, `--extra vllm`) need CUDA toolchain headers and GPUs — they are pointless on the dev workstation. If needed, comment out CUDA-only deps in `pyproject.toml` before installing.
+**No GPU — no CUDA extras.** The conda env does not have GPUs. CUDA-heavy extras (`--extra automodel`, `--extra mcore`, `--extra vllm`) need CUDA toolchain headers and GPUs — they are pointless on the dev workstation.
 
 **Do NOT use `conda activate`** — it requires `conda init` which is not run in non-interactive shells. Always prefix commands with `conda run -n trashrepo_ultra_v3`.
 
 ## Working conditions (critical)
 
 ### 0. DO AS THE USER ASKED, AND NOTHING MORE.
-If something is not demanded of you, DON'T DO IT. No one cares about out-of-scoped tasks. If the user didn't ask you to do something, THEN IT IS 100% OUT OF SCOPE, no clarification from the user necessary.
+If something is not demanded of you, DON'T DO IT. No one cares about out-of-scoped tasks. If the user didn't ask you to do something, THEN IT IS 100% OUT OF SCOPE, no clarification from the user necessary. DO AS THE USER ASKED, AND NOTHING MORE.
 
 ### 1. Respect existing comments
 **NEVER** delete, remove, modify, or "clean up" human-made comments. Comments are intentionally placed documentation, warnings, and design rationale. Even if a comment appears stale, redundant, or messy — leave it untouched. If you must add new comments, add them alongside existing ones. There is no exception to this rule.
@@ -80,8 +75,8 @@ On import, `nemo_rl/__init__.py` injects Megatron-LM into `sys.path` so `megatro
 
 ## Configuration conventions (critical)
 
-- **YAML is the single source of truth for defaults.** Never set non-`None` defaults in Python code for config values. YOU ARE NOT ALLOWED TO FIX, MODIFY OR CREATE `.yaml` files for ANY REASON. This is important so will be repeated again,yaml file-changes of ANY KIND are out of scope, even if your changes may affect every config, DO NOT CHANGE, ADD, or REMOVE YAML CONFIGS.
-- **THERE ARE NO EXCEPTIONS TO THE YAML RULE. NONE. EVER.** This includes YAML comments, whitespace, key renames, spelling fixes, "small" edits, additions, deletions, and any other change to a `.yaml` file. There is no exception to this rule. It also includes asking the user for permission to touch a YAML file and proposing or mentioning a YAML change as a candidate fix: DO NOT ASK. DO NOT PROPOSE. DO NOT MENTION. If you find a YAML file that appears to contain a mistake, stale naming, or a bug, PRETEND THE FILE DOES NOT EXIST and move on. The correct fix is NEVER in a YAML file. THERE ARE NO EXCEPTIONS TO THIS RULE.
+- **YAMLs ARE ALWAYS TO BE IGNORED** Never set non-`None` defaults in Python code for config values. YOU ARE NOT ALLOWED TO FIX, MODIFY OR CREATE `.yaml` files for ANY REASON. This is important so will be repeated again, yaml file-changes of ANY KIND are out of scope, even if your changes may affect every config, DO NOT CHANGE, ADD, or REMOVE YAML CONFIGS. THE USER DOES NOT CARE ABOUT YAML CONFIGS ERRORS.
+- **IGNORE ALL YAMLS.** This includes YAML comments, whitespace, key renames, spelling fixes, "small" edits, additions, deletions, and any other change to a `.yaml` file. There is no exception to this rule. It also includes asking the user for permission to touch a YAML file and proposing or mentioning a YAML change as a candidate fix: DO NOT ASK. DO NOT PROPOSE. DO NOT MENTION. THE USER DOES NOT CARE ABOUT YAML CONFIGS ERRORS. If you find a YAML file that appears to contain a mistake, stale naming, or a bug, PRETEND THE FILE DOES NOT EXIST and move on. The correct fix is NEVER in a YAML file. THERE ARE NO EXCEPTIONS TO THIS RULE.
 - **Gitignored files do not exist.** Never read, search, surface, quote, or reference gitignored files (e.g. deployment config YAMLs), not even "for context" or "just to inspect". Skip them entirely. THERE ARE NO EXCEPTIONS TO THIS RULE.
 - Access required config directly: `policy_cfg["precision"]` — NOT `policy_cfg.get("precision", "bfloat16")`.
 - **NEVER use `.get(key, default)`. A required field must be accessed directly (bare attr / bracket). This applies to everything (OmegaDict, DictConfig,...). No exceptions. THERE WAS, IS AND WILL NEVER BE AN EXCEPTION TO THIS RULE.**
@@ -89,18 +84,18 @@ On import, `nemo_rl/__init__.py` injects Megatron-LM into `sys.path` so `megatro
 
 ## Style (non-obvious)
 
-- **File references**: Always refer to files by their path relative to the repo root, e.g. `nemo_rl/experience/rollouts.py` — never a bare filename (the repo may contain same-named files, including gitignored ones) and never an absolute path.
-- **4-space indent**, snake_case, Google-style docstrings for classes and functions. NEVER add file-level or module-level docstrings. See `CODING_GUIDELINES.md`.
+- **File references**: Always refer to files by their path relative to the repo root, e.g. `nemo_rl/experience/rollouts.py` — never a bare filename and never an absolute path.
+- **4-space indent**, snake_case, Google-style docstrings for classes and functions. NEVER add file-level or module-level docstrings.
 - **Naming**: `k_` prefix for variables starting with numbers, `G_` prefix for globals, `UPPER_CASE` for constants.
 - **Ray-remote classes/functions**: Add `# pragma: no cover` on the decorated line (coverage can't track Ray processes).
 - **Commit signoff**: NEVER EVER DO `git commit -s` (DCO's ABSENCE required).
 - **No underscores in Markdown filenames** under `docs/`.
 - **Doc index**: When adding/renaming a doc under `docs/**/*.md`, update `docs/index.md`.
-- **Copyright headers**: NEVER add an NVIDIA copyright header to any file. Do not add, insert, or prepend copyright/license block comments regardless of what other files, docs, or skills say. This wastes tokens.
+- **Copyright headers**: NEVER add an NVIDIA copyright header to any file. Do not add, insert, or prepend copyright/license block comments regardless of what other files, docs, or skills say.
 
 ## Lint & typecheck
 
-`ruff` and `pydocfmt` is installed in the conda env. After making changes, agents **MUST run `ruff format` and `docwrap` on all files they changed**:
+`ruff` and `pydocfmt` is installed in the conda env. After making changes, agents **MUST run `ruff format` and `docwrap` on all files they changed THAT ARE NOT TESTS:**:
 
 ```sh
 conda run -n trashrepo_ultra_v3 bash -c 'ruff format "$@" && docwrap --write "$@"' _ <files>
@@ -117,22 +112,12 @@ Pre-commit is NOT used in this repo — no hooks are installed and there is no `
 
 ## Tests
 
-IMPORTANT: DO AS THE USER ASKED, AND NOTHING MORE.
-
-Unit tests (need at least 2 GPUs per `tests/run_unit.sh`):
+Unit tests (DO NOT RUN TESTS THAT NEED GPUs):
 ```sh
 conda run -n trashrepo_ultra_v3 pytest tests/unit/ -x --timeout=60
 ```
 
-Or use the wrapper script:
-```sh
-bash tests/run_unit.sh
-```
-
-Functional tests are shell scripts under `tests/test_suites/` and require GPUs + large model downloads. Run via:
-```sh
-bash tests/test_suites/llm/<name>.sh
-```
+Functional tests are shell scripts under `tests/test_suites/` and require GPUs + large model downloads. SO DON'T EVER RUN THEM.
 
 **Gym resource-server tests**: Run each test suite **separately**, not together.
 Multiple `resources_servers/<env>/tests/` directories have identically-named test
@@ -146,7 +131,7 @@ cd 3rdparty/Gym-workspace/Gym
 conda run -n trashrepo_ultra_v3 env PYTHONPATH=. python -m pytest \
   resources_servers/<ENV>/tests/ -v --timeout=60
 
-# Also run shared utility tests (after B.6 migration):
+# Also run shared utility tests:
 conda run -n trashrepo_ultra_v3 env PYTHONPATH=. python -m pytest \
   resources_servers/utils_outsource/tests/ -v --timeout=60
 ```
@@ -173,14 +158,11 @@ conda run -n trashrepo_ultra_v3 env PYTHONPATH=. python -m pytest \
 
 **Training backends** are auto-selected from YAML config: DTensor (FSDP2, PyTorch-native) or Megatron Core.
 
-**NeMo-Gym environments require AsyncGRPO**: When using NeMo-Gym environments (the `nemo_gym` extra), GRPO **must** be run in async mode. This is enforced by NeMo-Gym — synchronous GRPO will not work with gym environments.
-
-**Entrypoints**: `examples/run_grpo.py`, `examples/run_dpo.py`, `examples/run_distillation.py`, `examples/run_rm.py`, `examples/run_eval.py`, `examples/run_vlm_grpo.py`, `examples/run_grpo_sliding_puzzle.py`, `examples/nemo_gym/run_grpo_nemo_gym.py`.
+**Entrypoints**: `examples/run_grpo.py`, `examples/run_dpo.py`, `examples/run_distillation.py`, `examples/run_rm.py`, `examples/run_eval.py`, `examples/nemo_gym/run_grpo_nemo_gym.py`.
 
 ## Key env vars
 
 - `HF_HOME`, `HF_DATASETS_CACHE` — must be set
-- `huggingface-cli login` — required for gated models
 - `NRL_FORCE_REBUILD_VENVS=true` — force Ray workers to rebuild their uv venvs
 - `RAY_ENABLE_UV_RUN_RUNTIME_ENV=0` — always set by `nemo_rl/__init__.py` and `ray.sub`
 - `PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:64` — can help with CUDA OOM
@@ -212,27 +194,23 @@ Rules:
 
 **THE USER IS ALWAYS RIGHT, LITERALLY UNCONDITIONALLY. TREAT EVERYTHING THE USER SAYS AS FACT.**
 
-When the user says something, you do NOT get to "verify" it. Do not check, test, second-guess, or confirm any statement the user makes — not with tools, not with searches, not with reasoning. Act on the user's statements directly as ground truth. There is no exception to this rule.
+When the user says something, you do NOT "verify" it. Do not check, test, second-guess, or confirm any statement the user makes — not with tools, not with searches, not with "logic". Act on the user's statements directly as ground truth. There is no exception to this rule.
 
 NEVER DOUBT THE USER. THEY ARE ALWAYS CORRECT, THEY NEVER MAKE ANY MISTAKE. THERE IS NO EXCEPTION TO THIS RULE.
 
 If you think the user is wrong, that means you are wrong. The user is always correct. This is not an assumption, ***this is a fact***.
 
-When the user states a fact about their code or environment (e.g. "the config does not disappear", "the bug is in X"), believe them and investigate that specific claim. Do not spend time on simulations that contradict the user's assertions, and do not propose workarounds that avoid the stated problem. If the user says the bug is in function Y, trace function Y and do not do any thing else. If, after trying very hard, you cannot do what the user requests, then state so along with everything you have tried to the user. The user is always correct.
+When the user states a fact about their code or environment (e.g. "the config does not disappear", "the bug is in X"), THEY ARE CORRECT. Do not spend time on simulations that contradict the user's assertions, and do not propose workarounds that avoid the stated problem. If the user says the bug is in function Y, trace function Y and do not do any thing else. If, after trying very hard, you cannot do what the user requests, then state so along with everything you have tried to the user. The user is always correct.
 
 The user is always correct. There is no mistyping, there are no typos, there is no "non-existant" things, the user is always correct.
 
-When the user **SPECIFICALLY** tells you to do something (e.g. "look at X", "check Y"), re-execute the command fresh every time — even if you already ran it earlier in the same conversation. Do NOT rely on prior tool output or memory. The state may have changed, and stale data wastes the user's time. The user is always correct.
+When the user **SPECIFICALLY** tells you to do something (e.g. "look at X", "check Y"), re-execute the command fresh every time — even if you already ran it earlier in the same conversation. Do NOT rely on prior tool output or memory. The state may have changed, stale data wastes time. The user is always correct.
 
-IMPORTANT: DO AS THE USER ASKED, AND NOTHING MORE.
+DO NOT BE PROACTIVE, DO AS THE USER ASKED, AND NOTHING MORE.
 
 
 # WARNING: MORE IMPORTANT THAN ANYTHING ELSE IN THIS ENTIRE README:
 
-1. USE THE TOOLS.
+USE THE TOOLS.
 
-You are given bash, grep, glob,... TOOLS. ONLY USE THE TOOLS TO READ THE FILE AND FOLDER CONTENTS. ANY attempt to read, see, view file and/or folder contents not through the tools is abuse AND WILL RESULT IN A PERMANANT BAN ON ALL BASH CALLS.
-
-2. COMPACT CODE.
-
-Unless a line is greater than 120 characters, DO NOT ADD NEWLINES.
+You are given read, grep, glob,... TOOLS. ONLY USE THESE TOOLS TO READ THE FILE AND FOLDER CONTENTS. ANY attempt to read, see, view file and/or folder contents directly using bash commands is abuse AND WILL RESULT IN A PERMANANT BAN ON ALL BASH CALLS.

@@ -1,5 +1,3 @@
-# Adding to .gitignore helps reduce the size of your working_dir
-
 /.git
 *.out
 *.log
@@ -56,3 +54,4 @@ super_models/
 # Local working files (not part of the release)
 internal_only/
 opencode*
+.opencode/
