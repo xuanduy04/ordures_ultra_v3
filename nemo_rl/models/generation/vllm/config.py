@@ -9,6 +9,12 @@ class VllmSpecificArgs(TypedDict):
     expert_parallel_size: int
     gpu_memory_utilization: float
     max_model_len: int
+    
+    # Minimum number of tokens to generate before stop criteria are allowed to end generation.
+    min_tokens: NotRequired[int]
+    # Maximum number of tokens processed in a single engine iteration batch.
+    max_num_batched_tokens: NotRequired[int]
+
     # Additional arguments for vLLM inserted by nemo rl based on the context of when vllm is used
     skip_tokenizer_init: bool
     async_engine: bool

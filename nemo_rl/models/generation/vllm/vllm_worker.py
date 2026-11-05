@@ -688,7 +688,7 @@ class BaseVllmGenerationWorker:
         if enable_prefix_caching is None:
             enable_prefix_caching = torch.cuda.get_device_capability()[0] >= 8
 
-        llm_kwargs = dict(
+        llm_kwargs: dict[str, Any] = dict(
             model=self.model_name,
             served_model_name=self.model_name,
             load_format=load_format,
@@ -711,6 +711,8 @@ class BaseVllmGenerationWorker:
             logprobs_mode="processed_logprobs",
             **vllm_kwargs,
         )
+        if "max_num_batched_tokens" in self.cfg["vllm_cfg"]:
+            llm_kwargs["max_num_batched_tokens"] = self.cfg["vllm_cfg"]["max_num_batched_tokens"]
 
         self._create_engine(llm_kwargs)
         log_gpu_memory_diagnostics(label="after_engine_create", worker_type="VllmGenerationWorker", device_id=0)
@@ -746,12 +748,14 @@ class BaseVllmGenerationWorker:
 
         temperature = 0.0 if greedy else self.cfg["temperature"]
 
-        max_tokens = max_new_tokens if max_new_tokens is not None else self.cfg["max_new_tokens"]
+        min_tokens: int = max(self.cfg["vllm_cfg"].get("min_tokens") or 0, 0)
+        max_tokens: int = max_new_tokens if max_new_tokens is not None else self.cfg["max_new_tokens"]
 
         return self.SamplingParams(
             temperature=temperature,
             top_p=self.cfg["top_p"],
             top_k=top_k_val,
+            min_tokens=min_tokens,
             max_tokens=max_tokens,
             logprobs=0,
             stop_token_ids=self.cfg["stop_token_ids"],
@@ -973,10 +977,12 @@ class VllmGenerationWorker(BaseVllmGenerationWorker):
 
         # Read generation parameters from config
         top_k = self.cfg["top_k"] if self.cfg["top_k"] is not None else -1
+        min_tokens: int = max(self.cfg["vllm_cfg"].get("min_tokens") or 0, 0)
         sampling_params = self.SamplingParams(
             temperature=self.cfg["temperature"] if not greedy else 0,
             top_p=self.cfg["top_p"],
             top_k=top_k if not greedy else 1,
+            min_tokens=min_tokens,
             max_tokens=self.cfg["max_new_tokens"],
             stop_token_ids=self.cfg["stop_token_ids"],
             stop=stop_strings,

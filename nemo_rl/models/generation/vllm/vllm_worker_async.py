@@ -579,6 +579,9 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
             assert request.temperature == generation_config["temperature"]
             assert request.top_p == generation_config["top_p"]
 
+            if "min_tokens" in generation_config["vllm_cfg"]:
+                request.min_tokens = generation_config["vllm_cfg"]["min_tokens"]
+
             generator = await openai_serving_chat.create_chat_completion(request, raw_request)
 
             if isinstance(generator, ErrorResponse):
@@ -975,10 +978,12 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
 
             # Create sampling parameters
             top_k = self.cfg["top_k"] if self.cfg["top_k"] is not None else -1
+            min_tokens: int = max(self.cfg["vllm_cfg"].get("min_tokens") or 0, 0)
             sampling_params = self.SamplingParams(
                 temperature=self.cfg["temperature"] if not greedy else 0,
                 top_p=self.cfg["top_p"],
                 top_k=top_k if not greedy else 1,
+                min_tokens=min_tokens,
                 max_tokens=self.cfg["max_new_tokens"],
                 stop_token_ids=self.cfg["stop_token_ids"],
                 stop=final_stop_strings,
