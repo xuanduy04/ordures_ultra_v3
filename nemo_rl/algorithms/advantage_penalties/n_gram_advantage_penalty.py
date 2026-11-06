@@ -81,7 +81,7 @@ class NGramAdvantagePenalty(BaseAdvantagePenalty[BaseAdvantagePenaltyDefinition,
                     repeat_mask = repeat_mask.to(device=advantages.device, dtype=advantages.dtype)
                     if repeat_mask.max() > 0:
                         for penalty in self.penalties:
-                            penalty_value = penalty.settings.weight * penalties[penalty.name][i].item()
+                            penalty_value = penalties[penalty.name][i].item()
                             if penalty_value < 0:
                                 print(
                                     f"Setting negative advantage (max_penalty={penalty_value:.3f}) for {penalty.settings.size}-gram repetition in assistant message {i} turn {j}",

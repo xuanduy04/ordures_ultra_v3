@@ -169,7 +169,7 @@ class BaseAdvantagePenalty(ABC, Generic[D, S]):
         Args:
             advantages: Token-level advantages of shape [batch_size, seq_len]. Modified in-place.
             batch: The rollout batch containing the message logs.
-            penalties: Mapping of a penalty name to the normalized per-rollout penalty values (pre-weight) of shape
-                [batch_size].
+            penalties: Mapping of a penalty name to the normalized and weighted per-rollout penalty values of shape
+                [batch_size]. NOTE: ``settings.weight`` already applied, implementations must not scale again.
         """
         ...

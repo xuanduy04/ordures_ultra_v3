@@ -195,8 +195,9 @@ def test_flag_apply_adds_penalty_to_offending_message_only():
 
     penalty.apply(advantages, batch, penalties)
 
+    # apply() receives already-weighted penalties, so settings.weight is not applied again.
     expected = torch.zeros(2, 7)
-    expected[0, 3:7] = -1.0
+    expected[0, 3:7] = -0.5
     torch.testing.assert_close(advantages, expected)
 
 
@@ -231,7 +232,7 @@ def test_apply_advantage_penalties_matches_old_inline_code():
                     "c",
                     "flag",
                     assistant_only=False,
-                    weight=1.0,
+                    weight=0.5,
                     normalizer=_make_normalizer("reinforce_plus_plus"),
                     max_advantage_penalty=6767,
                 )
@@ -243,7 +244,8 @@ def test_apply_advantage_penalties_matches_old_inline_code():
     adv_penalties = apply_advantage_penalties(advantages, batch, penalties)
 
     std = flags.std(unbiased=False)
-    old = (-flags / (2 * std)).clamp(min=-6767)
+    old = 0.5 * (-flags / (2 * std)).clamp(min=-6767)
+    # The logged penalties equal exactly what is added to the advantages (post-weight).
     torch.testing.assert_close(adv_penalties["c"], old.float())
     for i in range(4):
         expected_row = torch.zeros(5)

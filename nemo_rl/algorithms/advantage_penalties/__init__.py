@@ -49,7 +49,7 @@ class AdvantagePenaltyConfig(TypedDict):
     empty_final_answer: NotRequired[FlagAdvantagePenaltyConfig]
     # 5. N-gram repetition, subtracted from token advantages.
     n_gram_repetition: NotRequired[NGramAdvantagePenaltyConfig]
-    
+
     # Weight used by any enabled penalty that does not set its own weight.
     default_weight: NotRequired[float]
     # Advantage estimator used to normalize the penalty channels' pseudo-rewards.
@@ -149,8 +149,9 @@ def apply_advantage_penalties(
 ) -> dict[str, Tensor]:
     """Apply all enabled advantage penalties in-place to ``advantages``.
 
-    For each penalty: extract severity signals from the batch, normalize them through the penalty's normalizer, and let
-    the penalty place weighted penalties into the offending messages' token slices.
+    For each penalty: extract severity signals from the batch, normalize them through the penalty's normalizer, scale
+    them by the penalty's weight, and let the penalty place the weighted penalties into the offending messages' token
+    slices.
 
     Args:
         advantages: Token-level advantages of shape [batch_size, seq_len]. Modified in-place.
@@ -160,17 +161,18 @@ def apply_advantage_penalties(
             group-normalizing schemes.
 
     Returns:
-        Mapping of penalty name to the normalized per-rollout penalty values (pre-weight), for logging.
+        Mapping of penalty name to the normalized and weighted per-rollout penalty values (exactly as applied) for logging.
     """
     penalties_log: dict[str, Tensor] = {}
     for penalty in penalties:
         signals = penalty.compute_signal(batch)
-        normalized = {
-            spec.name: normalize_penalty_signal(
+        weighted = {
+            spec.name: spec.settings.weight
+            * normalize_penalty_signal(
                 spec.settings.normalizer, prompt_ids, signals[spec.name], spec.settings.max_advantage_penalty
             )
             for spec in penalty.penalties
         }
-        penalty.apply(advantages, batch, normalized)
-        penalties_log.update(normalized)
+        penalty.apply(advantages, batch, weighted)
+        penalties_log.update(weighted)
     return penalties_log

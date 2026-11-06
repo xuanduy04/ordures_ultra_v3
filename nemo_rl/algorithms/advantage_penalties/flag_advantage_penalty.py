@@ -74,7 +74,7 @@ class FlagAdvantagePenalty(BaseAdvantagePenalty[FlagAdvantagePenaltyDefinition, 
                 msg_len = len(message["token_ids"])
                 is_assistant = message["role"] == "assistant" and "generation_logprobs" in message
                 for penalty in self.penalties:
-                    penalty_value = penalty.settings.weight * penalties[penalty.name][i].item()
+                    penalty_value = penalties[penalty.name][i].item()
                     if (
                         penalty_value < 0
                         and message.get(penalty.definition.message_key, False)
