@@ -240,8 +240,8 @@ def _detect_malformed_thinking(results: list[dict], master_config: Mapping[str, 
 def _detect_n_gram_repetition(results: list[dict], advantage_penalty_cfg: Mapping[str, Any]) -> int:
     """Attach per-token N-gram repetition masks to assistant messages and count offending samples."""
     n_gram_cfg = advantage_penalty_cfg.get("n_gram_repetition", {})
-    n_gram_size = int(n_gram_cfg.get("size", 4))
-    n_gram_threshold = int(n_gram_cfg.get("threshold", 2))
+    n_gram_size = int(n_gram_cfg.get("size", 12))
+    n_gram_threshold = int(n_gram_cfg.get("threshold", 3))
     count = 0
     for result in results:
         sample_repeated = False

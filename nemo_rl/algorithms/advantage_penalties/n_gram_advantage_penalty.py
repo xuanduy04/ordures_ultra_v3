@@ -67,7 +67,7 @@ class NGramAdvantagePenalty(BaseAdvantagePenalty[BaseAdvantagePenaltyDefinition,
             for message in message_log:
                 repeat_mask = message.get("n_gram_repetition_mask")
                 if repeat_mask is not None:
-                    signals[self.penalties[0].name][i] += repeat_mask.sum().to(torch.float64)
+                    signals[self.penalties[0].name][i] += repeat_mask.max().to(torch.float64)
         return signals
 
     def apply(self, advantages: Tensor, batch: BatchedDataDict, penalties: dict[str, Tensor]) -> None:
