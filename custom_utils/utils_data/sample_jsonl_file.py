@@ -18,10 +18,9 @@ logger = logging.getLogger(__name__)
 def _preprocess_underscore_args(argv: list[str]) -> list[str]:
     """Replace underscores with hyphens in ``--arg_name`` / ``--arg_name=val`` prefixes.
 
-    argparse normalises ``-`` and ``_`` internally, so ``--output-path`` and
-    ``--output_path`` would normally map to different destinations.  This
-    function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that
-    argparse treats both spellings identically.
+    argparse normalises ``-`` and ``_`` internally, so ``--output-path`` and ``--output_path`` would normally map to
+    different destinations.  This function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that argparse
+    treats both spellings identically.
     """
     out: list[str] = []
     for arg in argv:
@@ -48,8 +47,8 @@ def _validate_output_path(output_path: Path) -> None:
 def _count_lines_python(input_path: Path) -> int:
     """Fallback line counter used when the native `wc` command is unavailable."""
     # Buffer size (in bytes) for the fallback line-counting pass when `wc` is unavailable.
-    # As this is already empirically optimal and does not require user input, 
-    # we place it here 
+    # As this is already empirically optimal and does not require user input,
+    # we place it here
     BUF_SIZE = 1024 * 1024
 
     lines = 0
@@ -63,12 +62,7 @@ def _count_lines_wc(input_path: Path) -> int:
     """Count newline characters using the native `wc -l` implementation."""
     with input_path.open("rb") as f:
         result = subprocess.run(
-            ["wc", "-l"],
-            stdin=f,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=True,
+            ["wc", "-l"], stdin=f, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
         )
 
     return int(result.stdout.strip())
@@ -88,20 +82,13 @@ def _count_lines(input_path: Path) -> int:
 
 
 def _sample_pass(
-    input_path: Path,
-    output_path: Path,
-    keep_indices: set[int],
-    total_lines: int,
-    sample_size: int,
+    input_path: Path, output_path: Path, keep_indices: set[int], total_lines: int, sample_size: int
 ) -> int:
     """Stream the input file and write selected lines."""
     written = 0
 
-    with input_path.open("r", encoding="utf-8") as fin, \
-         output_path.open("w", encoding="utf-8") as fout:
-        for idx, line in enumerate(
-            tqdm(fin, total=total_lines, desc=f"Sampling {input_path.name}", unit="line")
-        ):
+    with input_path.open("r", encoding="utf-8") as fin, output_path.open("w", encoding="utf-8") as fout:
+        for idx, line in enumerate(tqdm(fin, total=total_lines, desc=f"Sampling {input_path.name}", unit="line")):
             if idx in keep_indices:
                 try:
                     # Validate that it is valid JSON
@@ -125,13 +112,9 @@ def main() -> None:
     sys.argv = _preprocess_underscore_args(sys.argv)
 
     parser = argparse.ArgumentParser(
-        description="Randomly sample lines from a large JSONL file without loading it all into memory.",
+        description="Randomly sample lines from a large JSONL file without loading it all into memory."
     )
-    parser.add_argument(
-        "input",
-        type=Path,
-        help="Path to the input JSONL file.",
-    )
+    parser.add_argument("input", type=Path, help="Path to the input JSONL file.")
     parser.add_argument(
         "--output",
         type=Path,
@@ -146,17 +129,9 @@ def main() -> None:
         help="Preemptively confirm overwrite of the output file (default: false).",
     )
     parser.add_argument(
-        "--size",
-        type=int,
-        required=True,
-        help="Number of samples to extract.",
+        "--size", "--sam", "--sample", dest="size", type=int, required=True, help="Number of samples to extract."
     )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=67,
-        help="Random seed for sampling (default: %(default)s).",
-    )
+    parser.add_argument("--seed", type=int, default=67, help="Random seed for sampling (default: %(default)s).")
 
     args = parser.parse_args()
 
@@ -207,7 +182,7 @@ def main() -> None:
             f"WROTE ONLY {written}/{sample_size} LINES ({100 * written // sample_size}) to output "
             "due to encountering invalid JSON lines."
         )
-    logger.info(f"Done - wrote {written}/{sample_size} entries to {output_path}.")
+    logger.info(f"Done - wrote {written}/{sample_size} entries to {output_path}")
 
 
 if __name__ == "__main__":

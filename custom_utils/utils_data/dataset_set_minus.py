@@ -17,10 +17,9 @@ logger = logging.getLogger(__name__)
 def _preprocess_underscore_args(argv: list[str]) -> list[str]:
     """Replace underscores with hyphens in ``--arg_name`` / ``--arg_name=val`` prefixes.
 
-    argparse normalises ``-`` and ``_`` internally, so ``--output-path`` and
-    ``--output_path`` would normally map to different destinations.  This
-    function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that
-    argparse treats both spellings identically.
+    argparse normalises ``-`` and ``_`` internally, so ``--output-path`` and ``--output_path`` would normally map to
+    different destinations.  This function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that argparse
+    treats both spellings identically.
     """
     out: list[str] = []
     for arg in argv:
@@ -69,12 +68,10 @@ def _strip_dataset_field(line_dict: dict) -> dict:
 def _dataset_set_minus(A_files: list[Path], B_files: list[Path], output_path: Path) -> dict[str, int]:
     r"""Perform a set-minus operation (A \\ B) on JSONL datasets.
 
-    Rows are compared by their canonical JSON serialization (object keys
-    sorted) with any string ``dataset`` tag removed, so rows that are the same
-    sample serialized differently are treated as the same sample.
+    Rows are compared by their canonical JSON serialization (object keys sorted) with any string ``dataset`` tag
+    removed, so rows that are the same sample serialized differently are treated as the same sample.
 
-    Invalid JSON lines in B are silently skipped, invalid JSON lines in A are
-    warned about and skipped.
+    Invalid JSON lines in B are silently skipped, invalid JSON lines in A are warned about and skipped.
     """
     logger.info("Loading exclusion dataset(s) (B)...")
     exclude_data: set[str] = set()
@@ -145,22 +142,19 @@ def _dataset_set_minus(A_files: list[Path], B_files: list[Path], output_path: Pa
 def main() -> None:
     sys.argv = _preprocess_underscore_args(sys.argv)
 
-    parser = argparse.ArgumentParser(
-        description="Perform a set-minus operation (A \\ B) on JSONL datasets.",
-    )
+    parser = argparse.ArgumentParser(description="Perform a set-minus operation (A \\ B) on JSONL datasets.")
     parser.add_argument(
-        "--a",
-        nargs="+",
-        required=True,
-        type=str,
-        help="Input JSONL file(s) or glob pattern(s) for dataset A.",
+        "--a", nargs="+", required=True, type=str, help="Input JSONL file(s) or glob pattern(s) for dataset A."
     )
     parser.add_argument(
         "--b",
-        nargs="+",
-        required=True,
+        nargs="*",
+        default=[],
         type=str,
-        help="Input JSONL file(s) or glob pattern(s) for dataset B.",
+        help=(
+            "Input JSONL file(s) or glob pattern(s) for dataset B. "
+            "Optional; when empty, self-deduplication mode is used instead of a set-minus."
+        ),
     )
     parser.add_argument(
         "--output",
@@ -188,9 +182,38 @@ def main() -> None:
         parser.error(str(exc))
 
     try:
-        B_files = _resolve_input_files(B_patterns)
+        B_files = _resolve_input_files(B_patterns) if B_patterns else []
     except FileNotFoundError as exc:
         parser.error(str(exc))
+
+    if B_files:
+        overlap = sorted(set(A_files) & set(B_files))
+        if overlap:
+            logger.warning("=" * 72)
+            logger.warning("OVERLAP FILES EXIST BETWEEN A AND B")
+            logger.warning("=" * 72)
+            overlap_listing = "\n".join(f"  {idx}. {path}" for idx, path in enumerate(overlap, start=1))
+            logger.warning(
+                f"{len(overlap)} file(s) are in both A and B; all rows of these files will be excluded:\n{overlap_listing}"
+            )
+            response = input("Continue despite the overlap? Type [y]es/[n]o: ").strip().lower()
+            if response not in ("y", "yes"):
+                logger.info("Overlap not confirmed; exiting.")
+                sys.exit(0)
+    else:
+        logger.warning("=" * 72)
+        logger.warning("NO `--b` DATASETS GIVEN: SELF-DEDUPLICATION MODE")
+        logger.warning("=" * 72)
+        logger.warning("No exclusion dataset(s) (B) were provided, this will:")
+        logger.warning("  1. Deduplicate dataset A against itself (drop repeated rows within A).")
+        logger.warning("  2. NOT perform a real set-minus (A \\ B), because B is empty.")
+        logger.warning(
+            "This is likely NOT what was intended. If you meant to a dataset B, abort NOW and re-run with `--b`."
+        )
+        response = input("Continue with self-deduplication? Type [y]es/[n]o: ").strip().lower()
+        if response not in ("y", "yes"):
+            logger.info("Self-deduplication not confirmed; exiting.")
+            sys.exit(0)
 
     if output_path in [f.resolve() for f in A_files + B_files]:
         parser.error(f"Input and output paths must differ, got: {output_path}")
@@ -206,7 +229,10 @@ def main() -> None:
                 logger.info("Existing output file will not be overridden; exiting.")
                 sys.exit(0)
 
-    logger.info(f"Computing A \\ B from {len(A_files)} A file(s) and {len(B_files)} B file(s) -> {output_path}")
+    if B_files:
+        logger.info(f"Computing A \\ B from {len(A_files)} A file(s) and {len(B_files)} B file(s) -> {output_path}")
+    else:
+        logger.info(f"Computing self-deduplication of A from {len(A_files)} A file(s) (no B) -> {output_path}")
 
     stats = _dataset_set_minus(A_files, B_files, output_path)
 

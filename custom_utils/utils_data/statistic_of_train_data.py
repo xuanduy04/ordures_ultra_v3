@@ -36,29 +36,29 @@ CATEGORY_TO_AGENT_REF: dict[str, set[str]] = {
         # Technically, general_qa is meant for "Math, Code, MCQ" type.
         # However, in practice, general_qa is used as an all-encompassing environment
         # (for all tasks that have ground truths)
-        'general_qa_simple_agent',
+        "general_qa_simple_agent"
     },
     "RLHF, IF": {
-        'citation_format_simple_agent',
-        'freeform_formatting_simple_agent',
-        'genrm_simple_agent',
-        'genrm_simple_agent_reasoning_off',
-        'instruction_following_simple_agent',
-        'multichallenge_simple_agent',
-        'structured_outputs_simple_agent',
-        'structured_outputs_v3_simple_agent',
+        "citation_format_simple_agent",
+        "freeform_formatting_simple_agent",
+        "genrm_simple_agent",
+        "genrm_simple_agent_reasoning_off",
+        "instruction_following_simple_agent",
+        "multichallenge_simple_agent",
+        "structured_outputs_simple_agent",
+        "structured_outputs_v3_simple_agent",
     },
     "Math, Code, MCQ": {
-        'code_gen_simple_agent',
-        'math_with_judge_simple_agent',
-        'mcqa_simple_agent',
-        'reasoning_gym_simple_agent',
+        "code_gen_simple_agent",
+        "math_with_judge_simple_agent",
+        "mcqa_simple_agent",
+        "reasoning_gym_simple_agent",
     },
     "Agentic": {
-        'calendar_simple_agent',
-        'toolcall_schema_single_step_tool_use_with_argument_comparison_agent',
-        'single_step_tool_use_with_argument_comparison_agent',
-        'workplace_assistant_simple_agent'
+        "calendar_simple_agent",
+        "toolcall_schema_single_step_tool_use_with_argument_comparison_agent",
+        "single_step_tool_use_with_argument_comparison_agent",
+        "workplace_assistant_simple_agent",
     },
     # "Harness": {
     #     # N/A for now
@@ -66,9 +66,7 @@ CATEGORY_TO_AGENT_REF: dict[str, set[str]] = {
 }
 
 AGENT_REF_TO_CATEGORY = {
-    agent_ref: category
-    for category, agent_refs in CATEGORY_TO_AGENT_REF.items()
-    for agent_ref in agent_refs
+    agent_ref: category for category, agent_refs in CATEGORY_TO_AGENT_REF.items() for agent_ref in agent_refs
 }
 
 
@@ -79,10 +77,9 @@ SAM_FIELD_PATTERN = re.compile(r"sam(\d+)k")
 def _preprocess_underscore_args(argv: list[str]) -> list[str]:
     """Replace underscores with hyphens in ``--arg_name`` / ``--arg_name=val`` prefixes.
 
-    argparse normalises ``-`` and ``_`` internally, so ``--output-path`` and
-    ``--output_path`` would normally map to different destinations.  This
-    function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that
-    argparse treats both spellings identically.
+    argparse normalises ``-`` and ``_`` internally, so ``--output-path`` and ``--output_path`` would normally map to
+    different destinations.  This function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that argparse
+    treats both spellings identically.
     """
     out: list[str] = []
     for arg in argv:
@@ -119,15 +116,14 @@ def _resolve_input_files(patterns: list[str]) -> list[Path]:
 def _extract_filename_content(input_path: Path) -> str:
     """Extract the ``content`` field from a filename following the Filename Standard.
 
-    The standard stem is ``<content>-<metadata>-<data type>``, where metadata is
-    an optional ``len<number>k`` followed by a ``sam<number>k``.
+    The standard stem is ``<content>-<metadata>-<data type>``, where metadata is an optional ``len<number>k`` followed
+    by a ``sam<number>k``.
     """
     fields = input_path.stem.strip().split("-")
     if len(fields) > 1:
         fields = fields[:-1]
     while fields and (
-        SAM_FIELD_PATTERN.fullmatch(fields[-1]) is not None
-        or LEN_FIELD_PATTERN.fullmatch(fields[-1]) is not None
+        SAM_FIELD_PATTERN.fullmatch(fields[-1]) is not None or LEN_FIELD_PATTERN.fullmatch(fields[-1]) is not None
     ):
         fields = fields[:-1]
     return "-".join(fields)
@@ -136,19 +132,15 @@ def _extract_filename_content(input_path: Path) -> str:
 def _summarize_agent_names(input_files: list[Path], use_dataset: bool = False) -> Counter:
     """Count agent names across the given JSONL files.
 
-    When *use_dataset* is set, each agent name is counted together with its data
-    source: the row's ``dataset`` field if present, otherwise the ``content``
-    field parsed from the filename the row came from.
+    When *use_dataset* is set, each agent name is counted together with its data source: the row's ``dataset`` field if
+    present, otherwise the ``content`` field parsed from the filename the row came from.
     """
     counter = Counter()
 
     for file in input_files:
         filename_content = _extract_filename_content(file) if use_dataset else None
         with file.open("r", encoding="utf-8") as f:
-            for line_num, line in enumerate(
-                tqdm(f, desc=f"Reading {file.name}", unit="lines"),
-                start=1,
-            ):
+            for line_num, line in enumerate(tqdm(f, desc=f"Reading {file.name}", unit="lines"), start=1):
                 line = line.strip()
                 if not line:
                     continue
@@ -185,8 +177,7 @@ def _summarize_agent_names(input_files: list[Path], use_dataset: bool = False) -
 def _agent_summary_parts(key: str | tuple[str, str]) -> tuple[str, str]:
     """Return the ``(agent name, display name)`` of a summary key.
 
-    Summary keys are plain agent names, or ``(agent name, source)`` tuples when
-    the table is grouped by dataset.
+    Summary keys are plain agent names, or ``(agent name, source)`` tuples when the table is grouped by dataset.
     """
     if isinstance(key, tuple):
         agent_name, source = key
@@ -203,18 +194,18 @@ def _generate_summary(results: Counter | dict, output_path: Path) -> None:
     # Calculate stats
     output_stats = defaultdict(list)
     output_catergory_samples = defaultdict(int)
-    
+
     total_count = results.total()
     for key, count in sorted(results.items()):
         name, display = _agent_summary_parts(key)
         percentage = f"{count / total_count * 100:05.2f}%"
-        
+
         judge_type = "x"
         if "genrm" in name.lower():
             judge_type = "GenRM"
         elif name in AGENT_REF_NEEDS_LLM_JUDGE:
             judge_type = "LLM-Judge"
-            
+
         category = AGENT_REF_TO_CATEGORY.get(name, UNKNOWN_CATEGORY_KEY)
         output_stats[category].append((display, count, percentage, judge_type))
         output_catergory_samples[category] += count
@@ -222,45 +213,41 @@ def _generate_summary(results: Counter | dict, output_path: Path) -> None:
     # Config & Padding
     name_pad = int(max(len(_agent_summary_parts(key)[1]) for key in results.keys()))
     separator_pad = name_pad + 40
-    
+
     # Print table
     with output_path.open("w", encoding="utf-8") as output:
         # Table header
         print(f"{'Environment':<{name_pad}} | {'Num samples':^11} | {'% samples':^9} | {'Judge':^9} |", file=output)
         print("=" * separator_pad, file=output)
-        
+
         # Table body
         for category in [c for c in CATEGORY_TO_AGENT_REF if c in output_catergory_samples]:
             catergory_count = output_catergory_samples[category]
             # Category header
-            print(f"{category:-^{name_pad}}{'-'*40}", file=output)
-    
+            print(f"{category:-^{name_pad}}{'-' * 40}", file=output)
+
             # Category body
             for name, count, percentage, judge_type in output_stats[category]:
                 print(f"{str(name):<{name_pad}} | {count:>11} | {percentage:>9} | {judge_type:^9} |", file=output)
-            
+
             # Category footer
             catergory_percentage = f"{catergory_count / total_count * 100:05.2f}%"
-            print(f"{"TOTAL FOR CATERGORY":>{name_pad}} | {catergory_count:>11} | {catergory_percentage:>9} | {"":^9} |", file=output)
-    
+            print(
+                f"{'TOTAL FOR CATERGORY':>{name_pad}} | {catergory_count:>11} | {catergory_percentage:>9} | {'':^9} |",
+                file=output,
+            )
+
         # Table footer
         print("=" * separator_pad, file=output)
-        print(f"{"GRAND TOTAL  ":>{name_pad}} | {total_count:>11} | {"100.00%":>9} | {"":^9} |", file=output)
+        print(f"{'GRAND TOTAL  ':>{name_pad}} | {total_count:>11} | {'100.00%':>9} | {'':^9} |", file=output)
         print("", file=output)
 
 
 def main() -> None:
     sys.argv = _preprocess_underscore_args(sys.argv)
 
-    parser = argparse.ArgumentParser(
-        description="Get statistic of different agent types of a training data",
-    )
-    parser.add_argument(
-        "input",
-        nargs="+",
-        type=str,
-        help="Input JSONL file(s) or glob pattern(s) for analysis.",
-    )
+    parser = argparse.ArgumentParser(description="Get statistic of different agent types of a training data")
+    parser.add_argument("input", nargs="+", type=str, help="Input JSONL file(s) or glob pattern(s) for analysis.")
     parser.add_argument(
         "--output",
         type=Path,

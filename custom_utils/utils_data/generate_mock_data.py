@@ -24,10 +24,9 @@ DEFAULT_SEED = 67
 def _preprocess_underscore_args(argv: list[str]) -> list[str]:
     """Replace underscores with hyphens in ``--arg_name`` / ``--arg_name=val`` prefixes.
 
-    argparse normalises ``-`` and ``_`` internally, so ``--foo-bar`` and
-    ``--foo_bar`` would normally map to different destinations.  This
-    function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that
-    argparse treats both spellings identically.
+    argparse normalises ``-`` and ``_`` internally, so ``--foo-bar`` and ``--foo_bar`` would normally map to different
+    destinations.  This function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that argparse treats both
+    spellings identically.
     """
     out: list[str] = []
     for arg in argv:
@@ -70,11 +69,7 @@ def _allowed_token_ids(tokenizer: Any) -> list[int]:
 
 def _decode_ids(tokenizer: Any, token_ids: list[int]) -> str:
     """Decode token IDs to text without stripping special tokens or cleaning spaces."""
-    return tokenizer.decode(
-        token_ids,
-        skip_special_tokens=False,
-        clean_up_tokenization_spaces=False,
-    )
+    return tokenizer.decode(token_ids, skip_special_tokens=False, clean_up_tokenization_spaces=False)
 
 
 def _make_candidate(tokenizer: Any, token_ids: list[int]) -> tuple[str, int]:
@@ -96,20 +91,13 @@ def _is_better(count: int, best_count: int, target: int) -> bool:
 
 
 def _generate_sample(
-    tokenizer: Any,
-    target_len: int,
-    overhead: int,
-    allowed_ids: list[int],
-    rng: random.Random,
-    content_budget: int,
+    tokenizer: Any, target_len: int, overhead: int, allowed_ids: list[int], rng: random.Random, content_budget: int
 ) -> tuple[str, int]:
     """Generate the sample whose chat-templated token count is closest to *target_len*.
 
-    Each of ``N_FRESH_SAMPLES`` fresh attempts starts from ``content_budget`` random
-    token IDs.  Up to ``N_REFINEMENTS`` rounds follow: when the measured count is
-    below *target_len*, the missing number of token IDs is appended; when it is
-    above, the ID sequence is trimmed proportionally.  The best state seen across
-    all attempts is returned.
+    Each of ``N_FRESH_SAMPLES`` fresh attempts starts from ``content_budget`` random token IDs.  Up to ``N_REFINEMENTS``
+    rounds follow: when the measured count is below *target_len*, the missing number of token IDs is appended; when it
+    is above, the ID sequence is trimmed proportionally.  The best state seen across all attempts is returned.
     """
     best_text = ""
     best_count = -1
@@ -142,7 +130,7 @@ def main() -> None:
     sys.argv = _preprocess_underscore_args(sys.argv)
 
     parser = argparse.ArgumentParser(
-        description="Generate mock general_qa data with a target chat-templated token length.",
+        description="Generate mock general_qa data with a target chat-templated token length."
     )
     parser.add_argument(
         "--output",
@@ -156,23 +144,12 @@ def main() -> None:
         required=True,
         help="Target token length per sample, including the chat template (literal tokens).",
     )
+    parser.add_argument("--size", type=int, required=True, help="Number of identical samples to write.")
     parser.add_argument(
-        "--size",
-        type=int,
-        required=True,
-        help="Number of identical samples to write.",
+        "--tokenizer", type=Path, required=True, help="Path to a local HuggingFace tokenizer directory."
     )
     parser.add_argument(
-        "--tokenizer",
-        type=Path,
-        required=True,
-        help="Path to a local HuggingFace tokenizer directory.",
-    )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=DEFAULT_SEED,
-        help="Random seed for token sampling (default: %(default)s).",
+        "--seed", type=int, default=DEFAULT_SEED, help="Random seed for token sampling (default: %(default)s)."
     )
     parser.add_argument(
         "--yes",
@@ -198,9 +175,7 @@ def main() -> None:
         parser.error(f"Failed to load tokenizer from {tokenizer_dir}: {exc}")
 
     output_path: Path = (
-        args.output.resolve()
-        if args.output is not None
-        else Path(f"./mock_data-len{args.len}.jsonl").resolve()
+        args.output.resolve() if args.output is not None else Path(f"./mock_data-len{args.len}.jsonl").resolve()
     )
 
     try:
@@ -224,9 +199,7 @@ def main() -> None:
 
     content_budget = args.len - overhead
     if content_budget <= 0:
-        parser.error(
-            f"--len ({args.len}) must exceed the chat template overhead ({overhead} tokens)."
-        )
+        parser.error(f"--len ({args.len}) must exceed the chat template overhead ({overhead} tokens).")
 
     try:
         allowed_ids = _allowed_token_ids(tokenizer)
@@ -239,16 +212,12 @@ def main() -> None:
     )
 
     rng = random.Random(args.seed)
-    text, count = _generate_sample(
-        tokenizer, args.len, overhead, allowed_ids, rng, content_budget
-    )
+    text, count = _generate_sample(tokenizer, args.len, overhead, allowed_ids, rng, content_budget)
 
     if count == args.len:
         logger.info(f"Generated a sample with exactly {args.len} chat-templated tokens.")
     else:
-        logger.warning(
-            f"Best-effort sample has {count} chat-templated tokens instead of the target {args.len}."
-        )
+        logger.warning(f"Best-effort sample has {count} chat-templated tokens instead of the target {args.len}.")
 
     row = {
         "agent_ref": {"name": AGENT_NAME},
@@ -259,14 +228,15 @@ def main() -> None:
     }
     line = json.dumps(row, ensure_ascii=False) + "\n"
 
-    with output_path.open("w", encoding="utf-8") as fout, tqdm(
-        total=args.size, desc="Writing mock data", unit="sample"
-    ) as pbar:
+    with (
+        output_path.open("w", encoding="utf-8") as fout,
+        tqdm(total=args.size, desc="Writing mock data", unit="sample") as pbar,
+    ):
         for _ in range(args.size):
             fout.write(line)
             pbar.update(1)
 
-    logger.info(f"Done - wrote {args.size} sample(s) to {output_path}.")
+    logger.info(f"Done - wrote {args.size} sample(s) to {output_path}")
 
 
 if __name__ == "__main__":

@@ -22,10 +22,9 @@ AGENT_NAME_REASONING_OFF = "genrm_simple_agent_reasoning_off"
 def _preprocess_underscore_args(argv: list[str]) -> list[str]:
     """Replace underscores with hyphens in ``--arg_name`` / ``--arg_name=val`` prefixes.
 
-    argparse normalises ``-`` and ``_`` internally, so ``--skip-on-error`` and
-    ``--skip_on_error`` would normally map to different destinations.  This
-    function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that
-    argparse treats both spellings identically.
+    argparse normalises ``-`` and ``_`` internally, so ``--skip-on-error`` and ``--skip_on_error`` would normally map to
+    different destinations.  This function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that argparse
+    treats both spellings identically.
     """
     out: list[str] = []
     for arg in argv:
@@ -56,40 +55,29 @@ def _convert_chat_template_to_nemo_gym(turns: list[dict[str, Any]]) -> list[dict
         content = turn.get("content")
 
         if role == "tool":
-            out.append({
-                "type": "function_call_output",
-                "call_id": turn["tool_call_id"],
-                "output": content,
-            })
+            out.append({"type": "function_call_output", "call_id": turn["tool_call_id"], "output": content})
         elif role == "assistant":
-            out.append({
-                "type": "message",
-                "role": role,
-                "content": content or "",
-            })
+            out.append({"type": "message", "role": role, "content": content or ""})
             for tc in turn.get("tool_calls") or []:
-                out.append({
-                    "type": "function_call",
-                    "call_id": tc["id"],
-                    "name": tc["function"]["name"],
-                    "arguments": json.dumps(tc["function"]["arguments"]),
-                })
+                out.append(
+                    {
+                        "type": "function_call",
+                        "call_id": tc["id"],
+                        "name": tc["function"]["name"],
+                        "arguments": json.dumps(tc["function"]["arguments"]),
+                    }
+                )
         elif role in ("user", "system"):
-            out.append({
-                "type": "message",
-                "role": role,
-                "content": content,
-            })
+            out.append({"type": "message", "role": role, "content": content})
     return out
 
 
 def _convert_tools_to_nemo_gym(tools: list[dict]) -> list[dict]:
     """Normalize tool definitions to the NeMo-Gym Responses API shape.
 
-    Accepts both the chat-template form (``{"type": "function", "function": {...}}``)
-    and the already-unwrapped form (``{"name": ..., "parameters": ...}``).
-    OpenAI 2.7.2 (pinned by NeMo Gym) requires ``type: "function"`` and ``strict``
-    on function tools, so both are added when missing.
+    Accepts both the chat-template form (``{"type": "function", "function": {...}}``) and the already-unwrapped form
+    (``{"name": ..., "parameters": ...}``). OpenAI 2.7.2 (pinned by NeMo Gym) requires ``type: "function"`` and
+    ``strict`` on function tools, so both are added when missing.
     """
     out = []
     for tool in tools:
@@ -104,7 +92,9 @@ def _convert_tools_to_nemo_gym(tools: list[dict]) -> list[dict]:
     return out
 
 
-def _convert_entry(entry: dict, prompt_field: str, tools_field: str, no_reasoning: bool, dataset: str, principle: str) -> dict:
+def _convert_entry(
+    entry: dict, prompt_field: str, tools_field: str, no_reasoning: bool, dataset: str, principle: str
+) -> dict:
     """Convert one raw entry to the genrm_compare JSONL schema."""
     prompt = entry.get(prompt_field, "")
 
@@ -122,9 +112,7 @@ def _convert_entry(entry: dict, prompt_field: str, tools_field: str, no_reasonin
     else:
         _input = [{"role": "user", "content": str(prompt).strip()}]
 
-    responses_create_params: dict = {
-        "input": _input,
-    }
+    responses_create_params: dict = {"input": _input}
     tools = entry.get(tools_field)
     if tools:
         if not isinstance(tools, list) or not all(isinstance(tool, dict) for tool in tools):
@@ -134,10 +122,7 @@ def _convert_entry(entry: dict, prompt_field: str, tools_field: str, no_reasonin
 
     out: dict = {
         "responses_create_params": responses_create_params,
-        "agent_ref": {
-            "type": AGENT_TYPE, 
-            "name": AGENT_NAME_REASONING_OFF if no_reasoning else AGENT_NAME
-        },
+        "agent_ref": {"type": AGENT_TYPE, "name": AGENT_NAME_REASONING_OFF if no_reasoning else AGENT_NAME},
     }
     if dataset:
         out["dataset"] = dataset
@@ -151,8 +136,7 @@ def _load_principle_script(script_path: Path) -> ModuleType:
     """Import *script_path* as a module and validate its ``get_principle`` contract.
 
     Raises:
-        RuntimeError: If the module cannot be imported or does not define a
-            callable ``get_principle``.
+        RuntimeError: If the module cannot be imported or does not define a callable ``get_principle``.
     """
     try:
         spec = importlib.util.spec_from_file_location("genrm_principle_script", script_path)
@@ -174,19 +158,9 @@ def _load_principle_script(script_path: Path) -> ModuleType:
 def main() -> None:
     sys.argv = _preprocess_underscore_args(sys.argv)
 
-    parser = argparse.ArgumentParser(
-        description="Convert a JSON/JSONL dataset to genrm_compare format.",
-    )
-    parser.add_argument(
-        "input",
-        type=Path,
-        help="Path to the input data file (must be a .jsonl).",
-    )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        help="Path to the output JSONL file (must end with .jsonl).",
-    )
+    parser = argparse.ArgumentParser(description="Convert a JSON/JSONL dataset to genrm_compare format.")
+    parser.add_argument("input", type=Path, help="Path to the input data file (must be a .jsonl).")
+    parser.add_argument("--output", type=Path, help="Path to the output JSONL file (must end with .jsonl).")
     parser.add_argument(
         "--yes",
         "-y",
@@ -199,11 +173,7 @@ def main() -> None:
         default="messages",
         help="Field name for the prompt (a string or a chat-template list of turns) (default: %(default)s).",
     )
-    parser.add_argument(
-        "--tools-field",
-        default="tools",
-        help="Field name for the tools list (default: %(default)s).",
-    )
+    parser.add_argument("--tools-field", default="tools", help="Field name for the tools list (default: %(default)s).")
     parser.add_argument(
         "--no-reasoning",
         action="store_true",
@@ -249,9 +219,7 @@ def main() -> None:
 
     input_path: Path = args.input
     output_path: Path = (
-        args.output
-        if args.output is not None
-        else args.input.with_name(args.input.stem + "-genrm_compare.jsonl")
+        args.output if args.output is not None else args.input.with_name(args.input.stem + "-genrm_compare.jsonl")
     )
     prompt_field: str = args.prompt_field
     tools_field: str = args.tools_field
@@ -324,9 +292,7 @@ def main() -> None:
                         )
                     row_principle = result.strip()
                     if not row_principle:
-                        raise ValueError(
-                            f"Principle script '{principle_script_path}' returned an empty principle"
-                        )
+                        raise ValueError(f"Principle script '{principle_script_path}' returned an empty principle")
                 converted_entry = _convert_entry(entry, prompt_field, tools_field, no_reasoning, dataset, row_principle)
             except Exception as exc:
                 if skip_on_error:
@@ -345,7 +311,7 @@ def main() -> None:
     if skipped:
         logger.info(f"Skipped {skipped} invalid entries.")
 
-    logger.info(f"Done - wrote {written} entries to {output_path}.")
+    logger.info(f"Done - wrote {written} entries to {output_path}")
 
 
 if __name__ == "__main__":

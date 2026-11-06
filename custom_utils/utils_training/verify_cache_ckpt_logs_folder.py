@@ -10,7 +10,7 @@ if __name__ == "__main__":
         script_dir = sys.argv[2]
 
         print(f"{config_path=}\n{script_dir=}\n")
-        
+
         checkpoint_dir = get_config_value(config_path, "checkpointing.checkpoint_dir")
         log_dir = get_config_value(config_path, "logger.log_dir")
 

@@ -15,10 +15,9 @@ logger = logging.getLogger(__name__)
 def _preprocess_underscore_args(argv: list[str]) -> list[str]:
     """Replace underscores with hyphens in ``--arg_name`` / ``--arg_name=val`` prefixes.
 
-    argparse normalises ``-`` and ``_`` internally, so ``--output-path`` and
-    ``--output_path`` would normally map to different destinations.  This
-    function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that
-    argparse treats both spellings identically.
+    argparse normalises ``-`` and ``_`` internally, so ``--output-path`` and ``--output_path`` would normally map to
+    different destinations.  This function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that argparse
+    treats both spellings identically.
     """
     out: list[str] = []
     for arg in argv:
@@ -34,8 +33,7 @@ def _preprocess_underscore_args(argv: list[str]) -> list[str]:
 def _coerce_tools(tools):
     """Coerce *tools* into a list of dicts, json-loading string layers before validating.
 
-    The 'tools' field may arrive as a list of JSON strings, a JSON string of a
-    list, or a plain list of dicts.
+    The 'tools' field may arrive as a list of JSON strings, a JSON string of a list, or a plain list of dicts.
     """
     if tools is None:
         return None
@@ -79,9 +77,7 @@ def _convert_pass(input_path: Path, output_path: Path, skip_on_error: bool) -> i
     processed = 0
     skipped = 0
 
-    with input_path.open("r", encoding="utf-8") as infile, \
-         output_path.open("w", encoding="utf-8") as outfile:
-
+    with input_path.open("r", encoding="utf-8") as infile, output_path.open("w", encoding="utf-8") as outfile:
         for idx, line in enumerate(tqdm(infile, desc="Converting", unit="line")):
             line = line.strip()
             if not line:
@@ -132,10 +128,7 @@ def _convert_pass(input_path: Path, output_path: Path, skip_on_error: bool) -> i
                 if not question or not ground_truth:
                     continue
 
-                transformed_data = {
-                    "question": question,
-                    "ground_truth": ground_truth,
-                }
+                transformed_data = {"question": question, "ground_truth": ground_truth}
                 if answer_is_tool_call:
                     transformed_data["answer_is_tool_call"] = True
                 if tools:
@@ -147,7 +140,7 @@ def _convert_pass(input_path: Path, output_path: Path, skip_on_error: bool) -> i
 
             except Exception as exc:
                 if skip_on_error:
-                    logger.warning(f"Skipping line {idx+1} (numbered from 1): {exc}")
+                    logger.warning(f"Skipping line {idx + 1} (numbered from 1): {exc}")
                     skipped += 1
                     continue
                 raise
@@ -162,18 +155,11 @@ def main() -> None:
     sys.argv = _preprocess_underscore_args(sys.argv)
 
     parser = argparse.ArgumentParser(
-        description="Convert an SFT-format JSONL file into RL-style question/answer records.",
+        description="Convert an SFT-format JSONL file into RL-style question/answer records."
     )
+    parser.add_argument("input", type=str, help="Path to the input JSONL file (single file, no glob).")
     parser.add_argument(
-        "input",
-        type=str,
-        help="Path to the input JSONL file (single file, no glob).",
-    )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        default=None,
-        help="Path to the output JSONL file (default: '<input stem>-RL_QA.jsonl').",
+        "--output", type=Path, default=None, help="Path to the output JSONL file (default: '<input stem>-RL_QA.jsonl')."
     )
     parser.add_argument(
         "--yes",
@@ -193,9 +179,7 @@ def main() -> None:
 
     input_path: Path = Path(args.input).resolve()
     output_path: Path = (
-        args.output.resolve()
-        if args.output is not None
-        else input_path.with_name(input_path.stem + "-RL_QA.jsonl")
+        args.output.resolve() if args.output is not None else input_path.with_name(input_path.stem + "-RL_QA.jsonl")
     )
     skip_on_error: bool = args.skip_on_error
 
@@ -218,7 +202,7 @@ def main() -> None:
 
     processed = _convert_pass(input_path, output_path, skip_on_error)
 
-    logger.info(f"Done - wrote {processed} entries to {output_path}.")
+    logger.info(f"Done - wrote {processed} entries to {output_path}")
 
 
 if __name__ == "__main__":

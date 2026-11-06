@@ -17,10 +17,9 @@ logger = logging.getLogger(__name__)
 def _preprocess_underscore_args(argv: list[str]) -> list[str]:
     """Replace underscores with hyphens in ``--arg_name`` / ``--arg_name=val`` prefixes.
 
-    argparse normalises ``-`` and ``_`` internally, so ``--output-path`` and
-    ``--output_path`` would normally map to different destinations.  This
-    function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that
-    argparse treats both spellings identically.
+    argparse normalises ``-`` and ``_`` internally, so ``--output-path`` and ``--output_path`` would normally map to
+    different destinations.  This function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that argparse
+    treats both spellings identically.
     """
     out: list[str] = []
     for arg in argv:
@@ -93,7 +92,9 @@ def _stamp_output_pass(input_files: list[Path], dataset: str, output_path: Path)
                     if entry is None:
                         if line.strip():
                             skipped_count += 1
-                            logger.warning(f"Skipping invalid JSON on line {line_num} in {input_path}. It was not copied.")
+                            logger.warning(
+                                f"Skipping invalid JSON on line {line_num} in {input_path}. It was not copied."
+                            )
                         continue
 
                     json.dump(entry, outfile, ensure_ascii=False)
@@ -106,9 +107,8 @@ def _stamp_output_pass(input_files: list[Path], dataset: str, output_path: Path)
 def _stamp_in_place_pass(input_files: list[Path], dataset: str) -> dict[str, int]:
     """Rewrite each input file in place with its ``dataset`` field stamped.
 
-    Each file is replaced only after all of its rows were written successfully
-    to a sibling temporary file. Invalid JSON lines and non-object JSON lines
-    are warned about and dropped.
+    Each file is replaced only after all of its rows were written successfully to a sibling temporary file. Invalid JSON
+    lines and non-object JSON lines are warned about and dropped.
     """
     stamped_count = 0
     skipped_count = 0
@@ -126,7 +126,9 @@ def _stamp_in_place_pass(input_files: list[Path], dataset: str) -> dict[str, int
                         if entry is None:
                             if line.strip():
                                 skipped_count += 1
-                                logger.warning(f"Skipping invalid JSON on line {line_num} in {input_path}. It was not kept.")
+                                logger.warning(
+                                    f"Skipping invalid JSON on line {line_num} in {input_path}. It was not kept."
+                                )
                             continue
 
                         json.dump(entry, outfile, ensure_ascii=False)
@@ -145,13 +147,10 @@ def main() -> None:
     sys.argv = _preprocess_underscore_args(sys.argv)
 
     parser = argparse.ArgumentParser(
-        description="Uniformly assign the 'dataset' field of all input datasets to the same value.",
+        description="Uniformly assign the 'dataset' field of all input datasets to the same value."
     )
     parser.add_argument(
-        "input",
-        nargs="+",
-        type=str,
-        help="Input JSONL file(s) or glob pattern(s) of one dataset group.",
+        "input", nargs="+", type=str, help="Input JSONL file(s) or glob pattern(s) of one dataset group."
     )
     parser.add_argument(
         "--output",
@@ -166,11 +165,7 @@ def main() -> None:
         default=False,
         help="Preemptively confirm overwrite of the output file (default: false).",
     )
-    parser.add_argument(
-        "--dataset",
-        required=True,
-        help="Value assigned to the 'dataset' field of every row.",
-    )
+    parser.add_argument("--dataset", required=True, help="Value assigned to the 'dataset' field of every row.")
 
     args = parser.parse_args()
 

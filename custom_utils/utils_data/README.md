@@ -99,7 +99,9 @@ Implemented dataset functions:
 
 1. `dataset_set_minus.py`:
 
-Drops lines of datasets `A` that appear in datasets `B` or is repeated within `A`, compared by canonical JSON (key order and inner whitespace insensitive, ignoring a string `dataset` tag); i.e. output = `A` set minus `B`. Extra flags: `--a`/`--b` (both required, glob-supported).
+Drops lines of datasets `A` that appear in datasets `B` or is repeated within `A`, compared by canonical JSON (key order and inner whitespace insensitive, ignoring a string `dataset` tag); i.e. output = `A` set minus `B`. Extra flags: `--a` (required, glob-supported), `--b` (optional, glob-supported). 
+
+NOTE: When `--b` is empty, the script runs **self-deduplication mode** instead: `A` will be deduplicated against itself (not a real set-minus, so it's unintentional behaviour).
 
 2. `get_untrained_data.py`:
 
@@ -191,13 +193,14 @@ All scripts follow the same top-to-bottom layout; helpers are defined in the ord
 
 ### Helper duplication
 
-Scripts never import each other. When a new script needs an existing
-helper, copy it from the current version in an existing script.
+Scripts never import each other. When a new script needs an existing helper, copy it from the current version in an existing script.
 Per-file variation is acceptable.
 
 ### `--yes`/`-y` contract
 
-`--yes` only bypasses the interactive overwrite prompt when the output file already exists. Setup errors stay fatal: input must exist, input and output files must be mutually exclusive, output must end in `.jsonl`.
+`--yes` only bypasses the interactive overwrite prompt when the output file already exists. 
+
+All other errors stay fatal, e.g: input must exist, input and output files must be mutually exclusive, output must end in `.jsonl`, the self-deduplication confirmation in `dataset_set_minus.py`,...
 
 ### Adding a new script
 

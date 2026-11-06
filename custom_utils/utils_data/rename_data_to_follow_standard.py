@@ -21,9 +21,7 @@ from tqdm.auto import tqdm
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
-RESOURCES_SERVERS_DIR = (
-    Path(__file__).resolve().parents[2] / "3rdparty" / "Gym-workspace" / "Gym" / "resources_servers"
-)
+RESOURCES_SERVERS_DIR = Path(__file__).resolve().parents[2] / "3rdparty" / "Gym-workspace" / "Gym" / "resources_servers"
 
 LEN_FIELD_PATTERN = re.compile(r"len(\d+)k")
 SAM_FIELD_PATTERN = re.compile(r"sam(\d+)k")
@@ -34,6 +32,10 @@ INFLIGHT_TASKS_PER_WORKER = 4
 DATA_TYPE_SFT = "SFT"
 DATA_TYPE_RL_QA = "RL_QA"
 
+TOKENIZER_PATH = ""
+
+
+# set during runtime
 G_TOKENIZER: Any = None
 G_DATA_TYPE: str = ""
 
@@ -41,10 +43,9 @@ G_DATA_TYPE: str = ""
 def _preprocess_underscore_args(argv: list[str]) -> list[str]:
     """Replace underscores with hyphens in ``--arg_name`` / ``--arg_name=val`` prefixes.
 
-    argparse normalises ``-`` and ``_`` internally, so ``--output-path`` and
-    ``--output_path`` would normally map to different destinations.  This
-    function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that
-    argparse treats both spellings identically.
+    argparse normalises ``-`` and ``_`` internally, so ``--output-path`` and ``--output_path`` would normally map to
+    different destinations.  This function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that argparse
+    treats both spellings identically.
     """
     out: list[str] = []
     for arg in argv:
@@ -60,13 +61,10 @@ def _preprocess_underscore_args(argv: list[str]) -> list[str]:
 def _load_valid_data_types() -> set[str] | None:
     """Collect the valid data type names.
 
-    The fixed types ``SFT``, ``RL_QA``, and ``nemo_gym`` are always valid.
-    NeMo-Gym data containing exactly 1 environment uses that environment's
-    name, so every subdirectory of the Gym ``resources_servers`` directory and
-    every config file stem under those subdirectories' ``configs`` directories
-    are accepted as well.  If that directory is unavailable, ``None`` is
-    returned to signal that any trailing filename field is accepted as a data
-    type.
+    The fixed types ``SFT``, ``RL_QA``, and ``nemo_gym`` are always valid. NeMo-Gym data containing exactly 1
+    environment uses that environment's name, so every subdirectory of the Gym ``resources_servers`` directory and every
+    config file stem under those subdirectories' ``configs`` directories are accepted as well.  If that directory is
+    unavailable, ``None`` is returned to signal that any trailing filename field is accepted as a data type.
     """
     valid_data_types = {"SFT", "RL_QA", "nemo_gym"}
     if not RESOURCES_SERVERS_DIR.is_dir():
@@ -75,9 +73,7 @@ def _load_valid_data_types() -> set[str] | None:
             "accepting any trailing filename field as the data type."
         )
         return None
-    valid_data_types.update(
-        entry.name for entry in RESOURCES_SERVERS_DIR.iterdir() if entry.is_dir()
-    )
+    valid_data_types.update(entry.name for entry in RESOURCES_SERVERS_DIR.iterdir() if entry.is_dir())
     for entry in RESOURCES_SERVERS_DIR.iterdir():
         if not entry.is_dir():
             continue
@@ -85,20 +81,16 @@ def _load_valid_data_types() -> set[str] | None:
         if not configs_dir.is_dir():
             continue
         valid_data_types.update(
-            config_path.stem
-            for config_path in configs_dir.iterdir()
-            if config_path.suffix == ".yaml"
+            config_path.stem for config_path in configs_dir.iterdir() if config_path.suffix == ".yaml"
         )
     return valid_data_types
 
 
-def _consume_metadata_fields(
-    fields: list[str], idx: int, len_field: str | None
-) -> tuple[int, str | None]:
+def _consume_metadata_fields(fields: list[str], idx: int, len_field: str | None) -> tuple[int, str | None]:
     """Walk left from *idx*, consuming ``len``/``sam`` metadata fields.
 
-    Returns the index of the first non-metadata field (or ``-1``) and the
-    rightmost ``len`` field encountered, normalised to ``len<value>k``.
+    Returns the index of the first non-metadata field (or ``-1``) and the rightmost ``len`` field encountered,
+    normalised to ``len<value>k``.
     """
     while idx >= 0:
         len_match = LEN_FIELD_PATTERN.fullmatch(fields[idx])
@@ -114,16 +106,13 @@ def _consume_metadata_fields(
     return idx, len_field
 
 
-def _parse_filename_right_to_left(
-    stem: str, valid_data_types: set[str] | None
-) -> tuple[str, str | None, str | None]:
+def _parse_filename_right_to_left(stem: str, valid_data_types: set[str] | None) -> tuple[str, str | None, str | None]:
     """Parse a filename stem right-to-left into ``(content, len_field, data_type)``.
 
-    ``sam`` metadata is always discarded (the script recomputes it) and ``len``
-    metadata is kept (rightmost wins).  The rightmost non-metadata field is the
-    data type when it is in *valid_data_types* (``None`` accepts anything);
-    otherwise it is treated as part of the content.  ``data_type`` is ``None``
-    when the filename carries no valid data type.
+    ``sam`` metadata is always discarded (the script recomputes it) and ``len`` metadata is kept (rightmost wins).  The
+    rightmost non-metadata field is the data type when it is in *valid_data_types* (``None`` accepts anything);
+    otherwise it is treated as part of the content.  ``data_type`` is ``None`` when the filename carries no valid data
+    type.
     """
     fields = stem.split("-")
 
@@ -145,8 +134,8 @@ def _parse_filename_right_to_left(
 def _count_lines_python(input_path: Path) -> int:
     """Fallback line counter used when the native `wc` command is unavailable."""
     # Buffer size (in bytes) for the fallback line-counting pass when `wc` is unavailable.
-    # As this is already empirically optimal and does not require user input, 
-    # we place it here 
+    # As this is already empirically optimal and does not require user input,
+    # we place it here
     BUF_SIZE = 1024 * 1024
 
     lines = 0
@@ -160,12 +149,7 @@ def _count_lines_wc(input_path: Path) -> int:
     """Count newline characters using the native `wc -l` implementation."""
     with input_path.open("rb") as f:
         result = subprocess.run(
-            ["wc", "-l"],
-            stdin=f,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            check=True,
+            ["wc", "-l"], stdin=f, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
         )
 
     return int(result.stdout.strip())
@@ -218,29 +202,29 @@ def _sanitize_nemo_gym_conversation(conversation: list[dict]) -> list[dict]:
 
         if msg_type == "function_call":
             # Map to standard assistant tool_calls message format
-            hf_messages.append({
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {
-                        "id": msg.get("call_id"),
-                        "type": "function",
-                        "function": {
-                            "name": msg.get("name"),
-                            "arguments": _parse_tool_arguments(msg.get("arguments", {})),
-                        },
-                    }
-                ],
-            })
+            hf_messages.append(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": msg.get("call_id"),
+                            "type": "function",
+                            "function": {
+                                "name": msg.get("name"),
+                                "arguments": _parse_tool_arguments(msg.get("arguments", {})),
+                            },
+                        }
+                    ],
+                }
+            )
             continue
 
         if msg_type == "function_call_output":
             # Map to standard tool response format
-            hf_messages.append({
-                "role": "tool",
-                "tool_call_id": msg.get("call_id"),
-                "content": str(msg.get("output", "")),
-            })
+            hf_messages.append(
+                {"role": "tool", "tool_call_id": msg.get("call_id"), "content": str(msg.get("output", ""))}
+            )
 
     return hf_messages
 
@@ -273,8 +257,8 @@ def _count_string_tokens(texts: list[str]) -> list[int]:
 def _count_conversation_tokens(conversations: list[list[dict]]) -> list[int]:
     """Return the chat-template token count of each conversation in *conversations*.
 
-    A failed batch is retried one conversation at a time so that a single bad
-    row does not discard its whole chunk; failed rows are reported as ``-1``.
+    A failed batch is retried one conversation at a time so that a single bad row does not discard its whole chunk;
+    failed rows are reported as ``-1``.
     """
     try:
         encoded = G_TOKENIZER.apply_chat_template(conversations, tokenize=True, return_dict=True)
@@ -294,8 +278,7 @@ def _count_conversation_tokens(conversations: list[list[dict]]) -> list[int]:
 def _process_chunk(chunk: tuple[int, list[str]]) -> tuple[int, int, int]:
     """Count the main-field tokens of one chunk of raw JSONL lines.
 
-    Returns the number of lines examined, the maximum token count seen, and
-    the number of unreadable entries skipped.
+    Returns the number of lines examined, the maximum token count seen, and the number of unreadable entries skipped.
     """
     start_lineno, lines = chunk
     string_positions: list[int] = []
@@ -332,7 +315,9 @@ def _process_chunk(chunk: tuple[int, list[str]]) -> tuple[int, int, int]:
             string_counts = _count_string_tokens(string_fields)
         except Exception as exc:
             string_counts = [-1] * len(string_fields)
-            logger.warning(f"Failed to tokenize {len(string_fields)} plain-text field(s) near line {start_lineno}: {exc}")
+            logger.warning(
+                f"Failed to tokenize {len(string_fields)} plain-text field(s) near line {start_lineno}: {exc}"
+            )
         for offset, count in zip(string_positions, string_counts):
             if count < 0:
                 n_errors += 1
@@ -375,16 +360,10 @@ def _iter_chunks(input_path: Path, chunk_size: int) -> Iterator[tuple[int, list[
             yield start_lineno, chunk
 
 
-def _max_token_pass(
-    input_path: Path,
-    total_lines: int | None,
-    tokenizer_dir: Path,
-    data_type: str,
-) -> tuple[int, int]:
+def _max_token_pass(input_path: Path, total_lines: int | None, tokenizer_dir: Path, data_type: str) -> tuple[int, int]:
     """Run the multiprocessing token-counting pass and return the maximum main-field token count.
 
-    Chunks are submitted lazily and at most
-    ``workers * INFLIGHT_TASKS_PER_WORKER`` tasks stay in flight, keeping memory
+    Chunks are submitted lazily and at most ``workers * INFLIGHT_TASKS_PER_WORKER`` tasks stay in flight, keeping memory
     bounded on large inputs.
     """
     worker_count = 64
@@ -452,9 +431,7 @@ def _process_file(
     if data_type_arg is not None:
         parse_stem = parse_stem.removesuffix(data_type_arg).rstrip("-")
 
-    content, len_field, filename_data_type = _parse_filename_right_to_left(
-        parse_stem, valid_data_types
-    )
+    content, len_field, filename_data_type = _parse_filename_right_to_left(parse_stem, valid_data_types)
 
     if not content:
         logger.error(
@@ -494,17 +471,13 @@ def _process_file(
         if tokenizer_dir is not None:
             max_tokens, n_errors = _max_token_pass(input_path, line_count, tokenizer_dir, data_type)
             if max_tokens == 0:
-                logger.error(
-                    f"Could not tokenize any entry in '{input_path.name}' ({n_errors} error(s))."
-                )
+                logger.error(f"Could not tokenize any entry in '{input_path.name}' ({n_errors} error(s)).")
                 return False
 
             len_field = f"len{_round_to_thousands(max_tokens, round_up=True)}k"
             logger.info(f"Counted max main-field token length {max_tokens} -> {len_field}.")
         else:
-            logger.warning(
-                f"'{input_path.name}' has no len metadata and no --tokenizer was given; omitting len."
-            )
+            logger.warning(f"'{input_path.name}' has no len metadata and no --tokenizer was given; omitting len.")
 
     stem_parts = [content]
     if len_field is not None:
@@ -531,9 +504,7 @@ def _process_file(
 def main() -> None:
     sys.argv = _preprocess_underscore_args(sys.argv)
 
-    parser = argparse.ArgumentParser(
-        description="Rename JSONL files inplace to follow the dataset filename standard.",
-    )
+    parser = argparse.ArgumentParser(description="Rename JSONL files inplace to follow the dataset filename standard.")
     parser.add_argument(
         "input",
         nargs="+",
@@ -581,12 +552,16 @@ def main() -> None:
         if "-" in data_type_arg:
             parser.error(f"--data-type must not contain '-', got: {data_type_arg}")
 
-    if args.retokenize and args.tokenizer is None:
+    if args.retokenize and args.tokenizer is None and not TOKENIZER_PATH.strip():
         parser.error("--always-tokenize/--always-retokenize/--retokenize requires --tokenizer.")
 
+    tokenizer_arg = args.tokenizer
+    if tokenizer_arg is None and TOKENIZER_PATH.strip():
+        tokenizer_arg = Path(TOKENIZER_PATH.strip())
+
     tokenizer_dir: Path | None = None
-    if args.tokenizer is not None:
-        tokenizer_dir = args.tokenizer.resolve()
+    if tokenizer_arg is not None:
+        tokenizer_dir = tokenizer_arg.resolve()
         if not tokenizer_dir.is_dir():
             parser.error(f"Tokenizer directory does not exist: {tokenizer_dir}")
         try:
@@ -613,14 +588,7 @@ def main() -> None:
     failures = 0
     for input_path in input_paths:
         try:
-            if not _process_file(
-                input_path,
-                data_type_arg,
-                tokenizer_dir,
-                args.retokenize,
-                args.yes,
-                valid_data_types,
-            ):
+            if not _process_file(input_path, data_type_arg, tokenizer_dir, args.retokenize, args.yes, valid_data_types):
                 failures += 1
         except Exception as exc:
             failures += 1

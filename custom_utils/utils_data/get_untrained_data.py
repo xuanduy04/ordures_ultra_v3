@@ -27,10 +27,9 @@ _U64 = struct.Struct("<Q")
 def _preprocess_underscore_args(argv: list[str]) -> list[str]:
     """Replace underscores with hyphens in ``--arg_name`` / ``--arg_name=val`` prefixes.
 
-    argparse normalises ``-`` and ``_`` internally, so ``--output-path`` and
-    ``--output_path`` would normally map to different destinations.  This
-    function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that
-    argparse treats both spellings identically.
+    argparse normalises ``-`` and ``_`` internally, so ``--output-path`` and ``--output_path`` would normally map to
+    different destinations.  This function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that argparse
+    treats both spellings identically.
     """
     out: list[str] = []
     for arg in argv:
@@ -108,10 +107,8 @@ def hash_list_dicts(obj: list[dict[str, str]]) -> int:
 def get_user_turns(obj: list[dict[str, str]]) -> list[dict[str, str]]:
     """Return the non-empty ``user`` turns of input conversation."""
     return [
-        {
-            "role": turn["role"].strip(),
-            "content": turn["content"].strip()
-        } for turn in obj
+        {"role": turn["role"].strip(), "content": turn["content"].strip()}
+        for turn in obj
         if isinstance(turn.get("content"), str)
         and turn["content"].strip()
         and isinstance(turn.get("role"), str)
@@ -122,9 +119,8 @@ def get_user_turns(obj: list[dict[str, str]]) -> list[dict[str, str]]:
 def _get_input_hashes(input_turns: list[dict]) -> tuple[int, int]:
     """Return the ``(full conversation, user turns only)`` hash pair of *input_turns*.
 
-    Mirrors the two signatures written by the hashed response logging update:
-    the full hash covers every turn as logged, the user-only hash only the
-    non-empty ``user`` turns.
+    Mirrors the two signatures written by the hashed response logging update: the full hash covers every turn as logged,
+    the user-only hash only the non-empty ``user`` turns.
     """
     return hash_list_dicts(input_turns), hash_list_dicts(get_user_turns(input_turns))
 
@@ -132,11 +128,10 @@ def _get_input_hashes(input_turns: list[dict]) -> tuple[int, int]:
 def _get_trained_row_hashes(data: dict) -> tuple[list[int], list[int]]:
     """Return the ``(full conversation, user turns only)`` hash pairs logged for *data*.
 
-    Rows written with hashed response logging carry ``full_hash``/``user_hash``
-    directly; rows written without it (older commits, or a run with
-    ``env.should_log_nemo_gym_responses`` but without
-    ``env.should_log_hashed_nemo_gym_responses``) still carry the raw
-    conversation, which is hashed on the fly with the same two signatures.
+    Rows written with hashed response logging carry ``full_hash``/``user_hash`` directly; rows written without it (older
+    commits, or a run with ``env.should_log_nemo_gym_responses`` but without
+    ``env.should_log_hashed_nemo_gym_responses``) still carry the raw conversation, which is hashed on the fly with the
+    same two signatures.
     """
     try:
         full_hashes: list[int] = []
@@ -146,9 +141,7 @@ def _get_trained_row_hashes(data: dict) -> tuple[list[int], list[int]]:
                 full_hashes.append(full_result["full_hash"])
                 user_hashes.append(full_result["user_hash"])
             else:
-                full_hash, user_hash = _get_input_hashes(
-                    full_result["responses_create_params"]["input"]
-                )
+                full_hash, user_hash = _get_input_hashes(full_result["responses_create_params"]["input"])
                 full_hashes.append(full_hash)
                 user_hashes.append(user_hash)
         return full_hashes, user_hashes
@@ -158,8 +151,7 @@ def _get_trained_row_hashes(data: dict) -> tuple[list[int], list[int]]:
 
 
 def _worker_process_file(
-    file_path: str,
-    preprocess_fn: Callable[[dict], tuple[list[int], list[int]]],
+    file_path: str, preprocess_fn: Callable[[dict], tuple[list[int], list[int]]]
 ) -> list[tuple[list[int], list[int]]]:
     """Open a single JSONL file and hash each of its valid rows."""
     results: list[tuple[list[int], list[int]]] = []
@@ -180,23 +172,20 @@ def _worker_process_file(
 
 
 def _extract_trained_hashes_pass(
-    training_step_folders: list[Path],
-    step_index_range: Sequence[int] | None = None,
+    training_step_folders: list[Path], step_index_range: Sequence[int] | None = None
 ) -> tuple[set[int], set[int]]:
     """Collect the full-conversation and user-only signatures of every logged row of the ``train_data_step*.jsonl`` files in *training_step_folders*.
 
-    Rows carrying the ``full_hash``/``user_hash`` keys of the hashed response
-    logging update are read directly; rows still carrying the raw conversation
-    are hashed on the fly with those same two signatures.
+    Rows carrying the ``full_hash``/``user_hash`` keys of the hashed response logging update are read directly; rows
+    still carrying the raw conversation are hashed on the fly with those same two signatures.
 
     Args:
         training_step_folders:
             Folders containing files named `train_data_step{N}.jsonl`.
 
         step_index_range:
-            Optional sequence of step indices to process. If omitted,
-            all steps from 1 through the maximum discovered step are
-            considered.
+            Optional sequence of step indices to process. If omitted, all steps from 1 through the maximum discovered
+            step are considered.
 
     Raises:
         FileNotFoundError:
@@ -209,10 +198,7 @@ def _extract_trained_hashes_pass(
     for folder in training_step_folders:
         if step_index_range is None:
             files.extend(
-                sorted(
-                    folder.glob("train_data_step*.jsonl"),
-                    key=lambda p: int(p.stem.removeprefix("train_data_step")),
-                )
+                sorted(folder.glob("train_data_step*.jsonl"), key=lambda p: int(p.stem.removeprefix("train_data_step")))
             )
         else:
             files.extend(folder / f"train_data_step{i}.jsonl" for i in step_index_range)
@@ -220,15 +206,16 @@ def _extract_trained_hashes_pass(
     if not files:
         raise FileNotFoundError(f"No train_data_step*.jsonl files found in: {training_step_folders}")
 
-    logger.info(f"Found {len(files)} training step file(s). Starting parallel processing, this may take a few minutes...")
+    logger.info(
+        f"Found {len(files)} training step file(s). Starting parallel processing, this may take a few minutes..."
+    )
     worker_with_args = partial(_worker_process_file, preprocess_fn=_get_trained_row_hashes)
 
     full_hashes: set[int] = set()
     user_hashes: set[int] = set()
     logged_row_count = 0
     with ProcessPoolExecutor(
-        max_workers=_resolve_worker_count(),
-        mp_context=multiprocessing.get_context("fork"),
+        max_workers=_resolve_worker_count(), mp_context=multiprocessing.get_context("fork")
     ) as executor:
         iterator = executor.map(worker_with_args, files, chunksize=1)
 
@@ -238,25 +225,25 @@ def _extract_trained_hashes_pass(
                 full_hashes.update(row_full_hashes)
                 user_hashes.update(row_user_hashes)
 
-    logger.info(f"Found {len(full_hashes)} full / {len(user_hashes)} user unique trained-sample signature(s) across {logged_row_count} logged row(s).")
+    logger.info(
+        f"Found {len(full_hashes)} full / {len(user_hashes)} user unique trained-sample signature(s) across {logged_row_count} logged row(s)."
+    )
 
     return full_hashes, user_hashes
 
 
 def _dataset_set_minus_pass(
-    A_files: list[Path],
-    full_hashes: set[int],
-    user_hashes: set[int],
-    output_path: Path,
+    A_files: list[Path], full_hashes: set[int], user_hashes: set[int], output_path: Path
 ) -> dict[str, int]:
     r"""Perform a set-minus operation (A \\ B) on JSONL datasets.
 
-    Rows are compared by their full-conversation hash and their user-only hash
-    (sample semantics), so rows that are the same sample serialized differently
-    are treated as one and deduplicated. Invalid JSON lines in A are warned
-    about and skipped.
+    Rows are compared by their full-conversation hash and their user-only hash (sample semantics), so rows that are the
+    same sample serialized differently are treated as one and deduplicated. Invalid JSON lines in A are warned about and
+    skipped.
     """
-    logger.info(f"Loaded {len(full_hashes)} full / {len(user_hashes)} user unique exclusion signatures. Processing dataset(s) (A)...")
+    logger.info(
+        f"Loaded {len(full_hashes)} full / {len(user_hashes)} user unique exclusion signatures. Processing dataset(s) (A)..."
+    )
 
     seen_full_hashes: set[int] = set()
     seen_user_hashes: set[int] = set()
@@ -282,9 +269,7 @@ def _dataset_set_minus_pass(
                         logger.warning(f"Skipping invalid JSON on line {line_num} in {a_path}. It was not copied.")
                         continue
 
-                    line_full_hash, line_user_hash = _get_input_hashes(
-                        line_dict["responses_create_params"]["input"]
-                    )
+                    line_full_hash, line_user_hash = _get_input_hashes(line_dict["responses_create_params"]["input"])
                     if line_full_hash in full_hashes or line_user_hash in user_hashes:
                         excluded_count += 1
                         continue
@@ -309,14 +294,10 @@ def main() -> None:
     sys.argv = _preprocess_underscore_args(sys.argv)
 
     parser = argparse.ArgumentParser(
-        description="Extract the untrained subset of dataset(s) A by excluding samples seen in training-log folder(s) B.",
+        description="Extract the untrained subset of dataset(s) A by excluding samples seen in training-log folder(s) B."
     )
     parser.add_argument(
-        "--a",
-        nargs="+",
-        required=True,
-        type=str,
-        help="Input JSONL file(s) or glob pattern(s) for dataset A.",
+        "--a", nargs="+", required=True, type=str, help="Input JSONL file(s) or glob pattern(s) for dataset A."
     )
     parser.add_argument(
         "--b",
@@ -375,7 +356,9 @@ def main() -> None:
         full_hashes, user_hashes = _extract_trained_hashes_pass(B_folders)
     except FileNotFoundError as exc:
         parser.error(str(exc))
-    logger.info(f"Computing A \\ B from:\n\t{len(A_files):>6} A file(s) and\n\t{len(full_hashes):>6} full / {len(user_hashes):>6} user B trained sample(s)\n\t-> {output_path}")
+    logger.info(
+        f"Computing A \\ B from:\n\t{len(A_files):>6} A file(s) and\n\t{len(full_hashes):>6} full / {len(user_hashes):>6} user B trained sample(s)\n\t-> {output_path}"
+    )
 
     stats = _dataset_set_minus_pass(A_files, full_hashes, user_hashes, output_path)
 

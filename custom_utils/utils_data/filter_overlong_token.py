@@ -25,6 +25,8 @@ DATA_TYPE_RL_QA = "RL_QA"
 DATA_TYPE_NEMO_GYM = "nemo_gym"
 DATA_TYPES = [DATA_TYPE_SFT, DATA_TYPE_RL_QA, DATA_TYPE_NEMO_GYM]
 
+TOKENIZER_PATH = ""
+
 G_TOKENIZER: Any = None
 G_DATA_TYPE: str = ""
 G_MAX_TOKEN: int = 0
@@ -33,10 +35,9 @@ G_MAX_TOKEN: int = 0
 def _preprocess_underscore_args(argv: list[str]) -> list[str]:
     """Replace underscores with hyphens in ``--arg_name`` / ``--arg_name=val`` prefixes.
 
-    argparse normalises ``-`` and ``_`` internally, so ``--max-token`` and
-    ``--max_token`` would normally map to different destinations.  This
-    function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that
-    argparse treats both spellings identically.
+    argparse normalises ``-`` and ``_`` internally, so ``--max-token`` and ``--max_token`` would normally map to
+    different destinations.  This function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that argparse
+    treats both spellings identically.
     """
     out: list[str] = []
     for arg in argv:
@@ -63,8 +64,8 @@ def _validate_output_path(output_path: Path) -> None:
 def _resolve_max_token(value: int) -> int:
     """Resolve the ``--max-token`` shorthand into an absolute token count.
 
-    Values divisible by 1000 are used directly; any other value is interpreted
-    as thousands of tokens (e.g. ``6`` becomes ``6000``).
+    Values divisible by 1000 are used directly; any other value is interpreted as thousands of tokens (e.g. ``6``
+    becomes ``6000``).
     """
     if value <= 0:
         raise ValueError(f"--max-token must be a positive integer, got: {value}")
@@ -105,29 +106,29 @@ def _sanitize_nemo_gym_conversation(conversation: list[dict]) -> list[dict]:
 
         if msg_type == "function_call":
             # Map to standard assistant tool_calls message format
-            hf_messages.append({
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [
-                    {
-                        "id": msg.get("call_id"),
-                        "type": "function",
-                        "function": {
-                            "name": msg.get("name"),
-                            "arguments": _parse_tool_arguments(msg.get("arguments", {})),
-                        },
-                    }
-                ],
-            })
+            hf_messages.append(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": msg.get("call_id"),
+                            "type": "function",
+                            "function": {
+                                "name": msg.get("name"),
+                                "arguments": _parse_tool_arguments(msg.get("arguments", {})),
+                            },
+                        }
+                    ],
+                }
+            )
             continue
 
         if msg_type == "function_call_output":
             # Map to standard tool response format
-            hf_messages.append({
-                "role": "tool",
-                "tool_call_id": msg.get("call_id"),
-                "content": str(msg.get("output", "")),
-            })
+            hf_messages.append(
+                {"role": "tool", "tool_call_id": msg.get("call_id"), "content": str(msg.get("output", ""))}
+            )
 
     return hf_messages
 
@@ -135,8 +136,8 @@ def _sanitize_nemo_gym_conversation(conversation: list[dict]) -> list[dict]:
 def _extract_main_field(entry: dict, data_type: str) -> Any:
     """Return the main field measured for *data_type*: ``messages``, ``question``, or the gym input.
 
-    For ``nemo_gym`` rows the optional ``responses_create_params.instructions``
-    (system prompt) is prepended as a system message so the measurement includes it.
+    For ``nemo_gym`` rows the optional ``responses_create_params.instructions`` (system prompt) is prepended as a system
+    message so the measurement includes it.
     """
     try:
         if data_type == DATA_TYPE_SFT:
@@ -179,25 +180,19 @@ def _count_string_tokens(texts: list[str]) -> list[int]:
     return [len(ids) for ids in encoded["input_ids"]]
 
 
-def _count_conversation_tokens(
-    conversations: list[list[dict]], tools_list: list[Any]
-) -> list[int]:
+def _count_conversation_tokens(conversations: list[list[dict]], tools_list: list[Any]) -> list[int]:
     """Return the chat-template token count of each conversation in *conversations*.
 
-    Each entry in *tools_list* holds the row's ``tools`` (or None). When any row
-    carries tools the template must be applied per conversation because
-    batched application cannot take per-row tools. ``add_generation_prompt`` is
-    enabled for nemo_gym rows to mirror the generation-side prompt. Failed
-    batch/rows are retried per conversation and reported as ``-1``.
+    Each entry in *tools_list* holds the row's ``tools`` (or None). When any row carries tools the template must be
+    applied per conversation because batched application cannot take per-row tools. ``add_generation_prompt`` is enabled
+    for nemo_gym rows to mirror the generation-side prompt. Failed batch/rows are retried per conversation and reported
+    as ``-1``.
     """
     add_generation_prompt = G_DATA_TYPE == DATA_TYPE_NEMO_GYM
     if not any(tools for tools in tools_list):
         try:
             encoded = G_TOKENIZER.apply_chat_template(
-                conversations,
-                tokenize=True,
-                return_dict=True,
-                add_generation_prompt=add_generation_prompt,
+                conversations, tokenize=True, return_dict=True, add_generation_prompt=add_generation_prompt
             )
             return [len(ids) for ids in encoded["input_ids"]]
         except Exception as exc:
@@ -222,9 +217,8 @@ def _count_conversation_tokens(
 def _process_chunk(chunk: tuple[int, list[str]]) -> tuple[list[str], int, int, int]:
     """Filter one chunk of raw JSONL lines.
 
-    Returns the kept lines along with the total number of lines examined, the
-    number of overlong entries dropped, and the number of unreadable entries
-    skipped.
+    Returns the kept lines along with the total number of lines examined, the number of overlong entries dropped, and
+    the number of unreadable entries skipped.
     """
     start_lineno, lines = chunk
     keep = [False] * len(lines)
@@ -264,7 +258,9 @@ def _process_chunk(chunk: tuple[int, list[str]]) -> tuple[list[str], int, int, i
             string_counts = _count_string_tokens(string_fields)
         except Exception as exc:
             string_counts = [-1] * len(string_fields)
-            logger.warning(f"Failed to tokenize {len(string_fields)} plain-text field(s) near line {start_lineno}: {exc}")
+            logger.warning(
+                f"Failed to tokenize {len(string_fields)} plain-text field(s) near line {start_lineno}: {exc}"
+            )
         for offset, count in zip(string_positions, string_counts):
             if count < 0:
                 n_errors += 1
@@ -294,12 +290,7 @@ def _try_count_lines(input_path: Path) -> int | None:
     try:
         with input_path.open("rb") as f:
             result = subprocess.run(
-                ["wc", "-l"],
-                stdin=f,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                check=True,
+                ["wc", "-l"], stdin=f, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True
             )
         return int(result.stdout.strip())
     except (subprocess.CalledProcessError, OSError, ValueError) as exc:
@@ -323,19 +314,12 @@ def _iter_chunks(input_path: Path, chunk_size: int) -> Iterator[tuple[int, list[
 
 
 def _filter_pass(
-    input_path: Path,
-    output_path: Path,
-    total_lines: int | None,
-    tokenizer_dir: Path,
-    data_type: str,
-    max_token: int,
+    input_path: Path, output_path: Path, total_lines: int | None, tokenizer_dir: Path, data_type: str, max_token: int
 ) -> dict[str, int]:
     """Run the multiprocessing filter pass and write kept lines to *output_path*.
 
-    Chunks are submitted lazily and at most
-    ``workers * INFLIGHT_TASKS_PER_WORKER`` tasks stay in flight, keeping memory
-    bounded on large inputs.  Kept lines are written in completion order, which
-    shuffles the dataset.
+    Chunks are submitted lazily and at most ``workers * INFLIGHT_TASKS_PER_WORKER`` tasks stay in flight, keeping memory
+    bounded on large inputs.  Kept lines are written in completion order, which shuffles the dataset.
     """
     worker_count = 64
     inflight_limit = worker_count * INFLIGHT_TASKS_PER_WORKER
@@ -352,9 +336,11 @@ def _filter_pass(
         initargs=(str(tokenizer_dir), data_type, max_token),
     )
 
-    with pool, output_path.open("w", encoding="utf-8") as fout, tqdm(
-        total=total_lines, desc="Filtering", unit="line"
-    ) as pbar:
+    with (
+        pool,
+        output_path.open("w", encoding="utf-8") as fout,
+        tqdm(total=total_lines, desc="Filtering", unit="line") as pbar,
+    ):
         pending: set[Future] = set()
         exhausted = False
         while pending or not exhausted:
@@ -381,14 +367,8 @@ def _filter_pass(
 def main() -> None:
     sys.argv = _preprocess_underscore_args(sys.argv)
 
-    parser = argparse.ArgumentParser(
-        description="Filter JSONL rows whose main field exceeds a maximum token length.",
-    )
-    parser.add_argument(
-        "input",
-        type=str,
-        help="Path to the input JSONL file (single file, no glob).",
-    )
+    parser = argparse.ArgumentParser(description="Filter JSONL rows whose main field exceeds a maximum token length.")
+    parser.add_argument("input", type=str, help="Path to the input JSONL file (single file, no glob).")
     parser.add_argument(
         "--output",
         type=Path,
@@ -404,15 +384,18 @@ def main() -> None:
     )
     parser.add_argument(
         "--max-token",
+        "--max-tokens",
+        "--max-length",
+        "--max-len",
+        "--length",
+        "--len",
+        dest="max_token",
         type=int,
         required=True,
         help="Maximum token length. Values not divisible by 1000 are interpreted as thousands (e.g. 6 -> 6000).",
     )
     parser.add_argument(
-        "--tokenizer",
-        type=Path,
-        required=True,
-        help="Path to a local HuggingFace tokenizer directory.",
+        "--tokenizer", type=Path, help="Path to a local HuggingFace tokenizer directory (default: TOKENIZER_PATH)."
     )
     parser.add_argument(
         "--data-type",
@@ -427,7 +410,11 @@ def main() -> None:
     if not input_path.is_file():
         parser.error(f"Input file does not exist: {input_path}")
 
-    tokenizer_dir: Path = args.tokenizer.resolve()
+    if args.tokenizer is None and not TOKENIZER_PATH.strip():
+        parser.error("--tokenizer is required (unless TOKENIZER_PATH local variable is set).")
+
+    tokenizer_arg: Path = args.tokenizer if args.tokenizer is not None else Path(TOKENIZER_PATH.strip())
+    tokenizer_dir: Path = tokenizer_arg.resolve()
     if not tokenizer_dir.is_dir():
         parser.error(f"Tokenizer directory does not exist: {tokenizer_dir}")
     try:
@@ -476,7 +463,7 @@ def main() -> None:
     total_note = f" of {total_lines}" if total_lines is not None else ""
     logger.info(
         f"Done - kept {stats['kept']}{total_note} entries, dropped {stats['dropped_overlong']} overlong, "
-        f"skipped {stats['skipped_unreadable']} unreadable; wrote to {output_path}."
+        f"skipped {stats['skipped_unreadable']} unreadable; wrote to {output_path}"
     )
 
 

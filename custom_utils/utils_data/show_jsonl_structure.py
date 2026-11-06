@@ -16,10 +16,9 @@ logger = logging.getLogger(__name__)
 def _preprocess_underscore_args(argv: list[str]) -> list[str]:
     """Replace underscores with hyphens in ``--arg_name`` / ``--arg_name=val`` prefixes.
 
-    argparse normalises ``-`` and ``_`` internally, so ``--output-path`` and
-    ``--output_path`` would normally map to different destinations.  This
-    function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that
-    argparse treats both spellings identically.
+    argparse normalises ``-`` and ``_`` internally, so ``--output-path`` and ``--output_path`` would normally map to
+    different destinations.  This function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that argparse
+    treats both spellings identically.
     """
     out: list[str] = []
     for arg in argv:
@@ -60,14 +59,14 @@ class Structure:
 
         # Used only with CONTAINER_KINDS
         self.value_structure: Structure = Structure.create_empty()
-        # Design: self.value_structure is None only if self.kind is "empty" 
+        # Design: self.value_structure is None only if self.kind is "empty"
         #         otherwise is an "empty" Structure
         self.key_structures: dict[str, Structure] = {}
         self.optional_keys: set[str] = set()
         self.empty_sources: int = 0
         self.container_sources: int = 0
         self.numeric_string_sources: int = 0
-        self.numeric_native_sources:int  = 0
+        self.numeric_native_sources: int = 0
 
         if data is None:
             self.kind = "none"
@@ -142,9 +141,7 @@ class Structure:
         result = object.__new__(cls)
         result.kind = kind
         result.nullable = nullable
-        result.value_structure = (
-            None if kind == "empty" else value_structure or cls._create("empty")
-        )
+        result.value_structure = None if kind == "empty" else value_structure or cls._create("empty")
         result.key_structures = key_structures or {}
         result.optional_keys = optional_keys or set()
         result.empty_sources = empty_sources
@@ -160,8 +157,7 @@ class Structure:
     def merge(self, other: Structure) -> Structure:
         """Return the narrowest structure compatible with both structures.
 
-        Raises TypeError when the structures are fundamentally incompatible,
-        such as list vs dict or bool vs int.
+        Raises TypeError when the structures are fundamentally incompatible, such as list vs dict or bool vs int.
         """
         assert other is not None
         # Internal empty structure contributes no type information.
@@ -197,8 +193,9 @@ class Structure:
             )
 
         # A genuine string forces numeric/string mixtures to become str.
-        if (self.kind == "str" and other.kind in self.NUMERIC_KINDS) \
-        or (other.kind == "str" and self.kind in self.NUMERIC_KINDS):
+        if (self.kind == "str" and other.kind in self.NUMERIC_KINDS) or (
+            other.kind == "str" and self.kind in self.NUMERIC_KINDS
+        ):
             return self._create("str", nullable=nullable)
 
         if self.kind != other.kind:
@@ -242,14 +239,8 @@ class Structure:
         return self._create(
             self.kind,
             nullable=self.nullable,
-            value_structure=(
-                self.value_structure._copy()
-                if self.value_structure is not None
-                else None
-            ),
-            key_structures={
-                key: structure._copy() for key, structure in self.key_structures.items()
-            },
+            value_structure=(self.value_structure._copy() if self.value_structure is not None else None),
+            key_structures={key: structure._copy() for key, structure in self.key_structures.items()},
             optional_keys=set(self.optional_keys),
             empty_sources=self.empty_sources,
             container_sources=self.container_sources,
@@ -261,9 +252,7 @@ class Structure:
     def numeric_provenance(self) -> str | None:
         """Return how numeric values were represented in the source JSON.
 
-        None   -> not a numeric structure
-        "none" -> all were JSON numbers
-        "x%"   -> x% were numeric-looking strings
+        None   -> not a numeric structure "none" -> all were JSON numbers "x%"   -> x% were numeric-looking strings
         "all"  -> all were numeric-looking strings
         """
         if self.kind not in self.NUMERIC_KINDS:
@@ -345,8 +334,9 @@ class Structure:
         if self.kind == "list":
             result = f"list[{self.value_structure}]"
 
-            assert (self.value_structure.kind == "empty") == (self.empty_sources_percentage == "100%"), \
+            assert (self.value_structure.kind == "empty") == (self.empty_sources_percentage == "100%"), (
                 f"Implementation has errors somewhere, {self.value_structure.kind=} but {self.empty_sources_percentage=}"
+            )
             if self.value_structure.kind != "empty" and self.empty_sources_percentage:
                 result += f" ({self.empty_sources_percentage} empty)"
 
@@ -382,8 +372,9 @@ class Structure:
         metadata_items = ", ".join(json.dumps(entry) for entry in metadata)
 
         if self.kind == "list":
-            assert (self.value_structure.kind == "empty") == (self.empty_sources_percentage == "100%"), \
+            assert (self.value_structure.kind == "empty") == (self.empty_sources_percentage == "100%"), (
                 f"Implementation has errors somewhere, {self.value_structure.kind=} but {self.empty_sources_percentage=}"
+            )
 
             result = f"[{repr(self.value_structure)}"
             if metadata:
@@ -423,13 +414,13 @@ def analyze_jsonl_structure(file_path):
 
         print(f"Analyzing structure of {file_path}...")
         idx = 0
-        with open(file_path, 'r', encoding='utf-8') as f:
+        with open(file_path, "r", encoding="utf-8") as f:
             # tqdm will close nicely even if we break early
             for idx, line in enumerate(tqdm(f, desc="Processing"), start=1):
                 line = line.strip()
                 if not line:
                     continue
-                
+
                 line_data = json.loads(line)
                 line_structure = Structure(line_data)
 
@@ -444,13 +435,13 @@ def analyze_jsonl_structure(file_path):
                 if first_structure is None:
                     first_structure = line_structure
                     first_structure_raw = line_data
-                    
+
         total_lines_processed = idx
         # --- Output Results ---
-        print("\n" + "="*50)
+        print("\n" + "=" * 50)
         print(" ANALYSIS RESULTS")
-        print("="*50)
-        
+        print("=" * 50)
+
         if differing_structure is None:
             print("✅ Success: All lines in the JSONL file have a UNIFORM structure!")
             print(f"\nStructure (found in all {total_lines_processed} lines):")
@@ -459,9 +450,9 @@ def analyze_jsonl_structure(file_path):
             print("❌ Alert: Differing structures detected!")
             print(f"The structural mismatch occurred at **Line {diff_line_num}**.")
             print("Scan halted immediately.\n")
-            print("\n" + "-"*30)
+            print("\n" + "-" * 30)
 
-            first_line_str = f"1{f' to {idx-1}' if idx-1 > 1 else ''}"
+            first_line_str = f"1{f' to {idx - 1}' if idx - 1 > 1 else ''}"
             diff_line_str = f"{diff_line_num}"
             spacing = max(len(first_line_str), len(diff_line_str))
 
@@ -469,7 +460,7 @@ def analyze_jsonl_structure(file_path):
             print(first_structure.as_json_str())
             print(f"--- Structure of line {diff_line_str:^{spacing}} ---")
             print(differing_structure.as_json_str())
-            print("\n" + "-"*30)
+            print("\n" + "-" * 30)
 
             print(f"Example Data (Line {1:>{len(diff_line_str)}}):")
             print(json.dumps(first_structure_raw, indent=4, default=str), end="\n\n")
@@ -486,13 +477,9 @@ def main() -> None:
     sys.argv = _preprocess_underscore_args(sys.argv)
 
     parser = argparse.ArgumentParser(
-        description="Show the data structure of a JSONL file and check that it is consistent throughout the file.",
+        description="Show the data structure of a JSONL file and check that it is consistent throughout the file."
     )
-    parser.add_argument(
-        "input",
-        type=str,
-        help="Path to the input JSONL file (single file, no glob).",
-    )
+    parser.add_argument("input", type=str, help="Path to the input JSONL file (single file, no glob).")
 
     args = parser.parse_args()
 

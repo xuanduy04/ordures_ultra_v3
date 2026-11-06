@@ -37,10 +37,9 @@ AGENT_COUNT: dict[str, int | None] = {
 def _preprocess_underscore_args(argv: list[str]) -> list[str]:
     """Replace underscores with hyphens in ``--arg_name`` / ``--arg_name=val`` prefixes.
 
-    argparse normalises ``-`` and ``_`` internally, so ``--output-path`` and
-    ``--output_path`` would normally map to different destinations.  This
-    function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that
-    argparse treats both spellings identically.
+    argparse normalises ``-`` and ``_`` internally, so ``--output-path`` and ``--output_path`` would normally map to
+    different destinations.  This function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that argparse
+    treats both spellings identically.
     """
     out: list[str] = []
     for arg in argv:
@@ -110,9 +109,7 @@ def _validate_counts(counts: dict[str, int]) -> None:
 
     for agent, target in AGENT_COUNT.items():
         if target is not None and counts[agent] < target:
-            raise ValueError(
-                f"Not enough samples for agent '{agent}': requested {target}, found {counts[agent]}"
-            )
+            raise ValueError(f"Not enough samples for agent '{agent}': requested {target}, found {counts[agent]}")
 
 
 def _build_keep_sets(counts: dict[str, int], seed: int) -> dict[str, set[int] | None]:
@@ -128,18 +125,16 @@ def _build_keep_sets(counts: dict[str, int], seed: int) -> dict[str, set[int] | 
 
 
 def _sample_pass(
-    files: list[Path],
-    output_path: Path,
-    keep_sets: dict[str, set[int] | None],
-    total_samples: int,
+    files: list[Path], output_path: Path, keep_sets: dict[str, set[int] | None], total_samples: int
 ) -> dict[str, int]:
     """Second pass: stream the files in the same order and write selected samples."""
     seen: dict[str, int] = {agent: 0 for agent in AGENT_COUNT}
     written: dict[str, int] = {agent: 0 for agent in AGENT_COUNT}
 
-    with output_path.open("w", encoding="utf-8") as fout, tqdm(
-        total=total_samples, desc="Sampling", unit="line"
-    ) as pbar:
+    with (
+        output_path.open("w", encoding="utf-8") as fout,
+        tqdm(total=total_samples, desc="Sampling", unit="line") as pbar,
+    ):
         for file_path in files:
             with file_path.open("r", encoding="utf-8") as fin:
                 for line in fin:
@@ -164,19 +159,10 @@ def _sample_pass(
 def main() -> None:
     sys.argv = _preprocess_underscore_args(sys.argv)
 
-    parser = argparse.ArgumentParser(
-        description="Sample per-agent subsets from NeMo-Gym compatible JSONL dataset(s).",
-    )
+    parser = argparse.ArgumentParser(description="Sample per-agent subsets from NeMo-Gym compatible JSONL dataset(s).")
+    parser.add_argument("input", type=str, help="Path to the input data file or a glob pattern (e.g. './*.jsonl').")
     parser.add_argument(
-        "input",
-        type=str,
-        help="Path to the input data file or a glob pattern (e.g. './*.jsonl').",
-    )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        required=True,
-        help="Path to the output JSONL file (must end with .jsonl).",
+        "--output", type=Path, required=True, help="Path to the output JSONL file (must end with .jsonl)."
     )
     parser.add_argument(
         "--yes",
@@ -185,12 +171,7 @@ def main() -> None:
         default=False,
         help="Preemptively confirm overwrite of the output file (default: false).",
     )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=67,
-        help="Random seed for sampling (default: %(default)s).",
-    )
+    parser.add_argument("--seed", type=int, default=67, help="Random seed for sampling (default: %(default)s).")
 
     args = parser.parse_args()
 
@@ -228,6 +209,7 @@ def main() -> None:
 
     total = sum(written.values())
     logger.info(f"Done - wrote {total} entries:\n{pprint.pformat(written)}.")
+    logger.info(f"Resulting dataset saved to: {output_path}")
 
 
 if __name__ == "__main__":

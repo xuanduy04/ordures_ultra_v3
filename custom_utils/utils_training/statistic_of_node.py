@@ -32,7 +32,7 @@ def print_gpu_usage():
             text=True,
             check=True,
         )
-        
+
         # Group processes by GPU UUID
         for line in app_result.stdout.strip().splitlines():
             line = line.strip()
@@ -41,9 +41,7 @@ def print_gpu_usage():
             parts = [x.strip() for x in line.split(",")]
             if len(parts) >= 4:
                 g_uuid, pid, proc_name, mem = parts[0], parts[1], parts[2], parts[3]
-                gpu_processes.setdefault(g_uuid, []).append(
-                    {"pid": pid, "name": proc_name, "memory": mem}
-                )
+                gpu_processes.setdefault(g_uuid, []).append({"pid": pid, "name": proc_name, "memory": mem})
     except subprocess.CalledProcessError:
         # Fails gracefully if there are permission issues or no active compute apps
         pass
@@ -57,7 +55,7 @@ def print_gpu_usage():
         parts = [x.strip() for x in line.split(",")]
         if len(parts) < 5:
             continue
-            
+
         gpu_id, uuid, mem_used, mem_total, util = parts
         out_lines.append(f"  GPU {gpu_id}: {mem_used:>6} / {mem_total:>6} MiB | util {util:>2}%")
 
@@ -75,9 +73,7 @@ def print_gpu_usage():
             resident_pages = int(statm_file.read().split()[1])
         current_gib = resident_pages * PAGE_SIZE_BYTES / (1024**3)
         peak_gib = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024**2)
-        out_lines.append(
-            f"  [rss]: current={current_gib:.2f} GiB, peak={peak_gib:.2f} GiB"
-        )
+        out_lines.append(f"  [rss]: current={current_gib:.2f} GiB, peak={peak_gib:.2f} GiB")
     except Exception as e:
         out_lines.append(f"  [rss]: Could not log rss\n  Error: {e}")
 

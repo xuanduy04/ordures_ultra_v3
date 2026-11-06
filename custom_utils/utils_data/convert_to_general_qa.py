@@ -19,10 +19,9 @@ AGENT_NAME_REASONING_OFF = "general_qa_simple_agent_reasoning_off"
 def _preprocess_underscore_args(argv: list[str]) -> list[str]:
     """Replace underscores with hyphens in ``--arg_name`` / ``--arg_name=val`` prefixes.
 
-    argparse normalises ``-`` and ``_`` internally, so ``--skip-on-error`` and
-    ``--skip_on_error`` would normally map to different destinations.  This
-    function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that
-    argparse treats both spellings identically.
+    argparse normalises ``-`` and ``_`` internally, so ``--skip-on-error`` and ``--skip_on_error`` would normally map to
+    different destinations.  This function rewrites ``_`` to ``-`` in the leading ``--key`` portion so that argparse
+    treats both spellings identically.
     """
     out: list[str] = []
     for arg in argv:
@@ -53,30 +52,20 @@ def _convert_chat_template_to_nemo_gym(turns: list[dict[str, Any]]) -> list[dict
         content = turn.get("content")
 
         if role == "tool":
-            out.append({
-                "type": "function_call_output",
-                "call_id": turn["tool_call_id"],
-                "output": content,
-            })
+            out.append({"type": "function_call_output", "call_id": turn["tool_call_id"], "output": content})
         elif role == "assistant":
-            out.append({
-                "type": "message",
-                "role": role,
-                "content": content or "",
-            })
+            out.append({"type": "message", "role": role, "content": content or ""})
             for tc in turn.get("tool_calls") or []:
-                out.append({
-                    "type": "function_call",
-                    "call_id": tc["id"],
-                    "name": tc["function"]["name"],
-                    "arguments": json.dumps(tc["function"]["arguments"]),
-                })
+                out.append(
+                    {
+                        "type": "function_call",
+                        "call_id": tc["id"],
+                        "name": tc["function"]["name"],
+                        "arguments": json.dumps(tc["function"]["arguments"]),
+                    }
+                )
         elif role in ("user", "system"):
-            out.append({
-                "type": "message",
-                "role": role,
-                "content": content,
-            })
+            out.append({"type": "message", "role": role, "content": content})
     return out
 
 
@@ -86,19 +75,16 @@ _OPENAI_FUNCTION_TOOL_KEYS = frozenset({"type", "name", "description", "paramete
 def _convert_tools_to_nemo_gym(tools: list[dict], allow_unknown_tool_keys: bool) -> list[dict]:
     """Normalize tool definitions to the NeMo-Gym Responses API shape.
 
-    Accepts both the chat-template form (``{"type": "function", "function": {...}}``)
-    and the already-unwrapped form (``{"name": ..., "parameters": ...}``).
-    OpenAI 2.7.2 (pinned by NeMo Gym) requires ``type: "function"`` and ``strict``
-    on function tools, so both are added when missing.
+    Accepts both the chat-template form (``{"type": "function", "function": {...}}``) and the already-unwrapped form
+    (``{"name": ..., "parameters": ...}``). OpenAI 2.7.2 (pinned by NeMo Gym) requires ``type: "function"`` and
+    ``strict`` on function tools, so both are added when missing.
 
-    NeMo Gym validates the whole row with ``extra="forbid"``, so any remaining
-    top-level key outside the OpenAI function-tool schema (``type``, ``name``,
-    ``description``, ``parameters``, ``strict``) would make the row fail with a
-    422 at rollout time. A top-level ``required`` is relocated into
-    ``parameters["required"]`` when possible; other unknown keys raise a
-    ``ValueError`` unless *allow_unknown_tool_keys* is set, in which case they
-    are dropped. A ``parameters`` given as a JSON string is parsed into a dict.
-    The contents of ``parameters`` are otherwise left untouched.
+    NeMo Gym validates the whole row with ``extra="forbid"``, so any remaining top-level key outside the OpenAI
+    function-tool schema (``type``, ``name``, ``description``, ``parameters``, ``strict``) would make the row fail with
+    a 422 at rollout time. A top-level ``required`` is relocated into ``parameters["required"]`` when possible; other
+    unknown keys raise a ``ValueError`` unless *allow_unknown_tool_keys* is set, in which case they are dropped. A
+    ``parameters`` given as a JSON string is parsed into a dict. The contents of ``parameters`` are otherwise left
+    untouched.
     """
     out = []
     for idx, tool in enumerate(tools):
@@ -116,13 +102,11 @@ def _convert_tools_to_nemo_gym(tools: list[dict], allow_unknown_tool_keys: bool)
                     parameters = json.loads(parameters)
                 except json.JSONDecodeError as exc:
                     raise ValueError(
-                        f"Entry has invalid tool 'parameters' field at index {idx}: "
-                        "expected valid JSON when a string"
+                        f"Entry has invalid tool 'parameters' field at index {idx}: expected valid JSON when a string"
                     ) from exc
                 if not isinstance(parameters, dict):
                     raise ValueError(
-                        f"Entry has invalid tool 'parameters' field at index {idx}: "
-                        "expected a dict after JSON parsing"
+                        f"Entry has invalid tool 'parameters' field at index {idx}: expected a dict after JSON parsing"
                     )
                 tool["parameters"] = parameters
 
@@ -156,9 +140,8 @@ def _convert_tools_to_nemo_gym(tools: list[dict], allow_unknown_tool_keys: bool)
 def _convert_tool_answer(raw_answer: Any) -> str:
     """Normalize a ground-truth tool answer into the general_qa ``expected_answer`` JSON string.
 
-    Accepts either a dict or a JSON string. The result matches the shape the
-    general_qa environment parses as an ``ExpectedFunctionCall``:
-    ``{"type": "function_call", "name": <str>, "arguments": <json string>}``.
+    Accepts either a dict or a JSON string. The result matches the shape the general_qa environment parses as an
+    ``ExpectedFunctionCall``: ``{"type": "function_call", "name": <str>, "arguments": <json string>}``.
     """
     if isinstance(raw_answer, str):
         try:
@@ -170,7 +153,9 @@ def _convert_tool_answer(raw_answer: Any) -> str:
     elif isinstance(raw_answer, list):
         raise ValueError("Entry has invalid tool answer: multiple tool calls found: expected exactly 1")
     else:
-        raise ValueError(f"Entry has invalid tool answer: expected a dict or a JSON string, got {type(raw_answer).__name__}")
+        raise ValueError(
+            f"Entry has invalid tool answer: expected a dict or a JSON string, got {type(raw_answer).__name__}"
+        )
 
     if isinstance(tool, list):
         raise ValueError("Entry has invalid tool answer: multiple tool calls found: expected exactly 1")
@@ -203,7 +188,18 @@ def _convert_tool_answer(raw_answer: Any) -> str:
     return json.dumps({"type": "function_call", "name": name, "arguments": arguments}, ensure_ascii=False)
 
 
-def _convert_entry(entry: dict, prompt_field: str, answer_field: str, use_judge: bool, no_reasoning: bool, tools_field: str, instruction_prefix: str, dataset: str, answer_is_tool_call_field: str, allow_unknown_tool_keys: bool) -> dict:
+def _convert_entry(
+    entry: dict,
+    prompt_field: str,
+    answer_field: str,
+    use_judge: bool,
+    no_reasoning: bool,
+    tools_field: str,
+    instruction_prefix: str,
+    dataset: str,
+    answer_is_tool_call_field: str,
+    allow_unknown_tool_keys: bool,
+) -> dict:
     """Convert one raw entry to the general_qa JSONL schema."""
     prompt = entry.get(prompt_field, "")
     raw_answer = entry.get(answer_field, "")
@@ -240,9 +236,7 @@ def _convert_entry(entry: dict, prompt_field: str, answer_field: str, use_judge:
         question_str = str(prompt).strip()
         _input = [{"role": "user", "content": instruction_prefix + question_str}]
 
-    responses_create_params: dict = {
-        "input": _input,
-    }
+    responses_create_params: dict = {"input": _input}
     tools = entry.get(tools_field)
     if tools:
         if not isinstance(tools, list) or not all(isinstance(tool, dict) for tool in tools):
@@ -251,9 +245,7 @@ def _convert_entry(entry: dict, prompt_field: str, answer_field: str, use_judge:
     responses_create_params["parallel_tool_calls"] = False
 
     out: dict = {
-        "agent_ref": {
-            "name": AGENT_NAME_REASONING_OFF if no_reasoning else AGENT_NAME
-        },
+        "agent_ref": {"name": AGENT_NAME_REASONING_OFF if no_reasoning else AGENT_NAME},
         "responses_create_params": responses_create_params,
         "question": question_str,
         "expected_answer": answer,
@@ -270,19 +262,9 @@ def _convert_entry(entry: dict, prompt_field: str, answer_field: str, use_judge:
 def main() -> None:
     sys.argv = _preprocess_underscore_args(sys.argv)
 
-    parser = argparse.ArgumentParser(
-        description="Convert a JSON/JSONL dataset to general_qa format.",
-    )
-    parser.add_argument(
-        "input",
-        type=Path,
-        help="Path to the input data file (must be a .jsonl).",
-    )
-    parser.add_argument(
-        "--output",
-        type=Path,
-        help="Path to the output JSONL file (must end with .jsonl).",
-    )
+    parser = argparse.ArgumentParser(description="Convert a JSON/JSONL dataset to general_qa format.")
+    parser.add_argument("input", type=Path, help="Path to the input data file (must be a .jsonl).")
+    parser.add_argument("--output", type=Path, help="Path to the output JSONL file (must end with .jsonl).")
     parser.add_argument(
         "--yes",
         "-y",
@@ -295,11 +277,7 @@ def main() -> None:
         default="messages",
         help="Field name for the prompt (a string or a chat-template list of turns) (default: %(default)s).",
     )
-    parser.add_argument(
-        "--tools-field",
-        default="tools",
-        help="Field name for the tools list (default: %(default)s).",
-    )
+    parser.add_argument("--tools-field", default="tools", help="Field name for the tools list (default: %(default)s).")
     parser.add_argument(
         "--no-reasoning",
         action="store_true",
@@ -318,9 +296,7 @@ def main() -> None:
         help="Skip invalid entries with a warning instead of aborting (default: false).",
     )
     parser.add_argument(
-        "--answer-field",
-        default="ground_truth",
-        help="Field name for the expected answer (default: %(default)s).",
+        "--answer-field", default="ground_truth", help="Field name for the expected answer (default: %(default)s)."
     )
     parser.add_argument(
         "--answer-is-tool-call-field",
@@ -349,9 +325,7 @@ def main() -> None:
 
     input_path: Path = args.input
     output_path: Path = (
-        args.output
-        if args.output is not None
-        else args.input.with_name(args.input.stem + "-general_qa.jsonl")
+        args.output if args.output is not None else args.input.with_name(args.input.stem + "-general_qa.jsonl")
     )
     prompt_field: str = args.prompt_field
     tools_field: str = args.tools_field
@@ -395,7 +369,18 @@ def main() -> None:
                 continue
             try:
                 entry = json.loads(stripped)
-                converted_entry = _convert_entry(entry, prompt_field, answer_field, should_use_judge, no_reasoning, tools_field, instruction_prefix, dataset, answer_is_tool_call_field, allow_unknown_tool_keys)
+                converted_entry = _convert_entry(
+                    entry,
+                    prompt_field,
+                    answer_field,
+                    should_use_judge,
+                    no_reasoning,
+                    tools_field,
+                    instruction_prefix,
+                    dataset,
+                    answer_is_tool_call_field,
+                    allow_unknown_tool_keys,
+                )
             except Exception as exc:
                 if skip_on_error:
                     logger.warning(f"Skipping line {lineno}: {exc}")
@@ -413,7 +398,7 @@ def main() -> None:
     if skipped:
         logger.info(f"Skipped {skipped} invalid entries.")
 
-    logger.info(f"Done - wrote {written} entries to {output_path}.")
+    logger.info(f"Done - wrote {written} entries to {output_path}")
 
 
 if __name__ == "__main__":

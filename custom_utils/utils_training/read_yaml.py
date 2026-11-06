@@ -5,7 +5,7 @@ import yaml
 def get_config_value(config_path: str, dotted_key: str) -> str:
     with open(config_path) as f:
         config = yaml.safe_load(f)
-     
+
     value = config
     prefix = []
     for key in dotted_key.strip().strip(".").split("."):
