@@ -1801,9 +1801,11 @@ def async_grpo_train(
                         }
                     )
                     train_data.to("cpu")
-                    flat_token_mask = flat_messages["token_loss_mask"]
+                    # flat_messages's "token_loss_mask" and "content" is used for logging, otherwise delete it
+                    flat_token_mask = flat_messages["token_loss_mask"].bool()
                     flat_messages_content = flat_messages.get("content", [])
                     del flat_messages
+                    # input_lengths is used below, so we delete it later
 
                 # Pad teacher logprobs to match train_data sequence length.
                 # from_batches pads to max(S_i); train_data may be longer
@@ -1914,14 +1916,14 @@ def async_grpo_train(
                     del mask, token_mask, sample_mask
 
                     # Log advantages stats
-                    advantages = train_data["advantages"]
-                    print(f"  📊 Advantages stats (from estimator): {_distribution_stats_str(advantages)}", flush=True)
+                    print(
+                        f"  📊 Advantages stats (from estimator): {_distribution_stats_str(train_data['advantages'])}",
+                        flush=True,
+                    )
 
                     # Apply advantage-level penalties (GDPO-style)
-
-                    # adv_penalties currently serves as a helper variable for penalty assignment and logging
-                    # TODO: of course, remove or do some more things with this data (e.g. running a bunch of `_calculate_single_metric` in the below `metric` for more detailed logging). To be considered in the future
-                    adv_penalties = apply_advantage_penalties(
+                    advantage_penalty_metrics: dict[str, Any] = {}  # helper variable for logging
+                    advantage_penalties = apply_advantage_penalties(
                         advantages=train_data["advantages"],
                         batch=repeated_batch,
                         penalties=advantage_penalties,
@@ -1929,14 +1931,27 @@ def async_grpo_train(
                     )
                     del prompt_ids_for_adv
 
-                    if adv_penalties:
+                    if advantage_penalties:
                         print(
                             "  📊 Advantage penalties stats:\n"
-                            + "\n".join(f"    - {k}: {_distribution_stats_str(p)}" for k, p in adv_penalties.items()),
+                            + "\n".join(
+                                f"    - {k}: {_distribution_stats_str(p)}" for k, p in advantage_penalties.items()
+                            ),
                             flush=True,
                         )
+                        # Reduce per-rollout penalties to scalars now so the tensors are not held across training/refit
+                        for k, p in advantage_penalties.items():
+                            advantage_penalty_metrics.update(
+                                _calculate_single_metric(
+                                    p.detach().cpu().tolist(),
+                                    p.numel(),
+                                    f"advantage_penalties/{k}",
+                                    percentile=[33, 67],
+                                )
+                            )
+                    del advantage_penalties
 
-                    # Calibrate advantages
+                    # Calibrate advantages of empty-generation samples
                     empty_gen_sample_idxs = [
                         i
                         for i, message_log in enumerate(repeated_batch["message_log"])
@@ -1960,7 +1975,10 @@ def async_grpo_train(
                         train_data["advantages"] = train_data["advantages"].clamp(max=clip_high)
                     del clip_low, clip_high
 
-                    print(f"  📊 Advantages stats (post-penalties): {_distribution_stats_str(advantages)}", flush=True)
+                    print(
+                        f"  📊 Advantages stats (post-penalties): {_distribution_stats_str(train_data['advantages'])}",
+                        flush=True,
+                    )
                 del trajectory_teacher_logprobs
                 gc.collect()
                 _malloc_trim()
@@ -2020,30 +2038,28 @@ def async_grpo_train(
 
                 is_last_step = step + 1 == master_config["grpo"]["max_num_steps"]
 
-                # Get flat advantages and token mask for masked metrics computation
-                flat_advantages = train_data["advantages"]
-
-                # Filter advantages using token mask (only valid response tokens)
-                response_advantages = torch.masked_select(flat_advantages, flat_token_mask.bool())
+                # # Masked advantages tracking metrics (only for valid response tokens)
+                response_advantages = torch.masked_select(train_data["advantages"], flat_token_mask)
 
                 metrics = {
                     "loss": train_results["loss"].numpy(),
                     "grad_norm": train_results["grad_norm"].numpy(),
                     "mean_prompt_length": repeated_batch["length"].numpy(),
-                    "total_num_tokens": input_lengths.numpy(),
-                    # Add masked advantages tracking metrics (only for valid response tokens)
+                    "total_num_tokens": input_lengths.numpy(),  # must be logged, used downstream for other logs
                     **_calculate_single_metric(
-                        response_advantages.detach().cpu().tolist() if response_advantages.numel() > 0 else [0.0, 0.0],
-                        response_advantages.numel() if response_advantages.numel() > 0 else 2,
+                        response_advantages.detach().cpu().tolist(),
+                        response_advantages.numel(),
                         "final_advantages",
-                        percentile=[10, 90],
+                        percentile=[1, 5, 10, 30, 70, 90, 95, 99],
                     ),
+                    **advantage_penalty_metrics,
                 }
-                del flat_advantages
+                del advantage_penalty_metrics
                 del flat_token_mask
                 del response_advantages
-                del advantages
                 gc.collect()
+                _malloc_trim()
+
                 if "moe_metrics" in train_results:
                     metrics.update({f"moe/{k}": v for k, v in train_results["moe_metrics"].items()})
                 if "mtp_metrics" in train_results:
@@ -2141,6 +2157,7 @@ def async_grpo_train(
                         torch.save(actual_dataloader_state, os.path.join(checkpoint_path, "train_dataloader.pt"))
                         del actual_dataloader_state
                         gc.collect()
+
                         # Save replay buffer state for resumption
                         print("📦 Saving replay buffer state...")
                         replay_buffer_state = ray.get(replay_buffer.state_dict.remote())

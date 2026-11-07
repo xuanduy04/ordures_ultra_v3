@@ -81,7 +81,7 @@ class FlagAdvantagePenalty(BaseAdvantagePenalty[FlagAdvantagePenaltyDefinition, 
                         and (is_assistant or not penalty.definition.assistant_only)
                     ):
                         print(
-                            f"Setting negative advantage ({penalty_value:.3f}) for {penalty.name} in assistant message {i} turn {j}",
+                            f"Applying advantage penalty ({penalty_value:.4f}) for {penalty.name} in assistant message {i} turn {j}",
                             flush=True,
                         )
                         advantages[i, token_offset : token_offset + msg_len].add_(penalty_value)

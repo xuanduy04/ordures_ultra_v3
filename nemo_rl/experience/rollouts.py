@@ -7,8 +7,9 @@ import math
 import statistics
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Optional, TypedDict
 
+import numpy as np
 import ray
 import torch
 from transformers import PreTrainedTokenizerBase
@@ -26,7 +27,7 @@ from nemo_rl.models.generation.interfaces import (
 )
 from nemo_rl.utils.logger import _pct
 from nemo_rl.utils.timer import Timer
-import numpy as np
+
 
 TokenizerType = PreTrainedTokenizerBase
 
@@ -868,14 +869,6 @@ def run_async_multi_turn_rollout(
     return asyncio.run(_async_rollout_implementation())
 
 
-def _tensorize_by_key(message_logs: list, key: str):
-    if not message_logs or key not in message_logs[0]:
-        return
-
-    for m in message_logs:
-        m[key] = torch.tensor(m[key])
-
-
 @dataclass
 class AsyncNemoGymRolloutResult:
     input_ids: torch.Tensor
@@ -884,7 +877,19 @@ class AsyncNemoGymRolloutResult:
     ng_task_index: Optional[int]
 
 
-def _make_histogram(values: list[float], num_buckets: int = 20) -> dict[str, Any]:
+class TensorBoardHistogram(TypedDict):
+    """Compact quantile-bucket histogram understood by the TensorBoard logger backend."""
+
+    bins: list[float]
+    counts: list[float]
+    min: float
+    max: float
+    num: int
+    sum: float
+    sum_squares: float
+
+
+def _make_histogram(values: list[float], num_buckets: int = 20) -> TensorBoardHistogram:
     """Build a compact quantile-bucket histogram from raw sample values.
 
     Buckets are quantile-based so the representation is fixed-size and cheap to store. The returned dict is understood
@@ -895,8 +900,8 @@ def _make_histogram(values: list[float], num_buckets: int = 20) -> dict[str, Any
         num_buckets: Number of quantile buckets.
 
     Returns:
-        Dict with ``bins`` (num_buckets + 1 edges), ``counts`` (num_buckets), and the exact summary stats ``min``,
-        ``max``, ``num``, ``sum``, ``sum_squares``.
+        TensorBoardHistogram with ``bins`` (num_buckets + 1 edges), ``counts`` (num_buckets), and the exact summary
+        stats ``min``, ``max``, ``num``, ``sum``, ``sum_squares``.
     """
     if not values:
         bins: list[float] = []
@@ -934,19 +939,27 @@ def _make_histogram(values: list[float], num_buckets: int = 20) -> dict[str, Any
 
 def _calculate_single_metric(
     values: list[float], batch_size: int, key_name: str, *, percentile: list[int] | None = None, histogram: bool = False
-) -> dict[str, Any]:
+) -> dict[str, float | TensorBoardHistogram]:
     """Compute the standard summary metrics (mean/max/min/median/stddev) for a list of sample values.
+
+    Degenerate input values are faulted to zero with nan-std (empty `values` or `batch_size`).
 
     Args:
         values: Raw sample values.
         batch_size: Number of samples the metric is normalized against.
         key_name: Metric name used as the key prefix.
+        percentile: Percentiles (0-100) to also emit under ``f"{key_name}/p{p}"``; out-of-range values are skipped.
         histogram: If True, also emit a compact quantile histogram under ``f"{key_name}/histogram"``.
 
     Returns:
-        Dict mapping metric names to values.
+        Dict mapping metric names to scalar values, plus a TensorBoardHistogram under ``f"{key_name}/histogram"`` when
+        ``histogram`` is True.
     """
-    metrics: dict[str, Any] = {
+    if not values or batch_size <= 0:
+        # degenerate input values
+        values = [0.0]
+        batch_size = 1
+    metrics: dict[str, float | TensorBoardHistogram] = {
         f"{key_name}/min": min(values),
         f"{key_name}/max": max(values),
         f"{key_name}/mean": sum(values) / batch_size,
@@ -954,70 +967,10 @@ def _calculate_single_metric(
         f"{key_name}/stddev": statistics.stdev(values) if len(values) > 1 else math.nan,
     }
     if percentile:
-        for p in percentile:
-            if 0 <= p <= 100:
-                metrics[f"{key_name}/p{p}"] = _pct(values, p)
+        metrics.update({f"{key_name}/p{p}": _pct(values, p) for p in percentile if 0 <= p <= 100})
     if histogram:
         metrics[f"{key_name}/histogram"] = _make_histogram(values)
     return metrics
-
-
-def apply_empty_generation_gate(results: list[dict], master_config: dict | None) -> int:
-    """Treat empty assistant generations as a single EOS token.
-
-    A model that emits EOS as its very first token generates zero output tokens. Such assistant messages carry empty
-    token_ids and empty generation_logprobs, which leaves the sample with zero trainable tokens and makes every
-    per-token advantage penalty a no-op. This gate rewrites empty assistant generations to contain exactly one token —
-    the smallest configured EOS token id (token_ids.eos) — with a 0.0 logprob, so the sample flows through reward
-    shaping, penalties and training like any 1-token generation. Gated messages are marked with has_empty_generation so
-    advantage calibration can special-case them later.
-
-    Args:
-        results: List of rollout result dicts with a "message_log".
-        master_config: Full master config; must contain token_ids.eos.
-
-    Returns:
-        Number of assistant messages gated.
-    """
-    if not master_config or not results:
-        return 0
-
-    eos_cfg = master_config["token_ids"]["eos"]
-    if isinstance(eos_cfg, str):
-        eos_token_ids: list[int] = []
-        for part in eos_cfg.split(","):
-            part = part.strip()
-            if not part:
-                continue
-            try:
-                eos_token_ids.append(int(part))
-            except ValueError:
-                raise ValueError(
-                    f"Invalid token_ids.eos entry {part!r} in {eos_cfg!r}; expected comma-separated integer token IDs."
-                ) from None
-        if not eos_token_ids:
-            raise ValueError(f"token_ids.eos value {eos_cfg!r} contains no token IDs.")
-    else:
-        try:
-            eos_token_ids = [int(eos_cfg)]
-        except ValueError:
-            raise ValueError(f"Invalid token_ids.eos entry '{eos_cfg!r}'; expected integer token IDs.") from None
-
-    gate_token_id = min(eos_token_ids)
-
-    num_gated = 0
-    for result in results:
-        for msg in result["message_log"]:
-            if msg.get("role") != "assistant":
-                continue
-            if msg["token_ids"].numel() > 0:
-                continue
-            msg["token_ids"] = torch.tensor([gate_token_id], dtype=msg["token_ids"].dtype)
-            msg["generation_logprobs"] = torch.tensor([0.0], dtype=msg["generation_logprobs"].dtype)
-            msg["has_empty_generation"] = True
-            num_gated += 1
-
-    return num_gated
 
 
 async def run_async_nemo_gym_rollout(
@@ -1123,8 +1076,69 @@ async def run_async_nemo_gym_rollout(
                 yield async_nemo_gym_rollout_result
 
 
+def _apply_empty_generation_gate(results: list[dict], master_config: dict | None) -> int:
+    """Treat empty assistant generations as a single EOS token.
+
+    A model that emits EOS as its very first token generates zero output tokens. Such assistant messages carry empty
+    token_ids and empty generation_logprobs, which leaves the sample with zero trainable tokens and makes every
+    per-token advantage penalty a no-op. This gate rewrites empty assistant generations to contain exactly one token —
+    the smallest configured EOS token id (token_ids.eos) — with a 0.0 logprob, so the sample flows through reward
+    shaping, penalties and training like any 1-token generation. Gated messages are marked with has_empty_generation so
+    advantage calibration can special-case them later.
+
+    Args:
+        results: List of rollout result dicts with a "message_log".
+        master_config: Full master config; must contain token_ids.eos.
+
+    Returns:
+        Number of assistant messages gated.
+    """
+    if not master_config or not results:
+        return 0
+
+    eos_cfg = master_config["token_ids"]["eos"]
+    if isinstance(eos_cfg, str):
+        eos_token_ids: list[int] = []
+        for part in eos_cfg.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            try:
+                eos_token_ids.append(int(part))
+            except ValueError:
+                raise ValueError(
+                    f"Invalid token_ids.eos entry {part!r} in {eos_cfg!r}; expected comma-separated integer token IDs."
+                ) from None
+        if not eos_token_ids:
+            raise ValueError(f"token_ids.eos value {eos_cfg!r} contains no token IDs.")
+    else:
+        try:
+            eos_token_ids = [int(eos_cfg)]
+        except ValueError:
+            raise ValueError(f"Invalid token_ids.eos entry '{eos_cfg!r}'; expected integer token IDs.") from None
+
+    gate_token_id = min(eos_token_ids)
+
+    num_gated = 0
+    for result in results:
+        for msg in result["message_log"]:
+            if msg.get("role") != "assistant":
+                continue
+            if msg["token_ids"].numel() > 0:
+                continue
+            msg["token_ids"] = torch.tensor([gate_token_id], dtype=msg["token_ids"].dtype)
+            msg["generation_logprobs"] = torch.tensor([0.0], dtype=msg["generation_logprobs"].dtype)
+            msg["has_empty_generation"] = True
+            num_gated += 1
+
+    return num_gated
+
+
 def _apply_empty_message_log_mask(results: list[dict], loss_multiplier: torch.Tensor) -> torch.Tensor:
-    """Mask samples whose NeMo-Gym rollout produced an empty message log.
+    """Mask samples whose NeMo-Gym rollout produced a degenerate message log.
+
+    A sample is masked when its rollout produced no messages at all, or when its message log is the same length as its
+    input message log (i.e. the rollout was masked because the input was overlong).
 
     Returns loss_multiplier with zeroed entries for masked samples. If no samples need masking, returns the original
     tensor unchanged.
@@ -1132,7 +1146,8 @@ def _apply_empty_message_log_mask(results: list[dict], loss_multiplier: torch.Te
     masked = [
         i
         for i, result in enumerate(results)
-        if not result["message_log"] or (len(result["message_log"]) == len(result["input_message_log"]))
+        if (not result["message_log"]) or (len(result["message_log"]) == len(result["input_message_log"]))
+        # if (degenerate message log)  or ("masked" message log due to overlong input)
     ]
 
     if not masked:
@@ -1153,47 +1168,19 @@ def _postprocess_single_group(
     tokenizer: TokenizerType,
     master_config=None,
 ) -> AsyncNemoGymRolloutResult:
-    apply_empty_generation_gate(results, master_config)
+    num_empty_generation = _apply_empty_generation_gate(results, master_config)
+    if num_empty_generation:
+        print(f"[INFO] Gated {num_empty_generation} empty assistant generation(s) to a single EOS token.", flush=True)
 
-    # for effort level
-    len_reward_low = []
-    reward_low = []
-    lengths3 = [[], [], []]
+    # Effort level reward penalties
+    # NOTE: frankly, they were too "hardcoded", I disliked the implemenation
     if master_config and "effort_levels" in master_config:
-        low_weight = 0.0
-        low_penlty = 1.0
-        low_ub = 64000
-        low_string = ""
-        if "low_weight" in master_config["effort_levels"]:
-            low_weight = master_config["effort_levels"]["low_weight"]
-        if "low_penalty" in master_config["effort_levels"]:
-            low_penlty = master_config["effort_levels"]["low_penalty"]
-        if "low_ub" in master_config["effort_levels"]:
-            low_ub = master_config["effort_levels"]["low_ub"]
-        if "low_string" in master_config["effort_levels"]:
-            low_string = master_config["effort_levels"]["low_string"]
-        if low_weight > 0 and low_string:
-            lengths = [
-                len(r["message_log"][-1]["token_ids"]) if r["message_log"][-1]["role"] == "assistant" else 0
-                for r in results
-            ]
-            orig_rewards = [r["full_result"]["reward"] for r in results]
-            for i in range(len(results)):
-                prompt = ""
-                for ii in reversed(nemo_gym_rows[i]["responses_create_params"]["input"]):
-                    if "role" in ii and ii["role"] == "user" and "content" in ii:
-                        prompt = ii["content"]
-                        break
-                if low_string in prompt:
-                    len_reward = min(1.0, low_weight * (1.0 - lengths[i] / low_ub))
-                    new_r = orig_rewards[i] + orig_rewards[i] * max(len_reward, 0.0) + low_penlty * min(len_reward, 0.0)
-                    results[i]["full_result"]["reward"] = new_r
-                    len_reward_low.append(len_reward)
-                    reward_low.append(new_r)
-                    lengths3[0].append(lengths[i])
-                else:
-                    lengths3[2].append(lengths[i])
+        print(
+            "[WARNING] `effort_levels` is configured, but effort level reward penalties are not implemented; this config will be ignored.",
+            flush=True,
+        )
 
+    # Apply advantage penalties
     penalty_counts = apply_penalty_detection(results, master_config)
 
     # Prepare for the rollout metrics calculation below. Not strictly necessary here, but good to have parity with `run_async_multi_turn_rollout`
@@ -1233,16 +1220,13 @@ def _postprocess_single_group(
             ),
             **_calculate_single_metric(max_gen_tokens_per_turn_values, batch_size, "max_gen_tokens_per_turn"),
             **_calculate_single_metric(
-                [m["total_reward"] for m in all_sample_metrics], batch_size, "total_reward", histogram=True
+                [m["total_reward"] for m in all_sample_metrics], batch_size, "reward/accuracy", histogram=True
             ),
             "natural_termination_rate": sum(not m["hit_max_tokens"] for m in all_sample_metrics) / batch_size,
             "truncation_rate": sum(m["hit_max_tokens"] for m in all_sample_metrics) / batch_size,
             # TODO enable this metric. We don't have a clear handle on which tokens are user or tool role.
             # We would probably need to re-tokenize the messages post-hoc to kind of figure this out.
-            # "mean_env_tokens_per_sample": sum(
-            #     m["env_tokens"] for m in all_sample_metrics
-            # )
-            # / batch_size,
+            # "mean_env_tokens_per_sample": sum(m["env_tokens"] for m in all_sample_metrics) / batch_size,
         }
 
     # Per-agent misc metrics
@@ -1296,38 +1280,25 @@ def _postprocess_single_group(
                 {"responses_create_params": {"input": row["responses_create_params"]["input"]}} for row in nemo_gym_rows
             ],
             "message_log": [r["message_log"] for r in results],
-            # length is used downstream for mean_prompt_length
+            # "length" is used downstream for mean_prompt_length
             "length": torch.tensor([len(r["input_message_log"][0]["token_ids"]) for r in results]),
             "loss_multiplier": _apply_empty_message_log_mask(results, input_batch["loss_multiplier"]),
-            # Unnecessary parts of the DatumSpec unused by the GRPO algorithm
+            # Unnecessary parts of the DatumSpec unused by the GRPO algorithm:
             # extra_env_info: dict[str, Any]
             # idx: int
             # task_name: NotRequired[str]
             # stop_strings: NotRequired[list[str]]  # Optional stop strings for generation
-            # Extra information not in the DatumSpec used by the GRPO algorithm
+            # Extra information not in the DatumSpec used by the GRPO algorithm:
             "total_reward": torch.tensor([r["full_result"]["reward"] for r in results]),
             # Add truncated field to match other rollout paths (reusing hit_max_tokens logic)
             "truncated": torch.tensor([m["hit_max_tokens"] for m in all_sample_metrics], dtype=torch.bool),
-            # Agent/env-driven mask flag — True means this sample should be masked
-            # from the GRPO gradient (kept for advantage computation).
+            # Agent/env-driven mask flag — True means this sample should be masked from the GRPO gradient (kept for advantage computation).
             "mask_sample": torch.tensor(
                 [bool((r["full_result"].get("instance_config") or {}).get("mask_sample", False)) for r in results],
                 dtype=torch.bool,
             ),
         }
     )
-
-    # for effort level
-    if len_reward_low:
-        rollout_metrics["mean_length_reward_low"] = sum(len_reward_low) / len(len_reward_low)
-    if reward_low:
-        rollout_metrics["mean_reward_low"] = sum(reward_low) / len(reward_low)
-    if lengths3[0]:
-        rollout_metrics["mean_length_low"] = sum(lengths3[0]) / len(lengths3[0])
-        rollout_metrics["median_length_low"] = float(np.median(lengths3[0]))
-    if lengths3[2]:
-        rollout_metrics["mean_length_high"] = sum(lengths3[2]) / len(lengths3[2])
-        rollout_metrics["median_length_high"] = float(np.median(lengths3[2]))
 
     # Penalty metrics — map detection count keys to rollout metric names
     _PENALTY_METRICS = {
@@ -1337,11 +1308,10 @@ def _postprocess_single_group(
         "n_gram_repetition": "n_gram_repetition_rate",
     }
     if master_config and results:
-        grpo_cfg = master_config.get("grpo") or {}
-        advantage_penalty_cfg = grpo_cfg.get("advantage_penalty") or {}
-        for key, metric_name in _PENALTY_METRICS.items():
-            if advantage_penalty_cfg.get(key, {}).get("enabled", False):
-                rollout_metrics[metric_name] = penalty_counts[key] / len(results)
+        advantage_penalty_cfg = (master_config.get("grpo") or {}).get("advantage_penalty") or {}
+        for k, metric_name in _PENALTY_METRICS.items():
+            if advantage_penalty_cfg.get(k, {}).get("enabled", False):
+                rollout_metrics[f"advantage_penalties/{k}/{metric_name}"] = penalty_counts[k] / len(results)
 
     ng_task_index = None
     if nemo_gym_rows and "_ng_task_index" in nemo_gym_rows[0]:
