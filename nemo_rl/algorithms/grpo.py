@@ -1928,7 +1928,7 @@ def async_grpo_train(
 
                     # Apply advantage-level penalties (GDPO-style)
                     advantage_penalty_metrics: dict[str, Any] = {}  # helper variable for logging
-                    advantage_penalties = apply_advantage_penalties(
+                    advantage_penalties_log = apply_advantage_penalties(
                         advantages=train_data["advantages"],
                         batch=repeated_batch,
                         penalties=advantage_penalties,
@@ -1936,16 +1936,16 @@ def async_grpo_train(
                     )
                     del prompt_ids_for_adv
 
-                    if advantage_penalties:
+                    if advantage_penalties_log:
                         print(
                             "  📊 Advantage penalties stats:\n"
                             + "\n".join(
-                                f"    - {k}: {_distribution_stats_str(p)}" for k, p in advantage_penalties.items()
+                                f"    - {k}: {_distribution_stats_str(p)}" for k, p in advantage_penalties_log.items()
                             ),
                             flush=True,
                         )
                         # Reduce per-rollout penalties to scalars now so the tensors are not held across training/refit
-                        for k, p in advantage_penalties.items():
+                        for k, p in advantage_penalties_log.items():
                             advantage_penalty_metrics.update(
                                 _calculate_single_metric(
                                     p.detach().cpu().tolist(),
@@ -1954,7 +1954,7 @@ def async_grpo_train(
                                     percentile=[33, 67],
                                 )
                             )
-                    del advantage_penalties
+                    del advantage_penalties_log
 
                     # Calibrate advantages of empty-generation samples
                     empty_gen_sample_idxs = [
