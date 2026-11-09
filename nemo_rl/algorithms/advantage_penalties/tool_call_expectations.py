@@ -9,19 +9,31 @@ from typing import Any, Optional
 @dataclass(frozen=True, kw_only=True)
 class ToolCallExpectationRule:
     agent_ref_name: str
-    answer_is_tool_call_field: Optional[str]
+    # Path of keys into the NeMo-Gym row; None = every row of this env expects a tool call.
+    field_path: Optional[tuple[str, ...]]
+    # Value the row field at ``field_path`` must equal for the row to expect a tool call.
+    expected_value: Any
 
 
 TOOL_CALL_EXPECTATION_RULES: tuple[ToolCallExpectationRule, ...] = (
-    ToolCallExpectationRule(agent_ref_name="single_step_tool_use_with_argument_comparison", answer_is_tool_call_field=None),
-    ToolCallExpectationRule(agent_ref_name="general_qa", answer_is_tool_call_field="answer_is_tool_call"),
+    ToolCallExpectationRule(agent_ref_name="single_step_tool_use_with_argument_comparison", field_path=("expected_action", "type"), expected_value="function_call"),
+    ToolCallExpectationRule(agent_ref_name="swe_pivot_single_step_tool_use_with_argument_comparison", field_path=("expected_action", "type"), expected_value="function_call"),
+    ToolCallExpectationRule(agent_ref_name="toolcall_schema_single_step_tool_use_with_argument_comparison", field_path=("expected_action", "type"), expected_value="function_call"),
+    ToolCallExpectationRule(agent_ref_name="general_qa", field_path=("answer_is_tool_call",), expected_value=True),
 )  # fmt: skip
 
 
 def _matches_tool_call_expectation_rule(nemo_gym_row: dict[str, Any], rule: ToolCallExpectationRule) -> bool:
-    return nemo_gym_row["agent_ref"]["name"].strip().lower().startswith(rule.agent_ref_name) and (
-        nemo_gym_row.get(rule.answer_is_tool_call_field, False) if rule.answer_is_tool_call_field is not None else True
-    )
+    if not nemo_gym_row["agent_ref"]["name"].strip().lower().startswith(rule.agent_ref_name):
+        return False
+    if rule.field_path is None:
+        return True
+    value: Any = nemo_gym_row
+    for key in rule.field_path:
+        if not isinstance(value, dict) or key not in value:
+            return False
+        value = value[key]
+    return value == rule.expected_value
 
 
 def expects_tool_call(nemo_gym_row: dict[str, Any]) -> bool:

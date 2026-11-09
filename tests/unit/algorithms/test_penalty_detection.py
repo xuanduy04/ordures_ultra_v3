@@ -394,7 +394,9 @@ class TestInvalidToolCall:
 
 class TestMissingToolCall:
     CFG = {"grpo": {"advantage_penalty": {"missing_tool_call": {"enabled": True}}}}
-    EXPECTING_ROW = _row("single_step_tool_use_with_argument_comparison_simple_agent")
+    EXPECTING_ROW = _row(
+        "single_step_tool_use_with_argument_comparison_agent", expected_action={"type": "function_call"}
+    )
 
     def test_expected_message_turn_flagged(self):
         result = _single_turn([_reasoning_item("thinking"), _message_item("answer", generation_str="g")])
@@ -495,7 +497,35 @@ class TestExpectsToolCall:
     @pytest.mark.parametrize(
         ("row", "expected"),
         [
-            (_row("single_step_tool_use_with_argument_comparison_simple_agent"), True),
+            (
+                _row(
+                    "single_step_tool_use_with_argument_comparison_agent", expected_action={"type": "function_call"}
+                ),
+                True,
+            ),
+            (_row("single_step_tool_use_with_argument_comparison_agent", expected_action={"type": "message"}), False),
+            (
+                _row(
+                    "swe_pivot_single_step_tool_use_with_argument_comparison_agent",
+                    expected_action={"type": "function_call"},
+                ),
+                True,
+            ),
+            (
+                _row(
+                    "toolcall_schema_single_step_tool_use_with_argument_comparison_agent",
+                    expected_action={"type": "function_call"},
+                ),
+                True,
+            ),
+            (
+                _row(
+                    "toolcall_schema_single_step_tool_use_with_argument_comparison_agent",
+                    expected_action={"type": "message"},
+                ),
+                False,
+            ),
+            (_row("general_qa_simple_agent_reasoning_off", answer_is_tool_call=True), True),
             (_row("general_qa_simple_agent", answer_is_tool_call=True), True),
             (_row("general_qa_simple_agent", answer_is_tool_call=False), False),
             (_row("general_qa_simple_agent"), False),
