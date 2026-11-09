@@ -1,11 +1,8 @@
-
-
 """Prefetch NeMo Gym internal venvs by doing a dry run of NemoGym initialization.
 
-This complements nemo_rl/utils/prefetch_venvs.py (which prefetches Ray actor venvs)
-by also triggering NeMo Gym's own internal venv creation for its servers (code_gen,
-math, etc.). It reuses the real code path (NemoGym -> _spinup) with dry_run=True
-so no actual policy model is needed.
+This complements nemo_rl/utils/prefetch_venvs.py (which prefetches Ray actor venvs) by also triggering NeMo Gym's own
+internal venv creation for its servers (code_gen, math, etc.). It reuses the real code path (NemoGym -> _spinup) with
+dry_run=True so no actual policy model is needed.
 """
 
 import argparse
@@ -17,34 +14,22 @@ from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from nemo_rl.distributed.ray_actor_environment_registry import get_actor_python_env
 from nemo_rl.distributed.virtual_cluster import init_ray
-from nemo_rl.environments.nemo_gym import (
-    NemoGym,
-    NemoGymConfig,
-    get_nemo_gym_uv_cache_dir,
-    get_nemo_gym_venv_dir,
-)
-from nemo_rl.utils.config import (
-    load_config,
-    register_omegaconf_resolvers,
-)
+from nemo_rl.environments.nemo_gym import NemoGym, NemoGymConfig, get_nemo_gym_uv_cache_dir, get_nemo_gym_venv_dir
+from nemo_rl.utils.config import load_config, register_omegaconf_resolvers
 from nemo_rl.utils.venvs import create_local_venv_on_each_node
 
-def prepare_vllm_configs_for_prefetch(
-    config: object, placeholder_model: str
-) -> None:
+
+def prepare_vllm_configs_for_prefetch(config: object, placeholder_model: str) -> None:
     """Make NeMo Gym vLLM configs safe for dry-run venv prefetch.
 
-    Some NeMo Gym configs intentionally leave auxiliary vLLM server `model`
-    fields as null and rely on launch scripts to inject real values. Dry-run
-    prefetch does not use those launch-time overrides, but Gym still validates
-    every server config. Fill only missing model values so validation succeeds
-    while preserving any real model paths already present in the config.
+    Some NeMo Gym configs intentionally leave auxiliary vLLM server `model` fields as null and rely on launch scripts to
+    inject real values. Dry-run prefetch does not use those launch-time overrides, but Gym still validates every server
+    config. Fill only missing model values so validation succeeds while preserving any real model paths already present
+    in the config.
 
-    Dry-run prefetch also provides no GPU nodes, so GPU-backed vLLM servers
-    must not attempt to spin up inference workers. Force `spinup_server=false`
-    for prefetch while still allowing the environment build path to run.
+    Dry-run prefetch also provides no GPU nodes, so GPU-backed vLLM servers must not attempt to spin up inference
+    workers. Force `spinup_server=false` for prefetch while still allowing the environment build path to run.
     """
-
     if isinstance(config, dict):
         responses_api_models = config.get("responses_api_models")
         if isinstance(responses_api_models, dict):
@@ -61,17 +46,13 @@ def prepare_vllm_configs_for_prefetch(
             prepare_vllm_configs_for_prefetch(item, placeholder_model)
 
 
-def fill_missing_for_prefetch(
-    cfg: object, placeholder: str = "prefetch-placeholder"
-) -> None:
+def fill_missing_for_prefetch(cfg: object, placeholder: str = "prefetch-placeholder") -> None:
     """Fill OmegaConf mandatory-missing (``???``) values with a placeholder.
 
-    Public configs mark launch-time values as mandatory (e.g. ``sif_dir`` for the
-    SWE agents, the MOPD ``_teachers.*`` checkpoints); the launcher injects them
-    at run time. Dry-run prefetch has no such overrides, so resolving the
-    interpolations that reference them would raise. Prefetch only needs the
-    config to resolve enough to build the Gym venvs, so substitute a placeholder
-    for any missing value and let dependent interpolations resolve to it.
+    Public configs mark launch-time values as mandatory (e.g. ``sif_dir`` for the SWE agents, the MOPD ``_teachers.*``
+    checkpoints); the launcher injects them at run time. Dry-run prefetch has no such overrides, so resolving the
+    interpolations that reference them would raise. Prefetch only needs the config to resolve enough to build the Gym
+    venvs, so substitute a placeholder for any missing value and let dependent interpolations resolve to it.
     """
     if isinstance(cfg, DictConfig):
         for key in list(cfg.keys()):
@@ -91,18 +72,13 @@ def prefetch_nemo_gym_venvs(config_paths: list[str]) -> None:
     """Prefetch NeMo Gym venvs for each config by doing a dry-run initialization.
 
     Args:
-        config_paths: List of paths to NeMo RL config files that contain
-            an env.nemo_gym section.
+        config_paths: List of paths to NeMo RL config files that contain an env.nemo_gym section.
     """
     init_ray()
 
-    nemo_gym_py_exec = get_actor_python_env(
-        "nemo_rl.environments.nemo_gym.NemoGym"
-    )
+    nemo_gym_py_exec = get_actor_python_env("nemo_rl.environments.nemo_gym.NemoGym")
     if nemo_gym_py_exec.startswith("uv"):
-        nemo_gym_py_exec = create_local_venv_on_each_node(
-            nemo_gym_py_exec, "nemo_rl.environments.nemo_gym.NemoGym"
-        )
+        nemo_gym_py_exec = create_local_venv_on_each_node(nemo_gym_py_exec, "nemo_rl.environments.nemo_gym.NemoGym")
 
     # Prepare additional interpolation ops for resolving configs
     register_omegaconf_resolvers()
@@ -122,9 +98,7 @@ def prefetch_nemo_gym_venvs(config_paths: list[str]) -> None:
 
             nemo_gym_dict = dict(config["env"]["nemo_gym"])
             nemo_gym_dict["dry_run"] = True
-            prepare_vllm_configs_for_prefetch(
-                nemo_gym_dict, placeholder_model="dummy-prefetch-model"
-            )
+            prepare_vllm_configs_for_prefetch(nemo_gym_dict, placeholder_model="dummy-prefetch-model")
             uv_cache_dir = get_nemo_gym_uv_cache_dir()
             if uv_cache_dir is not None:
                 nemo_gym_dict.setdefault("uv_cache_dir", uv_cache_dir)
@@ -138,19 +112,13 @@ def prefetch_nemo_gym_venvs(config_paths: list[str]) -> None:
                 ray_num_gpus_per_node=0,
                 ray_namespace=None,
                 initial_global_config_dict=nemo_gym_dict,
-                invalid_tool_call_patterns=None,
             )
 
             nemo_gym_opts = {
                 # Don't restart to surface any issue from a failed build.
                 "max_restarts": 0,
                 "max_task_retries": 0,
-                "runtime_env": {
-                    "py_executable": nemo_gym_py_exec,
-                    "env_vars": {
-                        **os.environ,
-                    },
-                },
+                "runtime_env": {"py_executable": nemo_gym_py_exec, "env_vars": {**os.environ}},
             }
 
             print("Creating NeMo Gym environment (dry_run=True)...")
@@ -202,9 +170,7 @@ Examples:
 """,
     )
     parser.add_argument(
-        "configs",
-        nargs="+",
-        help="One or more NeMo RL config file paths containing an env.nemo_gym section.",
+        "configs", nargs="+", help="One or more NeMo RL config file paths containing an env.nemo_gym section."
     )
     args = parser.parse_args()
 
