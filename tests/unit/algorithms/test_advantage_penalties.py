@@ -281,6 +281,43 @@ def test_create_advantage_penalties_flag_configs():
     assert configs["empty_final_answer"].settings.weight == DEFAULT_ADVANTAGE_PENALTY_WEIGHT
 
 
+def test_create_advantage_penalties_tool_call_configs_and_signal():
+    loss_config = {"use_kl_in_reward": False, "reference_policy_kl_penalty": 0.0, "reference_policy_kl_type": "k3"}
+    grpo_config = {
+        "advantage_penalty": {
+            "invalid_tool_call": {"enabled": True, "invalid_tool_call_patterns": ["[CALL]"]},
+            "missing_tool_call": {"enabled": True, "weight": 0.7},
+        }
+    }
+
+    penalties = create_advantage_penalties(grpo_config, loss_config)
+
+    assert len(penalties) == 1
+    flag = penalties[0]
+    assert isinstance(flag, FlagAdvantagePenalty)
+    configs = {c.name: c for c in flag.penalties}
+    assert set(configs) == {"invalid_tool_call", "missing_tool_call"}
+    assert configs["missing_tool_call"].settings.weight == 0.7
+    assert configs["missing_tool_call"].definition.message_key == "is_missing_tool_call"
+
+    batch = {
+        "message_log": [
+            [
+                _make_message("user", 3, ["is_missing_tool_call"], generated=False),
+                _make_message("assistant", 4, [], generated=True),
+            ],
+            [
+                _make_message("user", 3, [], generated=False),
+                _make_message("assistant", 4, ["is_missing_tool_call"], generated=True),
+            ],
+        ]
+    }
+    signals = flag.compute_signal(batch)
+    # assistant_only: the flag on the user message is ignored.
+    torch.testing.assert_close(signals["missing_tool_call"], torch.tensor([0.0, 1.0], dtype=torch.float64))
+    torch.testing.assert_close(signals["invalid_tool_call"], torch.tensor([0.0, 0.0], dtype=torch.float64))
+
+
 def test_create_advantage_penalties_default_weight_fallback():
     loss_config = {"use_kl_in_reward": False, "reference_policy_kl_penalty": 0.0, "reference_policy_kl_type": "k3"}
     grpo_config = {"advantage_penalty": {"empty_final_answer": {"enabled": True}, "default_weight": 0.1}}

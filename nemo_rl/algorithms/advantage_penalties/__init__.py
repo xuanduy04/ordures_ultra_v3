@@ -20,6 +20,7 @@ from nemo_rl.algorithms.advantage_penalties.base_advantage_penalty import BaseAd
 from nemo_rl.algorithms.advantage_penalties.flag_advantage_penalty import (
     FlagAdvantagePenalty,
     FlagAdvantagePenaltyConfig,
+    InvalidToolCallAdvantagePenaltyConfig,
 )
 from nemo_rl.algorithms.advantage_penalties.n_gram_advantage_penalty import (
     NGramAdvantagePenalty,
@@ -40,7 +41,7 @@ class AdvantagePenaltyConfig(TypedDict):
     """
 
     # 1. Invalid tool call tokens
-    invalid_tool_call: NotRequired[FlagAdvantagePenaltyConfig]
+    invalid_tool_call: NotRequired[InvalidToolCallAdvantagePenaltyConfig]
     # 2. Messages with malformed thinking
     malformed_thinking: NotRequired[FlagAdvantagePenaltyConfig]
     # 3. From the first EOS token in a generation to the final token (assistant turns only)
@@ -49,6 +50,9 @@ class AdvantagePenaltyConfig(TypedDict):
     empty_final_answer: NotRequired[FlagAdvantagePenaltyConfig]
     # 5. N-gram repetition, subtracted from token advantages.
     n_gram_repetition: NotRequired[NGramAdvantagePenaltyConfig]
+    # 6. Assistant turns without a tool call when the environment + row expects one
+    #    (see nemo_rl/algorithms/advantage_penalties/tool_call_expectations.py)
+    missing_tool_call: NotRequired[FlagAdvantagePenaltyConfig]
 
     # Weight used by any enabled penalty that does not set its own weight.
     default_weight: NotRequired[float]
@@ -161,7 +165,8 @@ def apply_advantage_penalties(
             group-normalizing schemes.
 
     Returns:
-        Mapping of penalty name to the normalized and weighted per-rollout penalty values (exactly as applied) for logging.
+        Mapping of penalty name to the normalized and weighted per-rollout penalty values (exactly as applied) for
+        logging.
     """
     penalties_log: dict[str, Tensor] = {}
     for penalty in penalties:

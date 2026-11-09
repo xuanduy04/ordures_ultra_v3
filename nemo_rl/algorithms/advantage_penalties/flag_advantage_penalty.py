@@ -30,6 +30,22 @@ class FlagAdvantagePenaltyConfig(TypedDict):
     max_advantage_penalty: NotRequired[float]
 
 
+class InvalidToolCallAdvantagePenaltyConfig(FlagAdvantagePenaltyConfig):
+    """Config of the invalid_tool_call flag-based advantage penalty in the grpo config."""
+
+    # Substrings in assistant text content that indicate an invalid tool call (falls back to
+    # ``DEFAULT_INVALID_TOOL_CALL_PATTERNS``). Replaces the deprecated ``env.nemo_gym.invalid_tool_call_patterns``.
+    invalid_tool_call_patterns: NotRequired[list[str]]
+
+
+DEFAULT_INVALID_TOOL_CALL_PATTERNS: tuple[str, ...] = (
+    "<tool_call>",
+    "</tool_call>",
+    "<function_call>",
+    "</function_call>",
+)
+
+
 @dataclass(frozen=True, kw_only=True)
 class FlagAdvantagePenaltyDefinition(BaseAdvantagePenaltyDefinition):
     message_key: str  # Message-level boolean key carrying the flag
@@ -51,6 +67,7 @@ class FlagAdvantagePenalty(BaseAdvantagePenalty[FlagAdvantagePenaltyDefinition, 
         FlagAdvantagePenaltyDefinition(name="malformed_thinking", config_key="malformed_thinking", message_key="has_malformed_thinking", assistant_only=True),
         FlagAdvantagePenaltyDefinition(name="generate_eos_token", config_key="eos_token", message_key="has_eos_token", assistant_only=True),
         FlagAdvantagePenaltyDefinition(name="empty_final_answer", config_key="empty_final_answer", message_key="has_empty_final_answer", assistant_only=True),
+        FlagAdvantagePenaltyDefinition(name="missing_tool_call", config_key="missing_tool_call", message_key="is_missing_tool_call", assistant_only=True),
     )  # fmt: skip
 
     def compute_signal(self, batch: BatchedDataDict) -> dict[str, Tensor]:

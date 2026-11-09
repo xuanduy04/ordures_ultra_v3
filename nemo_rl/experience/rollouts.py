@@ -1181,7 +1181,7 @@ def _postprocess_single_group(
         )
 
     # Apply advantage penalties
-    penalty_counts = apply_penalty_detection(results, master_config)
+    penalty_counts = apply_penalty_detection(results, master_config, nemo_gym_rows)
 
     # Prepare for the rollout metrics calculation below. Not strictly necessary here, but good to have parity with `run_async_multi_turn_rollout`
     with timer.time(f"{timer_prefix}/prepare_for_metrics_calculation", should_log=False):
@@ -1306,6 +1306,8 @@ def _postprocess_single_group(
         "eos_token": "eos_token_rate",
         "malformed_thinking": "malformed_thinking_rate",
         "n_gram_repetition": "n_gram_repetition_rate",
+        "invalid_tool_call": "invalid_tool_call_rate",
+        "missing_tool_call": "missing_tool_call_rate",
     }
     if master_config and results:
         advantage_penalty_cfg = (master_config.get("grpo") or {}).get("advantage_penalty") or {}

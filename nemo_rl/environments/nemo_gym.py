@@ -44,9 +44,6 @@ class NemoGymConfig(TypedDict):
     ray_num_gpus_per_node: Optional[int]
     ray_namespace: Optional[str]
     initial_global_config_dict: Dict[str, Any]
-    invalid_tool_call_patterns: Optional[
-        List[str]
-    ]  # Substrings in assistant text content that indicate an invalid tool call (default: ["<tool_call>", "</tool_call>", "<function_call>", "</function_call>"])
     thinking_tags: Optional[List[str]]  # Thinking tags to check for malformed usage (default: ["<think>", "</think>"])
     max_total_sequence_length: NotRequired[int]
 
@@ -263,45 +260,11 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
                     "token_ids": new_prompt_token_ids,
                 }
             )
-            # Valid tool calls go through the structured API (tool_calls field) and get
-            # executed by NeMo-Gym. If tool call patterns appear in the text content instead,
-            # the call was invalid and never executed — flag it so training can penalize it.
-            invalid_tool_call_patterns = self.cfg.get("invalid_tool_call_patterns") or [
-                "<tool_call>",
-                "</tool_call>",
-                "<function_call>",
-                "</function_call>",
-            ]
-            is_invalid_tool_call = False
-
             # NeMo-Gym only attaches generation_token_ids to the last output item of a
             # model call (see vllm_model/app.py postprocess_chat_response). So this item
             # is guaranteed to be the final thing the model produced for this turn.
-            # If it's a reasoning item, the model output only reasoning (no content/tool calls).
-            is_output_message = (
-                "content" in output_item_dict
-                and len(output_item_dict["content"]) > 0
-                and "text" in output_item_dict["content"][0]
-            )
-            is_reasoning_message = (
-                output_item_dict.get("type") == "reasoning"
-                and len(output_item_dict["summary"]) > 0
-                and "text" in output_item_dict["summary"][0]
-            )
-
-            # Malformed thinking-tag detection moved to apply_penalty_detection in
-            # nemo_rl/algorithms/advantage_penalties/detectors.py (token-ID + string checks). The
-            # per-message has_malformed_thinking flag is now set there when
-            # grpo.advantage_penalty.malformed_thinking.enabled is true.
-
-            if is_output_message:
-                assistant_message_content = output_item_dict["content"][0]["text"]
-                if any(pattern in assistant_message_content for pattern in invalid_tool_call_patterns):
-                    is_invalid_tool_call = True
-            elif is_reasoning_message:
-                assistant_message_content = output_item_dict["summary"][0]["text"]
-                if any(pattern in assistant_message_content for pattern in invalid_tool_call_patterns):
-                    is_invalid_tool_call = True
+            # The generation_str attached to it below is what the penalty detectors use to
+            # map output items back to assistant turns.
 
             nemo_rl_message_log.append(
                 {
@@ -309,7 +272,6 @@ Output prompt token IDs: {output_item_dict["prompt_token_ids"]}
                     "content": tokenizer.decode(generation_token_ids.tolist()),
                     "token_ids": generation_token_ids,
                     "generation_logprobs": generation_logprobs,
-                    "is_invalid_tool_call": is_invalid_tool_call,
                 }
             )
 

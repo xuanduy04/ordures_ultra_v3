@@ -2,6 +2,7 @@ import pytest
 import torch
 
 from nemo_rl.algorithms.advantage_penalties.detectors import apply_penalty_detection
+from nemo_rl.algorithms.advantage_penalties.tool_call_expectations import expects_tool_call
 
 
 # ---- Helpers to build minimal result dicts ----
@@ -307,6 +308,205 @@ class TestNGramRepetition:
 
 
 # =====================================================================
+# Invalid tool call (grpo.advantage_penalty.invalid_tool_call)
+# =====================================================================
+
+
+def _single_turn(output_items):
+    return _make_result(output_items=output_items, message_log=[_msg("user", [100]), _msg("assistant", [300])])
+
+
+def _row(agent_name="some_agent", **extra):
+    return {"agent_ref": {"name": agent_name}, **extra}
+
+
+class TestInvalidToolCall:
+    CFG = {"grpo": {"advantage_penalty": {"invalid_tool_call": {"enabled": True}}}}
+
+    def test_pattern_in_message_text_flagged(self):
+        result = _single_turn([_message_item('<tool_call>{"name": "x"}</tool_call>', generation_str="g")])
+        counts = apply_penalty_detection([result], self.CFG)
+        assert counts["invalid_tool_call"] == 1
+        assert result["message_log"][1]["is_invalid_tool_call"] is True
+
+    def test_pattern_in_reasoning_summary_flagged(self):
+        result = _single_turn([_reasoning_item("thinking <function_call> x", generation_str="g")])
+        counts = apply_penalty_detection([result], self.CFG)
+        assert counts["invalid_tool_call"] == 1
+        assert result["message_log"][1]["is_invalid_tool_call"] is True
+
+    def test_clean_text_not_flagged(self):
+        result = _single_turn([_message_item("The answer is 42", generation_str="g")])
+        counts = apply_penalty_detection([result], self.CFG)
+        assert counts["invalid_tool_call"] == 0
+        assert "is_invalid_tool_call" not in result["message_log"][1]
+
+    def test_structured_function_call_not_flagged(self):
+        result = _single_turn([_reasoning_item("thinking"), _function_call_item(generation_str="g")])
+        counts = apply_penalty_detection([result], self.CFG)
+        assert counts["invalid_tool_call"] == 0
+        assert "is_invalid_tool_call" not in result["message_log"][1]
+
+    def test_custom_patterns(self):
+        cfg = {
+            "grpo": {
+                "advantage_penalty": {"invalid_tool_call": {"enabled": True, "invalid_tool_call_patterns": ["[CALL]"]}}
+            }
+        }
+        default_hit = _single_turn([_message_item("<tool_call>", generation_str="g")])
+        custom_hit = _single_turn([_message_item("[CALL] x", generation_str="g")])
+        counts = apply_penalty_detection([default_hit, custom_hit], cfg)
+        assert counts["invalid_tool_call"] == 1
+        assert "is_invalid_tool_call" not in default_hit["message_log"][1]
+        assert custom_hit["message_log"][1]["is_invalid_tool_call"] is True
+
+    def test_multi_turn_marks_only_offending_turn(self):
+        result = _make_result(
+            output_items=[
+                _function_call_item(generation_str="g1"),
+                {"type": "function_call_output", "call_id": "c1", "output": "ok"},
+                _message_item("<tool_call>", generation_str="g2"),
+            ],
+            message_log=[_msg("user", [100]), _msg("assistant", [300]), _msg("user", [400]), _msg("assistant", [500])],
+        )
+        counts = apply_penalty_detection([result], self.CFG)
+        assert counts["invalid_tool_call"] == 1
+        assert "is_invalid_tool_call" not in result["message_log"][1]
+        assert result["message_log"][3]["is_invalid_tool_call"] is True
+
+    def test_disabled_no_flag(self):
+        cfg = {"grpo": {"advantage_penalty": {"invalid_tool_call": {"enabled": False}}}}
+        result = _single_turn([_message_item("<tool_call>", generation_str="g")])
+        counts = apply_penalty_detection([result], cfg)
+        assert counts["invalid_tool_call"] == 0
+        assert "is_invalid_tool_call" not in result["message_log"][1]
+
+    def test_turn_count_mismatch_asserts(self):
+        result = _single_turn([_message_item("answer")])  # no generation_str
+        with pytest.raises(AssertionError):
+            apply_penalty_detection([result], self.CFG)
+
+
+# =====================================================================
+# Missing tool call (grpo.advantage_penalty.missing_tool_call)
+# =====================================================================
+
+
+class TestMissingToolCall:
+    CFG = {"grpo": {"advantage_penalty": {"missing_tool_call": {"enabled": True}}}}
+    EXPECTING_ROW = _row("single_step_tool_use_with_argument_comparison_simple_agent")
+
+    def test_expected_message_turn_flagged(self):
+        result = _single_turn([_reasoning_item("thinking"), _message_item("answer", generation_str="g")])
+        counts = apply_penalty_detection([result], self.CFG, [self.EXPECTING_ROW])
+        assert counts["missing_tool_call"] == 1
+        assert result["message_log"][1]["is_missing_tool_call"] is True
+
+    def test_expected_function_call_turn_not_flagged(self):
+        result = _single_turn([_reasoning_item("thinking"), _function_call_item(generation_str="g")])
+        counts = apply_penalty_detection([result], self.CFG, [self.EXPECTING_ROW])
+        assert counts["missing_tool_call"] == 0
+        assert "is_missing_tool_call" not in result["message_log"][1]
+
+    def test_function_call_before_final_item_not_flagged(self):
+        """A function_call that is not the token-bearing item still counts for its turn."""
+        result = _single_turn([_function_call_item(), _function_call_item(name="other", generation_str="g")])
+        counts = apply_penalty_detection([result], self.CFG, [self.EXPECTING_ROW])
+        assert counts["missing_tool_call"] == 0
+
+    @pytest.mark.parametrize(
+        "row",
+        [
+            _row("some_other_agent"),
+            _row("general_qa_simple_agent"),
+            _row("general_qa_simple_agent", answer_is_tool_call=False),
+        ],
+    )
+    def test_not_expected_not_flagged(self, row):
+        result = _single_turn([_message_item("answer", generation_str="g")])
+        counts = apply_penalty_detection([result], self.CFG, [row])
+        assert counts["missing_tool_call"] == 0
+        assert "is_missing_tool_call" not in result["message_log"][1]
+
+    def test_general_qa_answer_is_tool_call_flagged(self):
+        result = _single_turn([_message_item("answer", generation_str="g")])
+        counts = apply_penalty_detection([result], self.CFG, [_row("general_qa_simple_agent", answer_is_tool_call=True)])
+        assert counts["missing_tool_call"] == 1
+        assert result["message_log"][1]["is_missing_tool_call"] is True
+
+    def test_invalid_takes_precedence_both_enabled(self):
+        cfg = {
+            "grpo": {"advantage_penalty": {"invalid_tool_call": {"enabled": True}, "missing_tool_call": {"enabled": True}}}
+        }
+        result = _single_turn([_message_item("<tool_call>", generation_str="g")])
+        counts = apply_penalty_detection([result], cfg, [self.EXPECTING_ROW])
+        assert counts["invalid_tool_call"] == 1
+        assert counts["missing_tool_call"] == 0
+        assert result["message_log"][1]["is_invalid_tool_call"] is True
+        assert "is_missing_tool_call" not in result["message_log"][1]
+
+    def test_invalid_takes_precedence_only_missing_enabled(self):
+        result = _single_turn([_message_item("<tool_call>", generation_str="g")])
+        counts = apply_penalty_detection([result], self.CFG, [self.EXPECTING_ROW])
+        assert counts["missing_tool_call"] == 0
+        assert "is_missing_tool_call" not in result["message_log"][1]
+        assert "is_invalid_tool_call" not in result["message_log"][1]
+
+    def test_truncated_reasoning_only_turn_flagged(self):
+        result = _single_turn([_reasoning_item("thinking that got cut o", generation_str="g")])
+        counts = apply_penalty_detection([result], self.CFG, [self.EXPECTING_ROW])
+        assert counts["missing_tool_call"] == 1
+        assert result["message_log"][1]["is_missing_tool_call"] is True
+
+    def test_multi_turn_flags_only_turn_without_tool_call(self):
+        result = _make_result(
+            output_items=[
+                _reasoning_item("thinking"),
+                _function_call_item(generation_str="g1"),
+                {"type": "function_call_output", "call_id": "c1", "output": "ok"},
+                _message_item("final answer", generation_str="g2"),
+            ],
+            message_log=[_msg("user", [100]), _msg("assistant", [300]), _msg("user", [400]), _msg("assistant", [500])],
+        )
+        counts = apply_penalty_detection([result], self.CFG, [self.EXPECTING_ROW])
+        assert counts["missing_tool_call"] == 1
+        assert "is_missing_tool_call" not in result["message_log"][1]
+        assert result["message_log"][3]["is_missing_tool_call"] is True
+
+    def test_masked_dummy_result_not_flagged(self):
+        result = _make_result(output_items=[], message_log=[_msg("user", [0])])
+        counts = apply_penalty_detection([result], self.CFG, [self.EXPECTING_ROW])
+        assert counts["missing_tool_call"] == 0
+
+    def test_enabled_without_rows_asserts(self):
+        result = _single_turn([_message_item("answer", generation_str="g")])
+        with pytest.raises(AssertionError):
+            apply_penalty_detection([result], self.CFG)
+
+    def test_disabled_no_flag(self):
+        cfg = {"grpo": {"advantage_penalty": {"missing_tool_call": {"enabled": False}}}}
+        result = _single_turn([_message_item("answer", generation_str="g")])
+        counts = apply_penalty_detection([result], cfg, [self.EXPECTING_ROW])
+        assert counts["missing_tool_call"] == 0
+        assert "is_missing_tool_call" not in result["message_log"][1]
+
+
+class TestExpectsToolCall:
+    @pytest.mark.parametrize(
+        ("row", "expected"),
+        [
+            (_row("single_step_tool_use_with_argument_comparison_simple_agent"), True),
+            (_row("general_qa_simple_agent", answer_is_tool_call=True), True),
+            (_row("general_qa_simple_agent", answer_is_tool_call=False), False),
+            (_row("general_qa_simple_agent"), False),
+            (_row("math_simple_agent", answer_is_tool_call=True), False),
+        ],
+    )
+    def test_rules(self, row, expected):
+        assert expects_tool_call(row) is expected
+
+
+# =====================================================================
 # Cross-cutting: multiple detections, config gating, batch behavior
 # =====================================================================
 
@@ -316,7 +516,14 @@ class TestCrossCutting:
         result = _make_result(reward=1.0)
         counts = apply_penalty_detection([result], None)
         assert result["full_result"]["reward"] == 1.0
-        assert counts == {"empty_final_answer": 0, "eos_token": 0, "malformed_thinking": 0, "n_gram_repetition": 0}
+        assert counts == {
+            "empty_final_answer": 0,
+            "eos_token": 0,
+            "malformed_thinking": 0,
+            "n_gram_repetition": 0,
+            "invalid_tool_call": 0,
+            "missing_tool_call": 0,
+        }
 
     def test_empty_config_no_detections(self):
         result = _make_result(reward=1.0)

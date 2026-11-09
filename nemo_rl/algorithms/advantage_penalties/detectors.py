@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import torch
+
+from nemo_rl.algorithms.advantage_penalties.flag_advantage_penalty import DEFAULT_INVALID_TOOL_CALL_PATTERNS
+from nemo_rl.algorithms.advantage_penalties.tool_call_expectations import expects_tool_call
 
 
 def _n_gram_repetition_mask(token_ids: torch.Tensor, n_gram_size: int, repetition_threshold: int) -> torch.Tensor:
@@ -39,7 +42,9 @@ def _n_gram_repetition_mask(token_ids: torch.Tensor, n_gram_size: int, repetitio
     return repetition_mask
 
 
-def apply_penalty_detection(results: list[dict], master_config: Mapping[str, Any] | None) -> dict[str, int]:
+def apply_penalty_detection(
+    results: list[dict], master_config: Mapping[str, Any] | None, nemo_gym_rows: list[dict] | None = None
+) -> dict[str, int]:
     """Detect advantage-level penalty triggers and annotate the rollout message logs.
 
     Every detection is gated by its ``grpo.advantage_penalty.*`` sub-block and, when enabled, attaches the message
@@ -77,8 +82,28 @@ def apply_penalty_detection(results: list[dict], master_config: Mapping[str, Any
          grpo.advantage_penalty.n_gram_repetition.threshold) within each assistant generation via rolling hash and
          attaches a per-token overlap-count mask (n_gram_repetition_mask) to each assistant message. Data:
          message_log[i]["token_ids"] where role == "assistant".
+
+      5. invalid_tool_call (text-based) Valid tool calls go through the structured API (function_call output items) and
+         get executed by NeMo-Gym. If a tool call pattern (grpo.advantage_penalty.invalid_tool_call
+         .invalid_tool_call_patterns, default DEFAULT_INVALID_TOOL_CALL_PATTERNS) appears in the text content of the
+         turn's final output item (message content[0]["text"] or reasoning summary[0]["text"]), the call was invalid and
+         never executed. Marks the assistant message of that turn with is_invalid_tool_call. Data: full_result output
+         items; a turn ends at the item carrying generation_str (one per assistant message).
+
+      6. missing_tool_call (structure-based) Only for rows whose environment + row state expects a tool call (see
+         expects_tool_call in nemo_rl/algorithms/advantage_penalties/tool_call_expectations.py). Marks every assistant
+         turn that contains no function_call output item with is_missing_tool_call, unless the turn is an invalid tool
+         call (invalid takes precedence, regardless of whether invalid_tool_call is enabled). Truncated turns are
+         included. Data: full_result output items and the raw nemo_gym_rows (required when enabled).
     """
-    counts = {"empty_final_answer": 0, "eos_token": 0, "malformed_thinking": 0, "n_gram_repetition": 0}
+    counts = {
+        "empty_final_answer": 0,
+        "eos_token": 0,
+        "malformed_thinking": 0,
+        "n_gram_repetition": 0,
+        "invalid_tool_call": 0,
+        "missing_tool_call": 0,
+    }
     if not master_config or not results:
         return counts
 
@@ -87,7 +112,14 @@ def apply_penalty_detection(results: list[dict], master_config: Mapping[str, Any
 
     enabled_detections = [
         key
-        for key in ("empty_final_answer", "eos_token", "malformed_thinking", "n_gram_repetition")
+        for key in (
+            "empty_final_answer",
+            "eos_token",
+            "malformed_thinking",
+            "n_gram_repetition",
+            "invalid_tool_call",
+            "missing_tool_call",
+        )
         if advantage_penalty_cfg.get(key, {}).get("enabled", False)
     ]
 
@@ -109,6 +141,17 @@ def apply_penalty_detection(results: list[dict], master_config: Mapping[str, Any
         counts["malformed_thinking"] = _detect_malformed_thinking(results, master_config)
     if "n_gram_repetition" in enabled_detections:
         counts["n_gram_repetition"] = _detect_n_gram_repetition(results, advantage_penalty_cfg)
+    detect_invalid = "invalid_tool_call" in enabled_detections
+    detect_missing = "missing_tool_call" in enabled_detections
+    if detect_missing:
+        assert nemo_gym_rows is not None and len(nemo_gym_rows) == len(results), (
+            "missing_tool_call detection requires the raw NeMo-Gym rows (one per result), "
+            f"got {None if nemo_gym_rows is None else len(nemo_gym_rows)} rows for {len(results)} results."
+        )
+    if detect_invalid or detect_missing:
+        counts["invalid_tool_call"], counts["missing_tool_call"] = _detect_tool_call_issues(
+            results, nemo_gym_rows, advantage_penalty_cfg, detect_invalid, detect_missing
+        )
 
     return counts
 
@@ -141,6 +184,90 @@ def _detect_empty_final_answer(results: list[dict]) -> int:
                     msg["has_empty_final_answer"] = True
                     break
     return count
+
+
+def _is_invalid_tool_call_item(output_item: dict, invalid_tool_call_patterns: Sequence[str]) -> bool:
+    """Return whether a turn's final output item spells out a tool call in its text instead of a structured call."""
+    # If the final item is a message, check its text content. If it's a reasoning item, the model output only
+    # reasoning (no content/tool calls), so check its summary text.
+    is_output_message = (
+        "content" in output_item
+        and isinstance(output_item["content"], list)
+        and len(output_item["content"]) > 0
+        and "text" in output_item["content"][0]
+    )
+    is_reasoning_message = (
+        "type" in output_item
+        and output_item["type"] == "reasoning"
+        and len(output_item["summary"]) > 0
+        and "text" in output_item["summary"][0]
+    )
+    if is_output_message:
+        text = output_item["content"][0]["text"]
+    elif is_reasoning_message:
+        text = output_item["summary"][0]["text"]
+    else:
+        return False
+    return any(pattern in text for pattern in invalid_tool_call_patterns)
+
+
+def _detect_tool_call_issues(
+    results: list[dict],
+    nemo_gym_rows: list[dict] | None,
+    advantage_penalty_cfg: Mapping[str, Any],
+    detect_invalid: bool,
+    detect_missing: bool,
+) -> tuple[int, int]:
+    """Mark invalid (is_invalid_tool_call) and missing (is_missing_tool_call) tool calls per assistant turn.
+
+    Returns:
+        Number of samples with at least one invalid tool call turn, and with at least one missing tool call turn.
+    """
+    if (
+        "invalid_tool_call" in advantage_penalty_cfg
+        and "invalid_tool_call_patterns" in advantage_penalty_cfg["invalid_tool_call"]
+    ):
+        invalid_tool_call_patterns = tuple(advantage_penalty_cfg["invalid_tool_call"]["invalid_tool_call_patterns"])
+    else:
+        invalid_tool_call_patterns = DEFAULT_INVALID_TOOL_CALL_PATTERNS
+
+    invalid_count = 0
+    missing_count = 0
+    for sample_idx, result in enumerate(results):
+        sample_expects_tool_call = (
+            detect_missing and nemo_gym_rows is not None and expects_tool_call(nemo_gym_rows[sample_idx])
+        )
+        assistant_msgs = [msg for msg in result["message_log"] if msg["role"] == "assistant"]
+        output_items = result["full_result"]["response"]["output"]
+
+        # Split output items into turns: _postprocess_nemo_gym_to_nemo_rl_result attaches generation_str to exactly
+        # the final (token-bearing) output item of each model call, i.e. one item per assistant message.
+        turns: list[tuple[dict, bool]] = []  # (final output item, turn contains a function_call)
+        turn_has_function_call = False
+        for item in output_items:
+            if "type" in item and item["type"] == "function_call":
+                turn_has_function_call = True
+            if "generation_str" in item:
+                turns.append((item, turn_has_function_call))
+                turn_has_function_call = False
+        assert len(turns) == len(assistant_msgs), (
+            f"Expected one generation_str-bearing output item per assistant message, "
+            f"got {len(turns)} turns for {len(assistant_msgs)} assistant messages."
+        )
+
+        sample_invalid = False
+        sample_missing = False
+        for (final_item, has_function_call), msg in zip(turns, assistant_msgs):
+            is_invalid = _is_invalid_tool_call_item(final_item, invalid_tool_call_patterns)
+            if detect_invalid and is_invalid:
+                msg["is_invalid_tool_call"] = True
+                sample_invalid = True
+            if sample_expects_tool_call and not has_function_call and not is_invalid:
+                msg["is_missing_tool_call"] = True
+                sample_missing = True
+        invalid_count += sample_invalid
+        missing_count += sample_missing
+    return invalid_count, missing_count
 
 
 def _detect_eos_token(results: list[dict], master_config: Mapping[str, Any]) -> int:

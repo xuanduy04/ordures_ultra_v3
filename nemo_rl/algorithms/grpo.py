@@ -690,13 +690,18 @@ def setup(
                 uv_venv_dir = get_nemo_gym_venv_dir()
                 if uv_venv_dir is not None:
                     nemo_gym_dict.setdefault("uv_venv_dir", uv_venv_dir)
+                if "invalid_tool_call_patterns" in nemo_gym_dict:
+                    print(
+                        "[WARNING] `env.nemo_gym.invalid_tool_call_patterns` is deprecated and IGNORED. "
+                        "Use `grpo.advantage_penalty.invalid_tool_call.invalid_tool_call_patterns` instead.",
+                        flush=True,
+                    )
                 nemo_gym_cfg = NemoGymConfig(
                     model_name=generation_config["model_name"],
                     base_urls=deferred_vllm.dp_openai_server_base_urls,
                     ray_num_gpus_per_node=nemo_gym_num_gpus_per_node,
                     ray_namespace=ray_namespace,
                     initial_global_config_dict=nemo_gym_dict,
-                    invalid_tool_call_patterns=env_configs.get("nemo_gym", {}).get("invalid_tool_call_patterns", None),
                     max_total_sequence_length=policy_config["max_total_sequence_length"],
                 )
                 nemo_gym_opts = {}
