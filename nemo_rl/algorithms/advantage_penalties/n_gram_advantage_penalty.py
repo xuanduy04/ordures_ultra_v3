@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 
 
+# ========================= Config ========================= #
 class NGramAdvantagePenaltyConfig(TypedDict):
     """Config of the N-gram repetition advantage penalty in the grpo config."""
 
@@ -34,6 +35,7 @@ class NGramAdvantagePenaltyConfig(TypedDict):
     max_advantage_penalty: NotRequired[float]
 
 
+# ========================= Settings ========================= #
 @dataclass(frozen=True, kw_only=True)
 class NGramAdvantagePenaltySettings(BaseAdvantagePenaltySettings):
     size: int  # the N-gram size
@@ -47,6 +49,7 @@ class NGramAdvantagePenaltySettings(BaseAdvantagePenaltySettings):
         )
 
 
+# ========================= Main class ========================= #
 class NGramAdvantagePenalty(BaseAdvantagePenalty[BaseAdvantagePenaltyDefinition, NGramAdvantagePenaltySettings]):
     """Penalty driven by the per-token N-gram repetition masks attached during rollouts.
 

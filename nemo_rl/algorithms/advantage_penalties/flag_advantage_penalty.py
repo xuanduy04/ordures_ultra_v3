@@ -17,8 +17,9 @@ if TYPE_CHECKING:
     from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 
 
+# ========================= Config ========================= #
 class FlagAdvantagePenaltyConfig(TypedDict):
-    """Config of ONE flag-based advantage penalty in the grpo config."""
+    """Base config of flag-based advantage penalty in the grpo config."""
 
     enabled: bool
 
@@ -46,12 +47,14 @@ DEFAULT_INVALID_TOOL_CALL_PATTERNS: tuple[str, ...] = (
 )
 
 
+# ========================= Definition ========================= #
 @dataclass(frozen=True, kw_only=True)
 class FlagAdvantagePenaltyDefinition(BaseAdvantagePenaltyDefinition):
     message_key: str  # Message-level boolean key carrying the flag
     assistant_only: bool  # Only consider messages with "role" = "assistant"
 
 
+# ========================= Main class ========================= #
 class FlagAdvantagePenalty(BaseAdvantagePenalty[FlagAdvantagePenaltyDefinition, BaseAdvantagePenaltySettings]):
     """Penalties driven by message-level boolean flags.
 
@@ -63,11 +66,14 @@ class FlagAdvantagePenalty(BaseAdvantagePenalty[FlagAdvantagePenaltyDefinition, 
     """
 
     DEFINITIONS = (
-        FlagAdvantagePenaltyDefinition(name="invalid_tool_call", config_key="invalid_tool_call", message_key="is_invalid_tool_call", assistant_only=False),
-        FlagAdvantagePenaltyDefinition(name="malformed_thinking", config_key="malformed_thinking", message_key="has_malformed_thinking", assistant_only=True),
-        FlagAdvantagePenaltyDefinition(name="generate_eos_token", config_key="eos_token", message_key="has_eos_token", assistant_only=True),
+        # chat template + empty answers
         FlagAdvantagePenaltyDefinition(name="empty_final_answer", config_key="empty_final_answer", message_key="has_empty_final_answer", assistant_only=True),
+        FlagAdvantagePenaltyDefinition(name="malformed_thinking", config_key="malformed_thinking", message_key="has_malformed_thinking", assistant_only=True),
+        # tool call issues
+        FlagAdvantagePenaltyDefinition(name="invalid_tool_call", config_key="invalid_tool_call", message_key="is_invalid_tool_call", assistant_only=False),
         FlagAdvantagePenaltyDefinition(name="missing_tool_call", config_key="missing_tool_call", message_key="is_missing_tool_call", assistant_only=True),
+        # eos token in generation (since models should generate "end-of-turn" instead)
+        FlagAdvantagePenaltyDefinition(name="generate_eos_token", config_key="eos_token", message_key="has_eos_token", assistant_only=True),
     )  # fmt: skip
 
     def compute_signal(self, batch: BatchedDataDict) -> dict[str, Tensor]:

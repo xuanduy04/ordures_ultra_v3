@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 
 
+# ========================= Config ========================= #
 DEFAULT_ADVANTAGE_PENALTY_NORMALIZER_NAME = "grpo"
 DEFAULT_ADVANTAGE_PENALTY_WEIGHT = 0.1
 DEFAULT_MAX_ADVANTAGE_PENALTY = 6767
@@ -30,12 +31,14 @@ _PENALTY_NORMALIZER_DEFAULT_CONFIGS: dict[str, dict[str, Any]] = {
 }
 
 
+# ========================= Definition ========================= #
 @dataclass(frozen=True, kw_only=True)
 class BaseAdvantagePenaltyDefinition:
     name: str  # Penalty name used in logging
     config_key: str  # ``advantage_penalty`` sub-block to enable and configure the penalty
 
 
+# ========================= Settings ========================= #
 @dataclass(frozen=True, kw_only=True)
 class BaseAdvantagePenaltySettings:
     weight: float  # Scale factor for the penalty magnitude (sign is ignored)
@@ -73,6 +76,7 @@ def _resolve_common_settings(
     return {"weight": weight, "normalizer": normalizer, "max_advantage_penalty": max_advantage_penalty}
 
 
+# ========================= Specs ========================= #
 D = TypeVar("D", bound="BaseAdvantagePenaltyDefinition")
 S = TypeVar("S", bound="BaseAdvantagePenaltySettings")
 
@@ -87,6 +91,7 @@ class AdvantagePenaltySpec(Generic[D, S]):
         return self.definition.name
 
 
+# ========================= Main class ========================= #
 class BaseAdvantagePenalty(ABC, Generic[D, S]):
     """Base class for advantage penalties.
 

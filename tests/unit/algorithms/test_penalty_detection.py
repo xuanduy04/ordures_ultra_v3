@@ -260,7 +260,7 @@ class TestNGramRepetition:
     def test_attaches_mask_and_counts_repeated_samples(self):
         result = _make_result(
             reward=1.0,
-            message_log=[_msg("user", [100]), _msg("assistant", [1, 2, 3, 1, 2, 3, 1, 2, 3])],
+            message_log=[_msg("user", [100]), _msg("assistant", list(range(1, 13)) * 3)],
         )
         counts = apply_penalty_detection([result], self.CFG)
         assert counts["n_gram_repetition"] == 1

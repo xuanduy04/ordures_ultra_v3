@@ -8,93 +8,18 @@ from nemo_rl.algorithms.advantage_penalties.flag_advantage_penalty import DEFAUL
 from nemo_rl.algorithms.advantage_penalties.tool_call_expectations import expects_tool_call
 
 
-def _n_gram_repetition_mask(token_ids: torch.Tensor, n_gram_size: int, repetition_threshold: int) -> torch.Tensor:
-    """Per-token overlap-count mask for repeated N-grams via rolling hash.
-
-    Each position holds how many N-gram windows, whose occurrence rank is at least `repetition_threshold`, cover it. The
-    first `repetition_threshold - 1` occurrences of each distinct N-gram are exempt.
-
-    Uses a single-modulus polynomial hash (2^61 - 1) for O(T) counting.
-    """
-    _N_GRAM_HASH_BASE = 1_000_003
-    _N_GRAM_HASH_MODULUS = (1 << 61) - 1
-
-    token_id_list = token_ids.tolist()
-    num_tokens = len(token_id_list)
-    repetition_mask = torch.zeros(num_tokens)
-    if num_tokens < n_gram_size:
-        return repetition_mask
-    rolling_hash = 0
-    for token_id in token_id_list[:n_gram_size]:
-        rolling_hash = (rolling_hash * _N_GRAM_HASH_BASE + token_id) % _N_GRAM_HASH_MODULUS
-    oldest_token_multiplier = pow(_N_GRAM_HASH_BASE, n_gram_size - 1, _N_GRAM_HASH_MODULUS)
-    occurrence_counts = {}
-    for window_end in range(n_gram_size - 1, num_tokens):
-        occurrence_counts[rolling_hash] = occurrence_counts.get(rolling_hash, 0) + 1
-        if occurrence_counts[rolling_hash] >= repetition_threshold:
-            repetition_mask[window_end - n_gram_size + 1 : window_end + 1] += 1.0
-        if window_end < num_tokens - 1:
-            rolling_hash = (
-                (rolling_hash - token_id_list[window_end - n_gram_size + 1] * oldest_token_multiplier)
-                * _N_GRAM_HASH_BASE
-                + token_id_list[window_end + 1]
-            ) % _N_GRAM_HASH_MODULUS
-    return repetition_mask
-
-
+# ========================= Main detection function ========================= #
 def apply_penalty_detection(
     results: list[dict], master_config: Mapping[str, Any] | None, nemo_gym_rows: list[dict] | None = None
 ) -> dict[str, int]:
-    """Detect advantage-level penalty triggers and annotate the rollout message logs.
-
-    Every detection is gated by its ``grpo.advantage_penalty.*`` sub-block and, when enabled, attaches the message
-    flag/mask consumed at advantage time by FlagAdvantagePenalty/NGramAdvantagePenalty. Returns a dict of per-penalty
-    sample counts keyed by penalty name for rollout metrics.
+    """Run each enabled ``grpo.advantage_penalty.*`` detector, which annotates the message logs in place.
 
     NOTE: These detections assume Gym-path message_log structure where roles strictly alternate "user" → "assistant".
     Tool responses are folded into user prompt tokens by _postprocess_nemo_gym_to_nemo_rl_result and never appear as
     separate message_log entries. Do not call from non-Gym rollout paths.
 
-    Detections:
-      1. empty_final_answer (text-based) Walks response["output"] in reverse to find the last message-type item. If no
-         message item exists or its content text is empty, the model failed to produce a final answer. Skipped when the
-         last output item is a function_call (model was mid-agentic-loop, not producing an empty answer). Marks the
-         final assistant message with has_empty_final_answer. Data: full_result["response"]["output"] — message items
-         have content[0]["text"].
-
-      2. eos_token (token-based) The EOS token(s) (default ids "2,11", configurable via token_ids.eos as a single
-         integer or comma-separated integers, e.g. "2,177") should never appear in any assistant generation. Marks every
-         assistant message from the first EOS-bearing message to the final message with has_eos_token. Data:
-         message_log[i]["token_ids"] where role == "assistant".
-
-      3. malformed_thinking (token-based + string-based) Two complementary checks to catch malformed think tags: a)
-         Token ID check: infers thinking mode from prompt token counts. If prompt has open==close:
-         enable_thinking=False, expect 0 open and 0 close in generation. If prompt has open==close+1:
-         enable_thinking=True, expect 0 open and 1 close in generation. Any other prompt pattern or mismatched
-         generation counts is a violation. Token IDs configurable via token_ids.think_open / token_ids.think_close. b)
-         String check: the model can spell out <think>/</think> with piecemeal regular tokens (e.g. "<", "/", "thi",
-         "nk", ">") that bypass special token IDs. Checks generation_str (decoded generation text) per output item:
-         "<think>" count must be 0 (always in prompt, never generated), "</think>" count must be 0 or 1. Marks each
-         violative assistant message with has_malformed_thinking. Data: message_log pairs for token IDs, full_result
-         output items for strings.
-
-      4. n_gram_repetition (token-based) Counts repeated N-gram windows (grpo.advantage_penalty.n_gram_repetition.size /
-         grpo.advantage_penalty.n_gram_repetition.threshold) within each assistant generation via rolling hash and
-         attaches a per-token overlap-count mask (n_gram_repetition_mask) to each assistant message. Data:
-         message_log[i]["token_ids"] where role == "assistant".
-
-      5. invalid_tool_call (text-based) Valid tool calls go through the structured API (function_call output items) and
-         get executed by NeMo-Gym. If a tool call pattern (grpo.advantage_penalty.invalid_tool_call
-         .invalid_tool_call_patterns, default DEFAULT_INVALID_TOOL_CALL_PATTERNS) appears in the text content of the
-         turn's final output item (message content[0]["text"] or reasoning summary[0]["text"]), the call was invalid and
-         never executed. Marks the assistant message of that turn with is_invalid_tool_call. Data: full_result output
-         items; a turn ends at the item carrying generation_str (one per assistant message).
-
-      6. missing_tool_call (structure-based) Only for rows whose environment + row state expects a tool call (see
-         expects_tool_call in nemo_rl/algorithms/advantage_penalties/tool_call_expectations.py). Marks every assistant
-         turn that contains no function_call output item with is_missing_tool_call, unless the turn is an invalid tool
-         call (invalid takes precedence, regardless of whether invalid_tool_call is enabled). Truncated turns are
-         included. Data: full_result output items and the raw nemo_gym_rows (required when enabled).
+    Returns:
+        Per-penalty counts of flagged samples, keyed by penalty name.
     """
     counts = {
         "empty_final_answer": 0,
@@ -156,6 +81,12 @@ def apply_penalty_detection(
     return counts
 
 
+# ========================= Flag-based ========================= #
+
+
+# --------------- chat template + empty answers --------------- #
+
+
 def _detect_empty_final_answer(results: list[dict]) -> int:
     """Mark samples whose final answer is empty with has_empty_final_answer on the last assistant message."""
     count = 0
@@ -184,6 +115,62 @@ def _detect_empty_final_answer(results: list[dict]) -> int:
                     msg["has_empty_final_answer"] = True
                     break
     return count
+
+
+def _detect_malformed_thinking(results: list[dict], master_config: Mapping[str, Any]) -> int:
+    """Mark samples with malformed think tags (token-ID + string checks) with has_malformed_thinking."""
+    token_ids_cfg = master_config.get("token_ids", {})
+    think_open_token_id = token_ids_cfg.get("think_open", 12)
+    think_close_token_id = token_ids_cfg.get("think_close", 13)
+    count = 0
+    for result in results:
+        has_violation = False
+        # 4a) Token ID check per (user, assistant) turn pair
+        # Infer thinking mode from prompt token counts:
+        #   enable_thinking=True:  prompt has open=close+1 (trailing <think>), expect asst: 0 open, 1 close
+        #   enable_thinking=False: prompt has open=close (balanced), expect asst: 0 open, 0 close
+        msgs = result["message_log"]
+        for i in range(len(msgs) - 1):
+            if msgs[i]["role"] == "user" and msgs[i + 1]["role"] == "assistant":
+                user_ids = msgs[i]["token_ids"]
+                asst_ids = msgs[i + 1]["token_ids"]
+                prompt_open = (user_ids == think_open_token_id).sum().item()
+                prompt_close = (user_ids == think_close_token_id).sum().item()
+                asst_open = (asst_ids == think_open_token_id).sum().item()
+                asst_close = (asst_ids == think_close_token_id).sum().item()
+                if prompt_open == prompt_close:
+                    # enable_thinking=False: both tags in prompt, none in generation
+                    expected_open, expected_close = 0, 0
+                elif prompt_open == prompt_close + 1:
+                    # enable_thinking=True: trailing <think> in prompt, expect </think> in generation
+                    expected_open, expected_close = 0, 1
+                else:
+                    # Unexpected prompt pattern — flag as violation
+                    has_violation = True
+                    msgs[i + 1]["has_malformed_thinking"] = True
+                    continue
+                if asst_open != expected_open or asst_close != expected_close:
+                    has_violation = True
+                    msgs[i + 1]["has_malformed_thinking"] = True
+        # 4b) String check on generation_str per output item
+        output_items = result["full_result"].get("response", {}).get("output", [])
+        assistant_msgs = [msg for msg in msgs if msg["role"] == "assistant"]
+        gen_item_idx = 0
+        for item in output_items:
+            gen_str = item.get("generation_str", "")
+            if not gen_str:
+                continue
+            if gen_str.count("<think>") > 0 or gen_str.count("</think>") > 1:
+                has_violation = True
+                if gen_item_idx < len(assistant_msgs):
+                    assistant_msgs[gen_item_idx]["has_malformed_thinking"] = True
+            gen_item_idx += 1  # increment idx only for generation turns
+        if has_violation:
+            count += 1
+    return count
+
+
+# --------------- tool call issues --------------- #
 
 
 def _is_invalid_tool_call_item(output_item: dict, invalid_tool_call_patterns: Sequence[str]) -> bool:
@@ -270,6 +257,9 @@ def _detect_tool_call_issues(
     return invalid_count, missing_count
 
 
+# --------------- eos token in generation --------------- #
+
+
 def _detect_eos_token(results: list[dict], master_config: Mapping[str, Any]) -> int:
     """Mark samples whose assistant generations contain EOS with has_eos_token from the first EOS to the end."""
     token_ids_cfg = master_config.get("token_ids", {})
@@ -311,57 +301,41 @@ def _detect_eos_token(results: list[dict], master_config: Mapping[str, Any]) -> 
     return count
 
 
-def _detect_malformed_thinking(results: list[dict], master_config: Mapping[str, Any]) -> int:
-    """Mark samples with malformed think tags (token-ID + string checks) with has_malformed_thinking."""
-    token_ids_cfg = master_config.get("token_ids", {})
-    think_open_token_id = token_ids_cfg.get("think_open", 12)
-    think_close_token_id = token_ids_cfg.get("think_close", 13)
-    count = 0
-    for result in results:
-        has_violation = False
-        # 4a) Token ID check per (user, assistant) turn pair
-        # Infer thinking mode from prompt token counts:
-        #   enable_thinking=True:  prompt has open=close+1 (trailing <think>), expect asst: 0 open, 1 close
-        #   enable_thinking=False: prompt has open=close (balanced), expect asst: 0 open, 0 close
-        msgs = result["message_log"]
-        for i in range(len(msgs) - 1):
-            if msgs[i]["role"] == "user" and msgs[i + 1]["role"] == "assistant":
-                user_ids = msgs[i]["token_ids"]
-                asst_ids = msgs[i + 1]["token_ids"]
-                prompt_open = (user_ids == think_open_token_id).sum().item()
-                prompt_close = (user_ids == think_close_token_id).sum().item()
-                asst_open = (asst_ids == think_open_token_id).sum().item()
-                asst_close = (asst_ids == think_close_token_id).sum().item()
-                if prompt_open == prompt_close:
-                    # enable_thinking=False: both tags in prompt, none in generation
-                    expected_open, expected_close = 0, 0
-                elif prompt_open == prompt_close + 1:
-                    # enable_thinking=True: trailing <think> in prompt, expect </think> in generation
-                    expected_open, expected_close = 0, 1
-                else:
-                    # Unexpected prompt pattern — flag as violation
-                    has_violation = True
-                    msgs[i + 1]["has_malformed_thinking"] = True
-                    continue
-                if asst_open != expected_open or asst_close != expected_close:
-                    has_violation = True
-                    msgs[i + 1]["has_malformed_thinking"] = True
-        # 4b) String check on generation_str per output item
-        output_items = result["full_result"].get("response", {}).get("output", [])
-        assistant_msgs = [msg for msg in msgs if msg["role"] == "assistant"]
-        gen_item_idx = 0
-        for item in output_items:
-            gen_str = item.get("generation_str", "")
-            if not gen_str:
-                continue
-            if gen_str.count("<think>") > 0 or gen_str.count("</think>") > 1:
-                has_violation = True
-                if gen_item_idx < len(assistant_msgs):
-                    assistant_msgs[gen_item_idx]["has_malformed_thinking"] = True
-            gen_item_idx += 1  # increment idx only for generation turns
-        if has_violation:
-            count += 1
-    return count
+# ========================= N-Gram Repetition ========================= #
+
+
+def _n_gram_repetition_mask(token_ids: torch.Tensor, n_gram_size: int, repetition_threshold: int) -> torch.Tensor:
+    """Per-token overlap-count mask for repeated N-grams via rolling hash.
+
+    Each position holds how many N-gram windows, whose occurrence rank is at least `repetition_threshold`, cover it. The
+    first `repetition_threshold - 1` occurrences of each distinct N-gram are exempt.
+
+    Uses a single-modulus polynomial hash (2^61 - 1) for O(T) counting.
+    """
+    _N_GRAM_HASH_BASE = 1_000_003
+    _N_GRAM_HASH_MODULUS = (1 << 61) - 1
+
+    token_id_list = token_ids.tolist()
+    num_tokens = len(token_id_list)
+    repetition_mask = torch.zeros(num_tokens)
+    if num_tokens < n_gram_size:
+        return repetition_mask
+    rolling_hash = 0
+    for token_id in token_id_list[:n_gram_size]:
+        rolling_hash = (rolling_hash * _N_GRAM_HASH_BASE + token_id) % _N_GRAM_HASH_MODULUS
+    oldest_token_multiplier = pow(_N_GRAM_HASH_BASE, n_gram_size - 1, _N_GRAM_HASH_MODULUS)
+    occurrence_counts = {}
+    for window_end in range(n_gram_size - 1, num_tokens):
+        occurrence_counts[rolling_hash] = occurrence_counts.get(rolling_hash, 0) + 1
+        if occurrence_counts[rolling_hash] >= repetition_threshold:
+            repetition_mask[window_end - n_gram_size + 1 : window_end + 1] += 1.0
+        if window_end < num_tokens - 1:
+            rolling_hash = (
+                (rolling_hash - token_id_list[window_end - n_gram_size + 1] * oldest_token_multiplier)
+                * _N_GRAM_HASH_BASE
+                + token_id_list[window_end + 1]
+            ) % _N_GRAM_HASH_MODULUS
+    return repetition_mask
 
 
 def _detect_n_gram_repetition(results: list[dict], advantage_penalty_cfg: Mapping[str, Any]) -> int:
