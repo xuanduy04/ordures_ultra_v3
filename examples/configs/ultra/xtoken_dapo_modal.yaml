@@ -1,0 +1,32 @@
+defaults: mopd.yaml
+
+data:
+  train:
+    data_path: /assets/dapo-nemo-gym-20261111.jsonl
+  validation:
+    data_path: /assets/dapo-nemo-gym-20261111.jsonl
+
+env:
+  _override_: true
+  should_use_nemo_gym: true
+  should_log_nemo_gym_responses: false
+  nemo_gym:
+    nemo_gym_log_dir: /assets/xtoken-dapo-modal/gym-logs
+    skip_venv_if_present: true
+    skip_verification: true
+    skip_verification_reward: 0.0
+    port_range_low: 5000
+    port_range_high: 5999
+    thinking_tags:
+      - "<think>"
+      - "</think>"
+    config_paths:
+      - responses_api_models/vllm_model/configs/vllm_model_for_training.yaml
+      - resources_servers/general_qa/configs/general_qa.yaml
+    policy_model:
+      responses_api_models:
+        vllm_model:
+          uses_reasoning_parser: false
+          extra_body:
+            chat_template_kwargs:
+              enable_thinking: true
