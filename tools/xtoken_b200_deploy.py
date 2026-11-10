@@ -38,7 +38,11 @@ def main() -> None:
         raise ValueError("Student, teacher tokenizer and projection must be staged before launch")
     teacher = {"url": args.teacher_url, "model": args.teacher_model}
     xtoken = {
-        "teacher_tokenizer": {"name": str(args.teacher_tokenizer), "chat_template": "default"},
+        "teacher_tokenizer": {
+            "name": str(args.teacher_tokenizer),
+            "chat_template": "default",
+            "chat_template_kwargs": {"enable_thinking": True},
+        },
         "projection_matrix_path": str(args.projection),
         "alignment_max_combination_length": 4,
         "teacher_max_sequence_length": args.teacher_max_sequence_length,
@@ -62,7 +66,10 @@ def main() -> None:
         "cluster": {"num_nodes": 1, "gpus_per_node": 3},
         "policy": {
             "model_name": str(args.student),
-            "tokenizer": {"name": str(args.student)},
+            "tokenizer": {
+                "name": str(args.student),
+                "chat_template_kwargs": {"enable_thinking": True},
+            },
             "train_global_batch_size": 128,
             "dtensor_cfg": {"enabled": False},
             "megatron_cfg": {
@@ -72,11 +79,22 @@ def main() -> None:
                 "sequence_parallel": False,
             },
             "generation": {
+                "temperature": 1.0,
+                "top_p": 1.0,
+                "top_k": None,
                 "colocated": {"enabled": False, "resources": {"num_nodes": 1, "gpus_per_node": 1}},
                 "vllm_cfg": {"async_engine": True, "tensor_parallel_size": 1, "pipeline_parallel_size": 1},
             },
         },
-        "grpo": {"max_num_steps": 15, "num_prompts_per_step": 128 // n},
+        "grpo": {
+            "max_num_steps": 15,
+            "num_prompts_per_step": 128 // n,
+            "async_grpo": {
+                "enabled": True,
+                "max_trajectory_age_steps": 0,
+                "in_flight_weight_updates": False,
+            },
+        },
         "loss_fn": {"reference_policy_kl_penalty": 0.0},
         "logger": {
             "log_dir": str(args.run_dir / "logs"),
@@ -105,7 +123,7 @@ def main() -> None:
     resolved = OmegaConf.to_container(config, resolve=True)
     validate_xtoken_mode(resolved)
     if args.check_only:
-        print("XTOKEN_DEPLOY_CONFIG_OK batch=128 steps=15 save_period=1 retention=all")
+        print("XTOKEN_DEPLOY_CONFIG_OK batch=128 steps=15 save_period=1 age=0 thinking=both")
         return
     if (args.run_dir / "checkpoints").exists():
         raise FileExistsError("Use a fresh run directory to start at step zero")
