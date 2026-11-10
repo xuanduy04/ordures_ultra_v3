@@ -145,7 +145,7 @@ class _AllReduceSum(torch.autograd.Function):
         ctx.group = group
         if group is None or not torch.distributed.is_initialized() or torch.distributed.get_world_size(group) <= 1:
             return x
-        out = x.clone()
+        out = x.clone(memory_format=torch.contiguous_format)
         torch.distributed.all_reduce(out, op=torch.distributed.ReduceOp.SUM, group=group)
         return out
 

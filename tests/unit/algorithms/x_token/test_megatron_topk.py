@@ -245,3 +245,52 @@ def test_legacy_loss_requires_explicit_opt_in_for_packing_and_cp_scaling():
     wrapper.assert_called_once()
     assert "packed_seq_params" not in original.call_args.kwargs
     torch.testing.assert_close(result, torch.tensor(1.))
+
+
+@pytest.mark.parametrize("cp_rank", [0, 1])
+def test_actual_nonpacked_megatron_inputs_follow_cp_ownership(cp_rank):
+    from contextlib import nullcontext
+    input_ids = torch.arange(16).reshape(2, 8)
+    positions = torch.arange(8).expand(2, -1).contiguous()
+    attention_mask = torch.ones(1, 1, 8, 8, dtype=torch.bool).triu(1)
+    mtp = torch.arange(16).reshape(2, 8).float()
+    data = BatchedDataDict(input_ids=input_ids, mtp_loss_mask=mtp)
+    scope = {"torch": torch, "nullcontext": nullcontext, "ProcessedInputs": SimpleNamespace,
+             "get_ltor_masks_and_position_ids": lambda **kwargs: (attention_mask, None, positions),
+             "get_context_parallel_world_size": lambda: 2, "get_context_parallel_rank": lambda: cp_rank,
+             "_get_tokens_on_this_cp_rank": _get_tokens_on_this_cp_rank}
+    repo = Path(__file__).resolve().parents[4]
+    load_definitions(repo / "nemo_rl/models/megatron/data.py", ["process_microbatch"], scope)
+    result = scope["process_microbatch"](data)
+    expected_indices = torch.tensor([0, 1, 6, 7]) if cp_rank == 0 else torch.tensor([2, 3, 4, 5])
+    torch.testing.assert_close(result.input_ids, input_ids)
+    torch.testing.assert_close(result.input_ids_cp_sharded, input_ids[:, expected_indices])
+    torch.testing.assert_close(result.position_ids, positions[:, expected_indices])
+    torch.testing.assert_close(result.attention_mask, attention_mask[:, :, expected_indices])
+    torch.testing.assert_close(result.mtp_loss_mask, mtp[:, expected_indices])
+
+
+@pytest.mark.parametrize("with_grad", [True, False])
+def test_projection_collective_materializes_contiguous_storage(monkeypatch, with_grad):
+    from nemo_rl.algorithms.x_token.parallel import group_all_reduce_sum, group_all_reduce_sum_with_grad
+    seen = []
+    def reduce(tensor, **kwargs):
+        assert tensor.is_contiguous()
+        seen.append(tensor.clone())
+        tensor.mul_(2)
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_world_size", lambda group: 2)
+    monkeypatch.setattr(dist, "all_reduce", reduce)
+    base = torch.arange(6.).reshape(2, 3).requires_grad_()
+    transposed = base.t()
+    assert not transposed.is_contiguous()
+    reduction = group_all_reduce_sum_with_grad if with_grad else group_all_reduce_sum
+    result = reduction(transposed, object())
+    torch.testing.assert_close(result, transposed * 2)
+    torch.testing.assert_close(base, torch.arange(6.).reshape(2, 3))
+    assert len(seen) == 1 and result.is_contiguous()
+    if with_grad:
+        result.sum().backward()
+        torch.testing.assert_close(base.grad, torch.ones_like(base))
+    else:
+        assert not result.requires_grad

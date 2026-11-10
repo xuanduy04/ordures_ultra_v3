@@ -81,3 +81,26 @@ Các test mới ở `tests/unit/algorithms/x_token/` chạy được với CPU: 
 `test_native_opd_loop.py` thực thi nguyên hàm driver lấy từ source qua AST trong hai bước cho cả hai mode, với Ray actors/model/refit/logging giả lập. Phần batch, alignment, loss và autograd dùng implementation thật. Cách này kiểm tra điều phối Python; không chứng minh NCCL, FSDP, CUDA sparse backward, vLLM refit hay server production hoạt động.
 
 Trên runtime CPU đã có dependency, chạy các test CPU phù hợp bằng `python -m pytest tests/unit/algorithms/x_token/ tests/unit/algorithms/test_opd_outsource.py -q --timeout=60`. Các case CUDA tự skip khi không có GPU. Không cần model weights hoặc truy cập teacher thật cho bộ test này.
+
+
+## Native GPU smoke test
+
+Ngày 2026-11-10, smoke test đã chạy trên một node Modal 4 H100 với PyTorch 2.10.0+cu128, Transformer Engine 2.12.0, cuDNN 9.10.2, NCCL 2.27.5 và Megatron Core 0.16.0rc0 bundled trong repo.
+
+Ma trận TP/CP (1,1), (2,1), (1,2), (2,2), mỗi cấu hình với packing tắt/bật và hai chiều KL, đạt 16 optimizer steps. Test dùng GPT BF16 hai layer, hidden size 128, bốn attention heads, student vocabulary 37 (model padded vocabulary 64), teacher vocabulary 29 và top-k=4. Teacher scores/alignment là fixture có kiểm soát; student forward, Transformer Engine attention, NCCL, native microbatch preprocessing/scheduler, Megatron DDP, backward và optimizer SGD đều chạy thật. Không dùng AST extraction hoặc mock trong luồng GPU này.
+
+Mỗi bước kiểm tra token ownership sau CP/packing, loss và local-logit gradients so với công thức dense độc lập, gradient tham số hữu hạn và cập nhật tham số khác zero. Tensor gather chỉ phục vụ reference trong test; production loss vẫn dùng shard/reduction. Assertions chạy trên mọi rank; metric tổng hợp rank 0 ghi nhận sai lệch gradient logits lớn nhất khoảng 2.04e-10.
+
+Hai regression được sửa từ lượt GPU: collective materialize storage contiguous trước NCCL; non-packed preprocessing shard input IDs, position IDs, query axis của attention mask và MTP mask theo CP. Metadata/alignment vẫn giữ full student coordinates để loss map đúng predictor order.
+
+Script tái lập: tests/test_suites/xtoken_megatron_smoke.py. Trong runtime GPU đã có dependency của repo, từ repo root:
+
+~~~sh
+PYTHONPATH=3rdparty/Megatron-LM-workspace/Megatron-LM:. python -m torch.distributed.run --standalone --nproc-per-node=4 tests/test_suites/xtoken_megatron_smoke.py --tp 2 --cp 2 --packed -1
+~~~
+
+Tham số --packed -1 chạy cả hai layout; 0/1 chọn một layout. Số process phải bằng TP*CP. Script ghi projection fixture nhỏ vào thư mục tạm của runtime.
+
+Runtime kiểm tra phải có một bộ cuDNN nhất quán. Base image có cuDNN 9.8 trong khi Torch wheel yêu cầu 9.10.2 đã gây lỗi version/sublibrary loading; lượt đạt dùng image kiểm tra đã loại system cuDNN cũ khỏi loader paths. Với TE 2.12, đường cuDNN fused THD dùng trong test giới hạn SM90 trở lên; A100/L40S chưa được qualify packing qua attention backend khác. Xem điều kiện backend trong [source Transformer Engine 2.12](https://github.com/NVIDIA/TransformerEngine/blob/v2.12/transformer_engine/common/fused_attn/fused_attn.cpp).
+
+Kết quả này chưa kiểm chứng model Gemma/Qwen thật, B200, PP>1, MoE/FP8, live teacher HTTP, vLLM refit, Ray actor orchestration hoặc campaign training dài. Nó không chứng minh throughput, VRAM hay chất lượng distillation trên workload production.

@@ -292,6 +292,15 @@ def process_microbatch(
             )
             if "mtp_loss_mask" in data_dict:
                 mtp_loss_mask = data_dict["mtp_loss_mask"]
+            cp_size = get_context_parallel_world_size()
+            if cp_size > 1:
+                cp_rank = get_context_parallel_rank()
+                input_ids_cp_sharded = _get_tokens_on_this_cp_rank(input_ids, cp_rank, cp_size, seq_dim=1)
+                position_ids = _get_tokens_on_this_cp_rank(position_ids, cp_rank, cp_size, seq_dim=1)
+                if attention_mask is not None:
+                    attention_mask = _get_tokens_on_this_cp_rank(attention_mask, cp_rank, cp_size, seq_dim=2)
+                if mtp_loss_mask is not None:
+                    mtp_loss_mask = _get_tokens_on_this_cp_rank(mtp_loss_mask, cp_rank, cp_size, seq_dim=1)
     return ProcessedInputs(
         input_ids=input_ids,
         input_ids_cp_sharded=input_ids_cp_sharded,
