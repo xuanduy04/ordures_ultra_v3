@@ -18,8 +18,12 @@ def main() -> None:
     parser.add_argument("--agent", action="append", required=True)
     parser.add_argument("--projection", type=Path, required=True)
     parser.add_argument("--teacher-max-sequence-length", type=int, required=True)
+    parser.add_argument("--steps", type=int, default=15)
     parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args()
+
+    if args.steps <= 0:
+        raise ValueError("The number of training steps must be positive")
 
     from omegaconf import OmegaConf
 
@@ -87,7 +91,7 @@ def main() -> None:
             },
         },
         "grpo": {
-            "max_num_steps": 15,
+            "max_num_steps": args.steps,
             "num_prompts_per_step": 128 // n,
             "async_grpo": {
                 "enabled": True,
@@ -123,7 +127,7 @@ def main() -> None:
     resolved = OmegaConf.to_container(config, resolve=True)
     validate_xtoken_mode(resolved)
     if args.check_only:
-        print("XTOKEN_DEPLOY_CONFIG_OK batch=128 steps=15 save_period=1 age=0 thinking=both")
+        print(f"XTOKEN_DEPLOY_CONFIG_OK batch=128 steps={args.steps} save_period=1 age=0 thinking=both")
         return
     if (args.run_dir / "checkpoints").exists():
         raise FileExistsError("Use a fresh run directory to start at step zero")
