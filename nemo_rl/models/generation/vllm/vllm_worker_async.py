@@ -380,7 +380,11 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
         from fastapi.responses import JSONResponse, StreamingResponse
         from vllm.entrypoints.openai.chat_completion.protocol import ChatCompletionRequest, ChatCompletionResponse
         from vllm.entrypoints.openai.chat_completion.serving import OpenAIServingChat
-        from vllm.entrypoints.openai.engine.protocol import ErrorResponse
+        try:
+            from vllm.entrypoints.openai.engine.protocol import ErrorResponse
+        except ModuleNotFoundError:
+            # Released vLLM 0.32 moved this module under entrypoints.serve.
+            from vllm.entrypoints.serve.engine.protocol import ErrorResponse
         from vllm.entrypoints.openai.models.protocol import BaseModelPath
         from vllm.entrypoints.openai.models.serving import OpenAIServingModels
         from vllm.entrypoints.serve.tokenize.protocol import (
