@@ -27,11 +27,19 @@ from nemo_rl.algorithms.advantage_penalties import (
 from nemo_rl.algorithms.interfaces import LossFunction
 from nemo_rl.algorithms.loss_functions import ClippedPGLossConfig, ClippedPGLossDataDict, ClippedPGLossFn
 from nemo_rl.algorithms.reward_functions import RewardShapingConfig, apply_reward_shaping
+from nemo_rl.algorithms.x_token.opd_integration import (
+    XTokenOPDBatchBuilder,
+    build_xtoken_loss,
+    validate_xtoken_mode,
+    validate_xtoken_replay_state,
+    xtoken_non_student_seq_keys,
+)
 from nemo_rl.algorithms.utils import (
     log_generation_metrics_to_wandb,
     print_efficiency_summary,
     print_performance_metrics,
     set_seed,
+    get_tokenizer,
 )
 from nemo_rl.data import DataConfig
 from nemo_rl.data.collate_fn import rl_collate_fn
@@ -177,6 +185,7 @@ class MasterConfig(TypedDict):
     logger: GRPOLoggerConfig
     cluster: ClusterConfig
     checkpointing: CheckpointingConfig
+    on_policy_distillation: NotRequired[opd_module.OnPolicyDistillationConfig]
 
 
 # ===============================================================================
@@ -224,6 +233,31 @@ def setup(
 
     assert generation_config is not None, "A generation config in the PolicyConfig is required for GRPO"
 
+    opd_mode = opd_module.get_opd_mode(master_config)
+
+    if opd_mode is not None:
+        print(f"OPD mode: {opd_mode}", flush=True)
+
+    if opd_mode == "xtoken_topk":
+        dtensor_config = policy_config["dtensor_cfg"]
+
+        if not dtensor_config["enabled"]:
+            raise ValueError("xtoken_topk requires the DTensor backend.")
+
+        if "_v2" not in dtensor_config or not dtensor_config["_v2"]:
+            raise ValueError("xtoken_topk requires DTensor V2.")
+
+        if dtensor_config["tensor_parallel_size"] != 1 or dtensor_config["context_parallel_size"] != 1:
+            raise ValueError("xtoken_topk currently requires TP=CP=1.")
+
+        if policy_config["dynamic_batching"]["enabled"]:
+            raise ValueError("xtoken_topk requires fixed microbatches.")
+
+        if "sequence_packing" in policy_config and policy_config["sequence_packing"]["enabled"]:
+            raise ValueError("xtoken_topk does not support sequence packing yet.")
+
+        validate_xtoken_mode(master_config)
+
     # Set seed for all random number generators
     set_seed(grpo_config["seed"])
 
@@ -266,7 +300,11 @@ def setup(
     # ==========================
     #        Loss Function
     # ==========================
-    loss_fn = ClippedPGLossFn(loss_config)
+    loss_fn = (
+        build_xtoken_loss(master_config["on_policy_distillation"]["xtoken"], len(tokenizer))
+        if opd_mode == "xtoken_topk"
+        else ClippedPGLossFn(loss_config)
+    )
 
     # Validate force_on_policy_ratio
     if loss_config.get("force_on_policy_ratio", False):
@@ -1289,7 +1327,12 @@ def async_grpo_train(
         "Async GRPO requires vLLM backend with vllm_cfg.async_engine=True. "
         "Set policy.generation.vllm_cfg.async_engine to true in your config."
     )
-    assert master_config["loss_fn"]["use_importance_sampling_correction"] is True, (
+    xtoken_enabled = opd_module.get_opd_mode(master_config) == "xtoken_topk"
+    if xtoken_enabled:
+        validate_xtoken_mode(master_config)
+        if max_trajectory_age_steps != 0:
+            raise ValueError("xtoken_topk requires max_trajectory_age_steps=0 at the training call")
+    assert xtoken_enabled or master_config["loss_fn"]["use_importance_sampling_correction"] is True, (
         "Importance sampling correction must be enabled for async GRPO for good convergence due to off-policy samples!"
     )
 
@@ -1334,8 +1377,12 @@ def async_grpo_train(
     colocated_inference = master_config["policy"]["generation"]["colocated"]["enabled"]
 
     # Initialize advantage estimator and advantage penalties
-    advantage_estimator = create_advantage_estimator(master_config)
-    advantage_penalties = create_advantage_penalties(master_config["grpo"], cast(dict, master_config["loss_fn"]))
+    advantage_estimator = None if xtoken_enabled else create_advantage_estimator(master_config)
+    advantage_penalties = (
+        []
+        if xtoken_enabled
+        else create_advantage_penalties(master_config["grpo"], cast(dict, master_config["loss_fn"]))
+    )
     for penalty in advantage_penalties:
         for config in penalty.penalties:
             print(f"  ✓ {config.name} uses {config.settings.normalizer.name} normalization for advantage penalties")
@@ -1377,13 +1424,13 @@ def async_grpo_train(
     # With max_age_steps, we keep trajectories from multiple weight versions
     num_prompts_per_step = master_config["grpo"]["num_prompts_per_step"]
     late_arrival_slack = 2
-    optimal_buffer_size = num_prompts_per_step * max_trajectory_age_steps * late_arrival_slack
+    optimal_buffer_size = num_prompts_per_step * max(1, max_trajectory_age_steps) * late_arrival_slack
 
     replay_buffer = ReplayBuffer.options(runtime_env=_replay_runtime_env).remote(max_size=optimal_buffer_size)
 
     # Restore replay buffer and rollout checkpoint state from checkpoint if available
     last_checkpoint_path = checkpointer.get_latest_checkpoint_path()
-    replay_buffer_state = None
+    replay_buffer_state: Any = None
     rollouts_state = None
     if last_checkpoint_path is not None:
         replay_buffer_path = os.path.join(last_checkpoint_path, "replay_buffer.pt")
@@ -1391,6 +1438,8 @@ def async_grpo_train(
             print(f"📦 Restoring replay buffer from checkpoint: {replay_buffer_path}")
             try:
                 replay_buffer_state = torch.load(replay_buffer_path, weights_only=False)
+                if xtoken_enabled:
+                    validate_xtoken_replay_state(replay_buffer_state, step)
                 ray.get(
                     replay_buffer.load_state_dict.remote(
                         replay_buffer_state, num_prompts_per_step=num_prompts_per_step, current_training_step=step
@@ -1445,7 +1494,8 @@ def async_grpo_train(
     )
 
     # Start trajectory collection in background
-    collection_task = trajectory_collector.start_collection.remote(dataloader)
+    if not xtoken_enabled:
+        collection_task = trajectory_collector.start_collection.remote(dataloader)
 
     # Ensure collector knows initial weight version
     trajectory_collector.set_weight_version.remote(weight_version)
@@ -1485,6 +1535,15 @@ def async_grpo_train(
 
     print("✅ Policy generation setup complete, starting training...")
 
+    xtoken_batch_builder = None
+    if xtoken_enabled:
+        xtoken_batch_builder = XTokenOPDBatchBuilder(
+            master_config,
+            tokenizer,
+            get_tokenizer(master_config["on_policy_distillation"]["xtoken"]["teacher_tokenizer"]),
+        )
+        collection_task = trajectory_collector.start_collection.remote(dataloader)
+
     print("✅ All setup complete, starting buffer wait...")
     # Clear logger metrics at start of training
     if policy_generation is not None:
@@ -1514,7 +1573,9 @@ def async_grpo_train(
             if trajectories_needed > 0:
                 print(f"  ⏳ Gap-filling in progress: need {trajectories_needed} more trajectories for step {step}")
 
-        collector_status = ray.get(trajectory_collector.get_status.remote())
+        collector_status = cast(dict[str, Any], ray.get(trajectory_collector.get_status.remote()))
+        if xtoken_enabled and collector_status["error"] is not None:
+            raise RuntimeError("X-Token collector failed: " + collector_status["error"])
         if (
             collector_status["data_exhausted"]
             and not collector_status["running"]
@@ -1558,7 +1619,7 @@ def async_grpo_train(
 
                     # Sample the required number of per-prompt groups.
                     num_prompt_groups_needed = master_config["grpo"]["num_prompts_per_step"]
-                    sample_result = ray.get(
+                    sample_result: Any = ray.get(
                         replay_buffer.sample.remote(
                             num_prompt_groups=num_prompt_groups_needed,
                             current_weight_version=weight_version,
@@ -1606,7 +1667,9 @@ def async_grpo_train(
                                     "(high = many turns per trajectory)"
                                 )
                         del buffer_debug
-                        collector_status = ray.get(trajectory_collector.get_status.remote())
+                        collector_status = cast(dict[str, Any], ray.get(trajectory_collector.get_status.remote()))
+                        if xtoken_enabled and collector_status["error"] is not None:
+                            raise RuntimeError("X-Token collector failed: " + collector_status["error"])
                         if (
                             collector_status["data_exhausted"]
                             and not collector_status["running"]
@@ -1626,6 +1689,8 @@ def async_grpo_train(
                     # Extract trajectories and metadata from sample result
                     trajectories = sample_result["trajectories"]
                     avg_trajectory_age = sample_result["avg_trajectory_age"]
+                    if xtoken_enabled and avg_trajectory_age != 0:
+                        raise RuntimeError("xtoken_topk refuses stale rollout batches")
 
                     print(
                         f"✅ Sampled {len(trajectories)} trajectory groups from buffer (avg age: {avg_trajectory_age:.2f} steps)"
@@ -1796,7 +1861,7 @@ def async_grpo_train(
 
                     # Create training data
                     # Note: advantages will be computed and added after logprobs are available
-                    train_data = BatchedDataDict[ClippedPGLossDataDict](
+                    train_data: BatchedDataDict[Any] = BatchedDataDict[ClippedPGLossDataDict](
                         {
                             "input_ids": flat_messages["token_ids"],
                             "input_lengths": input_lengths,
@@ -1812,178 +1877,191 @@ def async_grpo_train(
                     del flat_messages
                     # input_lengths is used below, so we delete it later
 
-                # Pad teacher logprobs to match train_data sequence length.
-                # from_batches pads to max(S_i); train_data may be longer
-                # due to make_sequence_length_divisible_by. Zero-pad is safe
-                # because the mask zeros out padding in advantage computation.
-                if trajectory_teacher_logprobs is not None:
-                    train_S = train_data["input_ids"].shape[1]
-                    teacher_S = trajectory_teacher_logprobs.shape[1]
-                    if teacher_S > train_S:
-                        raise ValueError(
-                            f"Teacher logprobs seq length ({teacher_S}) > train_data seq length ({train_S}). "
-                            f"This should not happen - teacher logprobs are padded to max(S_i) by from_batches, "
-                            f"and train_data is padded to roundup(max(S_i), make_sequence_length_divisible_by)."
-                        )
-                    if teacher_S < train_S:
-                        trajectory_teacher_logprobs = torch.nn.functional.pad(
-                            trajectory_teacher_logprobs, (0, train_S - teacher_S), value=0.0
-                        )
-
-                # Training phase (same as sync version)
-                # Skip prev_logprobs computation when force_on_policy_ratio=True
-                # unless seq_logprob_error_threshold is set (which requires prev_logprobs)
-                seq_logprob_error_threshold = master_config["grpo"].get("seq_logprob_error_threshold", None)
-                force_on_policy_ratio = master_config["loss_fn"].get("force_on_policy_ratio", False)
-                skip_prev_logprobs = force_on_policy_ratio and seq_logprob_error_threshold is None
-
-                # todo @jiaqi: is there a better way to skip prev_logprobs computation while still computing the seq-level error metrics?
-                if force_on_policy_ratio and seq_logprob_error_threshold is not None:
-                    warnings.warn(
-                        "force_on_policy_ratio=True but seq_logprob_error_threshold is set. "
-                        "Computing prev_logprobs anyway for seq-level error masking."
-                    )
-
-                if skip_prev_logprobs:
-                    print("▶ Skipping prev_logprobs (force_on_policy_ratio=True)...", flush=True)
-                    fprop_logprobs = torch.zeros_like(train_data["generation_logprobs"])
+                if xtoken_enabled:
+                    assert xtoken_batch_builder is not None
+                    train_data = xtoken_batch_builder(repeated_batch, weight_version)
+                    input_lengths = train_data["input_lengths"]
+                    flat_token_mask = train_data["token_mask"].bool()
+                    # Compatibility grid for existing rollout diagnostics; never consumed by the KD objective.
+                    train_data["advantages"] = torch.zeros_like(train_data["token_mask"], dtype=torch.float32)
+                    advantage_penalty_metrics = {}
                 else:
-                    print("▶ Preparing for logprob inference...")
-                    with timer.time("logprob_inference_prep"):
-                        gc.collect()
-                        torch.cuda.empty_cache()
-                        policy.prepare_for_lp_inference()
-
-                print("▶ Computing logprobs...", flush=True)
-                with timer.time("policy_and_reference_logprobs"):
-                    if not skip_prev_logprobs:
-                        fprop_logprobs = policy.get_logprobs(train_data, timer=timer)["logprobs"]
-
-                    if to_compute_kl:
-                        reference_logprobs = policy.get_reference_policy_logprobs(train_data, timer=timer)[
-                            "reference_logprobs"
-                        ]
-                    else:
-                        reference_logprobs = torch.zeros_like(train_data["generation_logprobs"])
-                train_data["prev_logprobs"] = fprop_logprobs
-                train_data["reference_policy_logprobs"] = reference_logprobs
-
-                # Seq-level logprob error metrics/masking require real prev_logprobs
-                if skip_prev_logprobs:
-                    # Cannot compute seq-level metrics with placeholder prev_logprobs
-                    max_seq_mult_prob_error = 0.0
-                    mean_seq_mult_prob_error = 0.0
-                    min_seq_mult_prob_error = 0.0
-                    max_seq_mult_prob_error_after_mask = 0.0
-                    mean_seq_mult_prob_error_after_mask = 0.0
-                    min_seq_mult_prob_error_after_mask = 0.0
-                    num_masked_seqs = 0
-                    masked_correct_pct = 0.0
-                else:
-                    seq_error_result = compute_and_apply_seq_logprob_error_masking(
-                        train_data=train_data, rewards=rewards, seq_logprob_error_threshold=seq_logprob_error_threshold
-                    )
-                    max_seq_mult_prob_error = seq_error_result["max_seq_mult_prob_error"]
-                    mean_seq_mult_prob_error = seq_error_result["mean_seq_mult_prob_error"]
-                    min_seq_mult_prob_error = seq_error_result["min_seq_mult_prob_error"]
-                    max_seq_mult_prob_error_after_mask = seq_error_result["max_seq_mult_prob_error_after_mask"]
-                    mean_seq_mult_prob_error_after_mask = seq_error_result["mean_seq_mult_prob_error_after_mask"]
-                    min_seq_mult_prob_error_after_mask = seq_error_result["min_seq_mult_prob_error_after_mask"]
-                    num_masked_seqs = seq_error_result["num_masked_seqs"]
-                    masked_correct_pct = seq_error_result["masked_correct_pct"]
-
-                    # Update sample_mask if masking was applied
-                    if seq_error_result["updated_sample_mask"] is not None:
-                        train_data["sample_mask"] = seq_error_result["updated_sample_mask"]
-
-                # Compute advantages with advantage_estimator using correct mask and logprobs
-                with timer.time("advantage_calculation"):
-                    print("▶ Computing advantages...", flush=True)
-                    # Get token-level mask: token_mask * sample_mask
-                    token_mask = train_data["token_mask"]
-                    sample_mask = train_data["sample_mask"]
-                    mask = token_mask * sample_mask.unsqueeze(-1)
-
-                    train_data["advantages"] = advantage_estimator.compute_advantage(
-                        prompt_ids=prompt_ids_for_adv,
-                        rewards=rewards,
-                        mask=mask,
-                        logprobs_policy=train_data["prev_logprobs"],
-                        logprobs_reference=train_data.get("reference_policy_logprobs"),
-                        # OPD kwargs (ignored by non-OPD estimators via **kwargs)
-                        teacher_logprobs=trajectory_teacher_logprobs.to(train_data["prev_logprobs"].device)
-                        if trajectory_teacher_logprobs is not None
-                        else None,
-                        prev_logprobs=train_data["prev_logprobs"],
-                        generation_logprobs=train_data["generation_logprobs"],
-                        sample_mask=train_data["sample_mask"],
-                    )
-                    del mask, token_mask, sample_mask
-
-                    # Log advantages stats
-                    print(
-                        f"  📊 Advantages stats (from estimator): {_distribution_stats_str(train_data['advantages'])}",
-                        flush=True,
-                    )
-
-                    # Apply advantage-level penalties (GDPO-style)
-                    advantage_penalty_metrics: dict[str, Any] = {}  # helper variable for logging
-                    advantage_penalties_log = apply_advantage_penalties(
-                        advantages=train_data["advantages"],
-                        batch=repeated_batch,
-                        penalties=advantage_penalties,
-                        prompt_ids=prompt_ids_for_adv,
-                    )
-                    del prompt_ids_for_adv
-
-                    if advantage_penalties_log:
-                        print(
-                            "  📊 Advantage penalties stats:\n"
-                            + "\n".join(
-                                f"    - {k}: {_distribution_stats_str(p)}" for k, p in advantage_penalties_log.items()
-                            ),
-                            flush=True,
-                        )
-                        # Reduce per-rollout penalties to scalars now so the tensors are not held across training/refit
-                        for k, p in advantage_penalties_log.items():
-                            advantage_penalty_metrics.update(
-                                _calculate_single_metric(
-                                    p.detach().cpu().tolist(),
-                                    p.numel(),
-                                    f"advantage_penalties/{k}",
-                                    percentile=[33, 67],
-                                )
+                    # Pad teacher logprobs to match train_data sequence length.
+                    # from_batches pads to max(S_i); train_data may be longer
+                    # due to make_sequence_length_divisible_by. Zero-pad is safe
+                    # because the mask zeros out padding in advantage computation.
+                    if trajectory_teacher_logprobs is not None:
+                        train_S = train_data["input_ids"].shape[1]
+                        teacher_S = trajectory_teacher_logprobs.shape[1]
+                        if teacher_S > train_S:
+                            raise ValueError(
+                                f"Teacher logprobs seq length ({teacher_S}) > train_data seq length ({train_S}). "
+                                f"This should not happen - teacher logprobs are padded to max(S_i) by from_batches, "
+                                f"and train_data is padded to roundup(max(S_i), make_sequence_length_divisible_by)."
                             )
-                    del advantage_penalties_log
+                        if teacher_S < train_S:
+                            trajectory_teacher_logprobs = torch.nn.functional.pad(
+                                trajectory_teacher_logprobs, (0, train_S - teacher_S), value=0.0
+                            )
 
-                    # Calibrate advantages of empty-generation samples
-                    empty_gen_sample_idxs = [
-                        i
-                        for i, message_log in enumerate(repeated_batch["message_log"])
-                        if any(message.get("has_empty_generation") for message in message_log)
-                    ]
-                    if empty_gen_sample_idxs:
-                        max_abs_adv = train_data["advantages"].abs().max().item()
-                        train_data["advantages"][empty_gen_sample_idxs] = -max_abs_adv
+                    # Training phase (same as sync version)
+                    # Skip prev_logprobs computation when force_on_policy_ratio=True
+                    # unless seq_logprob_error_threshold is set (which requires prev_logprobs)
+                    seq_logprob_error_threshold = master_config["grpo"].get("seq_logprob_error_threshold", None)
+                    force_on_policy_ratio = master_config["loss_fn"].get("force_on_policy_ratio", False)
+                    skip_prev_logprobs = force_on_policy_ratio and seq_logprob_error_threshold is None
+
+                    # todo @jiaqi: is there a better way to skip prev_logprobs computation while still computing the seq-level error metrics?
+                    if force_on_policy_ratio and seq_logprob_error_threshold is not None:
+                        warnings.warn(
+                            "force_on_policy_ratio=True but seq_logprob_error_threshold is set. "
+                            "Computing prev_logprobs anyway for seq-level error masking."
+                        )
+
+                    if skip_prev_logprobs:
+                        print("▶ Skipping prev_logprobs (force_on_policy_ratio=True)...", flush=True)
+                        fprop_logprobs = torch.zeros_like(train_data["generation_logprobs"])
+                    else:
+                        print("▶ Preparing for logprob inference...")
+                        with timer.time("logprob_inference_prep"):
+                            gc.collect()
+                            torch.cuda.empty_cache()
+                            policy.prepare_for_lp_inference()
+
+                    print("▶ Computing logprobs...", flush=True)
+                    with timer.time("policy_and_reference_logprobs"):
+                        if not skip_prev_logprobs:
+                            fprop_logprobs = policy.get_logprobs(train_data, timer=timer)["logprobs"]
+
+                        if to_compute_kl:
+                            reference_logprobs = policy.get_reference_policy_logprobs(train_data, timer=timer)[
+                                "reference_logprobs"
+                            ]
+                        else:
+                            reference_logprobs = torch.zeros_like(train_data["generation_logprobs"])
+                    train_data["prev_logprobs"] = fprop_logprobs
+                    train_data["reference_policy_logprobs"] = reference_logprobs
+
+                    # Seq-level logprob error metrics/masking require real prev_logprobs
+                    if skip_prev_logprobs:
+                        # Cannot compute seq-level metrics with placeholder prev_logprobs
+                        max_seq_mult_prob_error = 0.0
+                        mean_seq_mult_prob_error = 0.0
+                        min_seq_mult_prob_error = 0.0
+                        max_seq_mult_prob_error_after_mask = 0.0
+                        mean_seq_mult_prob_error_after_mask = 0.0
+                        min_seq_mult_prob_error_after_mask = 0.0
+                        num_masked_seqs = 0
+                        masked_correct_pct = 0.0
+                    else:
+                        seq_error_result = compute_and_apply_seq_logprob_error_masking(
+                            train_data=train_data,
+                            rewards=rewards,
+                            seq_logprob_error_threshold=seq_logprob_error_threshold,
+                        )
+                        max_seq_mult_prob_error = seq_error_result["max_seq_mult_prob_error"]
+                        mean_seq_mult_prob_error = seq_error_result["mean_seq_mult_prob_error"]
+                        min_seq_mult_prob_error = seq_error_result["min_seq_mult_prob_error"]
+                        max_seq_mult_prob_error_after_mask = seq_error_result["max_seq_mult_prob_error_after_mask"]
+                        mean_seq_mult_prob_error_after_mask = seq_error_result["mean_seq_mult_prob_error_after_mask"]
+                        min_seq_mult_prob_error_after_mask = seq_error_result["min_seq_mult_prob_error_after_mask"]
+                        num_masked_seqs = seq_error_result["num_masked_seqs"]
+                        masked_correct_pct = seq_error_result["masked_correct_pct"]
+
+                        # Update sample_mask if masking was applied
+                        if seq_error_result["updated_sample_mask"] is not None:
+                            train_data["sample_mask"] = seq_error_result["updated_sample_mask"]
+
+                    # Compute advantages with advantage_estimator using correct mask and logprobs
+                    with timer.time("advantage_calculation"):
+                        print("▶ Computing advantages...", flush=True)
+                        # Get token-level mask: token_mask * sample_mask
+                        token_mask = train_data["token_mask"]
+                        sample_mask = train_data["sample_mask"]
+                        mask = token_mask * sample_mask.unsqueeze(-1)
+
+                        assert advantage_estimator is not None
+                        train_data["advantages"] = advantage_estimator.compute_advantage(
+                            prompt_ids=prompt_ids_for_adv,
+                            rewards=rewards,
+                            mask=mask,
+                            logprobs_policy=train_data["prev_logprobs"],
+                            logprobs_reference=train_data.get("reference_policy_logprobs"),
+                            # OPD kwargs (ignored by non-OPD estimators via **kwargs)
+                            teacher_logprobs=trajectory_teacher_logprobs.to(train_data["prev_logprobs"].device)
+                            if trajectory_teacher_logprobs is not None
+                            else None,
+                            prev_logprobs=train_data["prev_logprobs"],
+                            generation_logprobs=train_data["generation_logprobs"],
+                            sample_mask=train_data["sample_mask"],
+                        )
+                        del mask, token_mask, sample_mask
+
+                        # Log advantages stats
                         print(
-                            f"⚖️ Advantage calibration: {len(empty_gen_sample_idxs)} empty-generation sample(s) set to -max|adv| = {-max_abs_adv:.4f}",
+                            f"  📊 Advantages stats (from estimator): {_distribution_stats_str(train_data['advantages'])}",
                             flush=True,
                         )
-                    del empty_gen_sample_idxs
 
-                    # Clip advantages to prevent extreme values from small std normalization
-                    clip_low = master_config["grpo"].get("advantage_clip_low")
-                    clip_high = master_config["grpo"].get("advantage_clip_high")
-                    if clip_low is not None:
-                        train_data["advantages"] = train_data["advantages"].clamp(min=clip_low)
-                    if clip_high is not None:
-                        train_data["advantages"] = train_data["advantages"].clamp(max=clip_high)
-                    del clip_low, clip_high
+                        # Apply advantage-level penalties (GDPO-style)
+                        advantage_penalty_metrics: dict[str, Any] = {}  # helper variable for logging
+                        advantage_penalties_log = apply_advantage_penalties(
+                            advantages=train_data["advantages"],
+                            batch=repeated_batch,
+                            penalties=advantage_penalties,
+                            prompt_ids=prompt_ids_for_adv,
+                        )
+                        del prompt_ids_for_adv
 
-                    print(
-                        f"  📊 Advantages stats (post-penalties): {_distribution_stats_str(train_data['advantages'])}",
-                        flush=True,
-                    )
+                        if advantage_penalties_log:
+                            print(
+                                "  📊 Advantage penalties stats:\n"
+                                + "\n".join(
+                                    f"    - {k}: {_distribution_stats_str(p)}"
+                                    for k, p in advantage_penalties_log.items()
+                                ),
+                                flush=True,
+                            )
+                            # Reduce per-rollout penalties to scalars now so the tensors are not held across training/refit
+                            for k, p in advantage_penalties_log.items():
+                                advantage_penalty_metrics.update(
+                                    _calculate_single_metric(
+                                        p.detach().cpu().tolist(),
+                                        p.numel(),
+                                        f"advantage_penalties/{k}",
+                                        percentile=[33, 67],
+                                    )
+                                )
+                        del advantage_penalties_log
+
+                        # Calibrate advantages of empty-generation samples
+                        empty_gen_sample_idxs = [
+                            i
+                            for i, message_log in enumerate(repeated_batch["message_log"])
+                            if any(message.get("has_empty_generation") for message in message_log)
+                        ]
+                        if empty_gen_sample_idxs:
+                            max_abs_adv = train_data["advantages"].abs().max().item()
+                            cast(torch.Tensor, train_data["advantages"])[empty_gen_sample_idxs] = -max_abs_adv
+                            print(
+                                f"⚖️ Advantage calibration: {len(empty_gen_sample_idxs)} empty-generation sample(s) set to -max|adv| = {-max_abs_adv:.4f}",
+                                flush=True,
+                            )
+                        del empty_gen_sample_idxs
+
+                        # Clip advantages to prevent extreme values from small std normalization
+                        clip_low = master_config["grpo"].get("advantage_clip_low")
+                        clip_high = master_config["grpo"].get("advantage_clip_high")
+                        if clip_low is not None:
+                            train_data["advantages"] = train_data["advantages"].clamp(min=clip_low)
+                        if clip_high is not None:
+                            train_data["advantages"] = train_data["advantages"].clamp(max=clip_high)
+                        del clip_low, clip_high
+
+                        print(
+                            f"  📊 Advantages stats (post-penalties): {_distribution_stats_str(train_data['advantages'])}",
+                            flush=True,
+                        )
                 del trajectory_teacher_logprobs
                 gc.collect()
                 _malloc_trim()
@@ -1996,9 +2074,15 @@ def async_grpo_train(
 
                 print("▶ Training policy...")
                 with timer.time("policy_training"):
-                    train_results = policy.train(train_data, loss_fn, timer=timer)
-                del train_data["reference_policy_logprobs"]
-                del fprop_logprobs, reference_logprobs
+                    if xtoken_enabled:
+                        train_results = policy.train(
+                            train_data, loss_fn, timer=timer, check_dim_skip_keys=xtoken_non_student_seq_keys()
+                        )
+                    else:
+                        train_results = policy.train(train_data, loss_fn, timer=timer)
+                if not xtoken_enabled:
+                    del train_data["reference_policy_logprobs"]
+                    del fprop_logprobs, reference_logprobs
                 gc.collect()
                 _malloc_trim()
                 _log_rss("after train")
@@ -2029,8 +2113,12 @@ def async_grpo_train(
 
                         # Update weight version before resuming trajectory collection so that all trajectories are updated with the new correct weight version
                         weight_version += 1
-                        trajectory_collector.set_weight_version.remote(weight_version)
-                        trajectory_collector.resume_after_refit.remote()
+                        if xtoken_enabled:
+                            ray.get(trajectory_collector.set_weight_version.remote(weight_version))
+                            ray.get(trajectory_collector.resume_after_refit.remote())
+                        else:
+                            trajectory_collector.set_weight_version.remote(weight_version)
+                            trajectory_collector.resume_after_refit.remote()
 
                     timer.stop("idle/refit_bubble")
                     gc.collect()
@@ -2046,16 +2134,20 @@ def async_grpo_train(
                 # # Masked advantages tracking metrics (only for valid response tokens)
                 response_advantages = torch.masked_select(train_data["advantages"], flat_token_mask)
 
-                metrics = {
+                metrics: dict[str, Any] = {
                     "loss": train_results["loss"].numpy(),
                     "grad_norm": train_results["grad_norm"].numpy(),
                     "mean_prompt_length": repeated_batch["length"].numpy(),
                     "total_num_tokens": input_lengths.numpy(),  # must be logged, used downstream for other logs
-                    **_calculate_single_metric(
-                        response_advantages.detach().cpu().tolist(),
-                        response_advantages.numel(),
-                        "final_advantages",
-                        percentile=[1, 5, 10, 30, 70, 90, 95, 99],
+                    **(
+                        _calculate_single_metric(
+                            response_advantages.detach().cpu().tolist(),
+                            response_advantages.numel(),
+                            "final_advantages",
+                            percentile=[1, 5, 10, 30, 70, 90, 95, 99],
+                        )
+                        if not xtoken_enabled
+                        else {}
                     ),
                     **advantage_penalty_metrics,
                 }
@@ -2086,7 +2178,11 @@ def async_grpo_train(
                 metrics.update(rollout_metrics)
                 del rollout_metrics, aggregated_rollout_metrics
 
-                if hasattr(advantage_estimator, "last_metrics") and advantage_estimator.last_metrics:
+                if (
+                    advantage_estimator is not None
+                    and hasattr(advantage_estimator, "last_metrics")
+                    and advantage_estimator.last_metrics
+                ):
                     metrics.update(advantage_estimator.last_metrics)
                 if hasattr(policy_generation, "get_step_metrics"):
                     gen_step_metrics = policy_generation.get_step_metrics()
@@ -2097,14 +2193,15 @@ def async_grpo_train(
                 total_valid_tokens += metrics["global_valid_toks"]
 
                 # Always log sequence-level error metrics (useful for deciding threshold)
-                metrics["max_seq_mult_prob_error"] = max_seq_mult_prob_error
-                metrics["mean_seq_mult_prob_error"] = mean_seq_mult_prob_error
-                metrics["min_seq_mult_prob_error"] = min_seq_mult_prob_error
-                metrics["max_seq_mult_prob_error_after_mask"] = max_seq_mult_prob_error_after_mask
-                metrics["mean_seq_mult_prob_error_after_mask"] = mean_seq_mult_prob_error_after_mask
-                metrics["min_seq_mult_prob_error_after_mask"] = min_seq_mult_prob_error_after_mask
-                metrics["num_masked_seqs_by_logprob_error"] = num_masked_seqs
-                metrics["masked_correct_pct"] = masked_correct_pct
+                if not xtoken_enabled:
+                    metrics["max_seq_mult_prob_error"] = max_seq_mult_prob_error
+                    metrics["mean_seq_mult_prob_error"] = mean_seq_mult_prob_error
+                    metrics["min_seq_mult_prob_error"] = min_seq_mult_prob_error
+                    metrics["max_seq_mult_prob_error_after_mask"] = max_seq_mult_prob_error_after_mask
+                    metrics["mean_seq_mult_prob_error_after_mask"] = mean_seq_mult_prob_error_after_mask
+                    metrics["min_seq_mult_prob_error_after_mask"] = min_seq_mult_prob_error_after_mask
+                    metrics["num_masked_seqs_by_logprob_error"] = num_masked_seqs
+                    metrics["masked_correct_pct"] = masked_correct_pct
 
                 # Checkpointing (same as sync version)
                 consumed_samples += master_config["grpo"]["num_prompts_per_step"]
@@ -2206,12 +2303,13 @@ def async_grpo_train(
                 # log_data["token_ids"] = train_data["input_ids"].tolist()
                 # log_data["token_loss_mask"] = train_data["token_mask"].tolist()
                 # log_data["sample_loss_mask"] = train_data["sample_mask"].tolist()
-                log_data["advantages"] = [
-                    _distribution_stats(train_data["advantages"][i], train_data["token_mask"][i])
-                    for i in range(train_data["advantages"].shape[0])
-                ]
-                # log_data["generation_logprobs"] = train_data["generation_logprobs"].tolist()
-                # log_data["prev_logprobs"] = train_data["prev_logprobs"].tolist()
+                if not xtoken_enabled:
+                    log_data["advantages"] = [
+                        _distribution_stats(train_data["advantages"][i], train_data["token_mask"][i])
+                        for i in range(train_data["advantages"].shape[0])
+                    ]
+                    # log_data["generation_logprobs"] = train_data["generation_logprobs"].tolist()
+                    # log_data["prev_logprobs"] = train_data["prev_logprobs"].tolist()
 
                 if "full_result" in repeated_batch:
                     if _should_log_hashed_nemo_gym_responses(master_config):
@@ -2258,7 +2356,8 @@ def async_grpo_train(
             # Console prints — immediate feedback on main thread
             print("\n📊 Training Results:")
             print(f"  • Loss: {metrics['loss']:.4f}")
-            print(f"  • Generation KL Error: {metrics['gen_kl_error']:.4f}")
+            if not xtoken_enabled:
+                print(f"  • Generation KL Error: {metrics['gen_kl_error']:.4f}")
             print(f"  • Avg Reward: {np.mean(rewards.numpy()):.4f}")
             print(f"  • Buffer Size: {buffer_size_current}")
             print(f"  • Avg Trajectory Age: {avg_trajectory_age:.2f} steps")
@@ -2327,6 +2426,7 @@ def async_grpo_train(
         import traceback
 
         traceback.print_exc()
+        raise
 
     finally:
         try:

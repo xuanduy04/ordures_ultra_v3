@@ -48,6 +48,8 @@ Troubleshooting common issues including missing submodules, Ray dashboard access
 
 ## Training and Generation
 
+For this fork's cross-tokenizer integration, see [X-Token U7 in OPD](xtoken-opd.md).
+
 ::::{grid} 1 1 2 2
 :gutter: 3
 

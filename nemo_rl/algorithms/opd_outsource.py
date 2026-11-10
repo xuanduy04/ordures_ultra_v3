@@ -15,13 +15,14 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import json
+import os
 import random
 import ssl
 import threading
 import time
 import urllib.error
 import urllib.request
-from typing import Any, NotRequired, Optional, TypedDict
+from typing import Any, Literal, Mapping, NotRequired, Optional, TypedDict
 
 import aiohttp
 import torch
@@ -39,6 +40,33 @@ class OrmEstimatorConfig(TypedDict):
     minus_baseline: NotRequired[bool]
 
 
+class XTokenRemoteConfig(TypedDict):
+    model_vocab_size: int
+    top_k: int
+    max_score_elements: int
+    max_response_bytes: int
+    request_timeout_s: float
+    max_attempts: int
+    retry_backoff_s: float
+    normalization_atol: float
+    api_key_env: Optional[str]
+
+
+class XTokenOPDConfig(TypedDict):
+    teacher_tokenizer: dict[str, Any]
+    projection_matrix_path: str
+    alignment_max_combination_length: int
+    teacher_max_sequence_length: int
+    teacher_micro_batch_size: int
+    remote: XTokenRemoteConfig
+    kl_loss_weight: float
+    reverse_kl: bool
+    tail_epsilon: float
+
+
+OPDMode = Literal["sampled_token", "xtoken_topk"]
+
+
 class OnPolicyDistillationConfig(TypedDict):
     enabled: bool
     # Values are `_teachers.<alias>` entries: {url, model} serve specs.
@@ -53,6 +81,8 @@ class OnPolicyDistillationConfig(TypedDict):
     orm_advantage_clip_high: NotRequired[float]
     zero_out_of_bounds_advantages: NotRequired[bool]
     orm_advantage_estimator: NotRequired[OrmEstimatorConfig]
+    mode: NotRequired[OPDMode]
+    xtoken: NotRequired[XTokenOPDConfig]
 
 
 # ---------------------------------------------------------------------------
@@ -60,8 +90,23 @@ class OnPolicyDistillationConfig(TypedDict):
 # ---------------------------------------------------------------------------
 
 
-def is_opd_enabled(master_config: dict[str, Any]) -> bool:
+def is_opd_enabled(master_config: Mapping[str, Any]) -> bool:
     return bool(master_config.get("on_policy_distillation", {}).get("enabled", False))
+
+
+def get_opd_mode(master_config: Mapping[str, Any]) -> Optional[OPDMode]:
+    if not is_opd_enabled(master_config):
+        return None
+
+    opd_config = master_config["on_policy_distillation"]
+    mode = opd_config["mode"] if "mode" in opd_config else "sampled_token"
+
+    if mode == "sampled_token":
+        return "sampled_token"
+    if mode == "xtoken_topk":
+        return "xtoken_topk"
+
+    raise ValueError(f"Unsupported OPD mode: {mode!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +132,7 @@ def normalize_teacher_serve(raw: Any) -> dict[str, str]:
     return {"url": url.strip(), "model": model.strip()}
 
 
-def probe_teacher_serve(url: str, models: set[str], timeout_s: float = 30.0) -> None:
+def probe_teacher_serve(url: str, models: set[str], timeout_s: float = 30.0, api_key_env: Optional[str] = None) -> None:
     """GET ``{url}/v1/models`` and verify every expected ``model`` is served.
 
     Called at setup time, before any rollout is collected, so a bad URL or model name fails loudly instead of degrading
@@ -97,8 +142,11 @@ def probe_teacher_serve(url: str, models: set[str], timeout_s: float = 30.0) -> 
     ssl_ctx = ssl.create_default_context()
     ssl_ctx.check_hostname = False
     ssl_ctx.verify_mode = ssl.CERT_NONE
+    request: str | urllib.request.Request = models_url
+    if api_key_env is not None:
+        request = urllib.request.Request(models_url, headers={"Authorization": "Bearer " + os.environ[api_key_env]})
     try:
-        with urllib.request.urlopen(models_url, timeout=timeout_s, context=ssl_ctx) as resp:
+        with urllib.request.urlopen(request, timeout=timeout_s, context=ssl_ctx) as resp:
             payload = json.loads(resp.read().decode("utf-8"))
     except (urllib.error.URLError, TimeoutError, ValueError) as exc:
         raise RuntimeError(f"OPD teacher serve health check failed for '{url}': {exc}") from exc
@@ -162,7 +210,10 @@ def validate_teacher_serves(master_config: dict[str, Any]) -> None:
         spec = normalize_teacher_serve(raw)
         models_by_url.setdefault(spec["url"], set()).add(spec["model"])
     for url, models in models_by_url.items():
-        probe_teacher_serve(url, models)
+        if get_opd_mode(master_config) == "xtoken_topk":
+            probe_teacher_serve(url, models, api_key_env=opd_cfg["xtoken"]["remote"]["api_key_env"])
+        else:
+            probe_teacher_serve(url, models)
 
 
 # ---------------------------------------------------------------------------

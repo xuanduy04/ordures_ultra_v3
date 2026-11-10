@@ -316,6 +316,7 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
         eval_mode: bool = False,
         gbs: Optional[int] = None,
         mbs: Optional[int] = None,
+        check_dim_skip_keys=None,
     ) -> dict[str, Any]:
         """Train the policy on a batch of data with a given loss function."""
         self.timer.start("train")
@@ -333,7 +334,7 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
         num_global_batches = int(total_dataset_size.item()) // gbs
 
         # Validate sequence dimension
-        sequence_dim, _ = check_sequence_dim(data)
+        sequence_dim, _ = check_sequence_dim(data, skip_keys=check_dim_skip_keys)
 
         if eval_mode:
             ctx: AbstractContextManager[Any] = torch.no_grad()

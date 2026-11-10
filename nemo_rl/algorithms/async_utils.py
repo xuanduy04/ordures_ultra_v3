@@ -17,6 +17,7 @@ from nemo_rl.algorithms.opd_outsource import (
     TeacherContextLengthError,
     VLLMTeacherLogprobClient,
     is_opd_enabled,
+    get_opd_mode,
     resolve_teacher_specs,
 )
 from nemo_rl.data.interfaces import DatumSpec
@@ -513,10 +514,12 @@ class AsyncTrajectoryCollector:
         self.master_config = master_config
         self.replay_buffer = replay_buffer
         self.on_policy_distillation_cfg = on_policy_distillation_cfg or {}
-        self._has_opd_teachers = is_opd_enabled(self.master_config)
+        self._fresh_xtoken = get_opd_mode(self.master_config) == "xtoken_topk"
+        self._has_opd_teachers = is_opd_enabled(self.master_config) and not self._fresh_xtoken
         self._teacher_logprob_client = VLLMTeacherLogprobClient() if self._has_opd_teachers else None
         self.running = False
         self.data_exhausted = False
+        self._collection_error: Optional[str] = None
 
         self._pg_lock: _threading.Lock = _threading.Lock()
 
@@ -579,6 +582,8 @@ class AsyncTrajectoryCollector:
         # Read async config strictly from grpo.async_grpo
         async_cfg = self.master_config.get("grpo", {}).get("async_grpo", {})
         max_trajectory_age = async_cfg["max_trajectory_age_steps"]
+        if self._fresh_xtoken:
+            return [generation_weight_version]
         if generation_weight_version == self.initial_weight_version:
             return [i for i in range(self.initial_weight_version, self.initial_weight_version + max_trajectory_age + 1)]
 
@@ -612,7 +617,10 @@ class AsyncTrajectoryCollector:
         max_trajectory_age = int(self.master_config["grpo"]["async_grpo"]["max_trajectory_age_steps"])
 
         # Special handling for initial step: include current step as a target
-        if generation_weight_version == self.initial_weight_version:
+        if self._fresh_xtoken:
+            target_start = generation_weight_version
+            target_end = generation_weight_version + 1
+        elif generation_weight_version == self.initial_weight_version:
             target_start = generation_weight_version
             target_end = generation_weight_version + max_trajectory_age + 1
         else:
@@ -675,7 +683,10 @@ class AsyncTrajectoryCollector:
             max_trajectory_age = int(self.master_config["grpo"]["async_grpo"]["max_trajectory_age_steps"])
 
             # Special handling for initial step: include current step as a target
-            if self.current_weight_version == self.initial_weight_version:
+            if self._fresh_xtoken:
+                target_start = self.current_weight_version
+                target_end = self.current_weight_version + 1
+            elif self.current_weight_version == self.initial_weight_version:
                 target_start = self.current_weight_version
                 target_end = self.current_weight_version + max_trajectory_age + 1
             else:
@@ -703,7 +714,8 @@ class AsyncTrajectoryCollector:
                     if trajectories_needed > 0:
                         return False  # Found a target that needs generation
 
-            print(f"⏸️ All targets [{target_start}, {target_end}) complete or in progress, pausing")
+            if not self._fresh_xtoken:
+                print(f"⏸️ All targets [{target_start}, {target_end}) complete or in progress, pausing")
             return True
         except Exception:
             return False
@@ -729,7 +741,12 @@ class AsyncTrajectoryCollector:
         """Return a snapshot of the collector's internal state for driver-side diagnostics."""
         with self._threads_lock:
             inflight_workers = len(self._inflight_threads)
-        return {"running": self.running, "data_exhausted": self.data_exhausted, "inflight_workers": inflight_workers}
+        return {
+            "running": self.running,
+            "data_exhausted": self.data_exhausted,
+            "inflight_workers": inflight_workers,
+            "error": self._collection_error,
+        }
 
     def _collection_loop(self):
         """Run the collection loop in background thread."""
@@ -751,7 +768,11 @@ class AsyncTrajectoryCollector:
                     print("▶️ Refit completed, resuming collection")
 
                 # Check if generation limits require pausing collection
-                if self._should_pause_for_generation_limits() and self.running:
+                if self._fresh_xtoken:
+                    while self.running and self._should_pause_for_generation_limits():
+                        self._generation_limit_cleared.wait(timeout=0.5)
+                        self._generation_limit_cleared.clear()
+                elif self._should_pause_for_generation_limits() and self.running:
                     # Only log warning once per weight version
                     if self._last_limit_warning_version != self.current_weight_version:
                         async_cfg = self.master_config.get("grpo", {}).get("async_grpo", {})
@@ -796,6 +817,7 @@ class AsyncTrajectoryCollector:
 
         except Exception as e:
             print(f"❌ Error in trajectory collection: {e}")
+            self._collection_error = str(e)
             import traceback
 
             traceback.print_exc()
@@ -911,6 +933,10 @@ class AsyncTrajectoryCollector:
 
         except Exception as e:
             print(f"❌ Error processing batch: {e}")
+            if self._fresh_xtoken:
+                self._collection_error = str(e)
+                self.running = False
+                raise
             import traceback
 
             traceback.print_exc()
@@ -967,6 +993,9 @@ class AsyncTrajectoryCollector:
     def resume_after_refit(self) -> None:
         """Resume new generation starts after refit is complete."""
         print("🔄 Resuming generation starts after refit")
+        if self._fresh_xtoken and not self.policy_generation.invalidate_kv_cache():
+            self._collection_error = "X-Token requires successful prefix/KV cache invalidation after refit"
+            raise RuntimeError(self._collection_error)
 
         # Invalidate&recompute vLLM caches after the in-flight weight updates if
         # recompute_kv_cache_after_weight_updates is True (AREAL-style implementation).
@@ -1287,6 +1316,9 @@ class AsyncTrajectoryCollector:
             else:
                 print(f"   ⚠️ Max retries ({MAX_RETRIES}) exceeded - trajectory will NOT be buffered!")
                 print("   ⚠️ This may cause training to stall if it expects this trajectory.")
+                if self._fresh_xtoken:
+                    self._collection_error = "Prompt group retries exhausted"
+                    self.running = False
                 import traceback
 
                 traceback.print_exc()

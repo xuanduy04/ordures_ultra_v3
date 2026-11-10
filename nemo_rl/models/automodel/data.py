@@ -330,7 +330,7 @@ def process_global_batch(
     }
 
 
-def check_sequence_dim(data: BatchedDataDict[Any]) -> Tuple[int, int]:
+def check_sequence_dim(data: BatchedDataDict[Any], *, skip_keys=None) -> Tuple[int, int]:
     """Check and validate sequence dimension across all tensors.
 
     Verifies that dimension 1 is the sequence dimension for all tensors
@@ -347,7 +347,10 @@ def check_sequence_dim(data: BatchedDataDict[Any]) -> Tuple[int, int]:
     """
     sequence_dim = 1
     seq_dim_size = data.get("input_ids").shape[sequence_dim]
-    for _, v in data.items():
+    for key, v in data.items():
+        if skip_keys is not None and key in skip_keys:
+            continue
+
         if torch.is_tensor(v) and len(v.shape) > 1:
             assert v.shape[sequence_dim] == seq_dim_size, (
                 f"Dim 1 must be the sequence dim, expected dim 1={seq_dim_size} but got shape {v.shape}"
