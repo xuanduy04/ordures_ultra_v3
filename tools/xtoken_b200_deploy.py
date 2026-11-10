@@ -19,11 +19,15 @@ def main() -> None:
     parser.add_argument("--projection", type=Path, required=True)
     parser.add_argument("--teacher-max-sequence-length", type=int, required=True)
     parser.add_argument("--steps", type=int, default=15)
+    parser.add_argument("--max-sequence-length", type=int, default=4096)
+    parser.add_argument("--max-new-tokens", type=int, default=2048)
     parser.add_argument("--check-only", action="store_true")
     args = parser.parse_args()
 
     if args.steps <= 0:
         raise ValueError("The number of training steps must be positive")
+    if not 0 < args.max_new_tokens < args.max_sequence_length:
+        raise ValueError("Generation length must be positive and shorter than the sequence limit")
 
     from omegaconf import OmegaConf
 
@@ -75,19 +79,29 @@ def main() -> None:
                 "chat_template_kwargs": {"enable_thinking": True},
             },
             "train_global_batch_size": 128,
+            "max_total_sequence_length": args.max_sequence_length,
             "dtensor_cfg": {"enabled": False},
             "megatron_cfg": {
                 "tensor_model_parallel_size": 1,
+                "expert_tensor_parallel_size": 1,
+                "expert_model_parallel_size": 1,
                 "context_parallel_size": 1,
                 "pipeline_model_parallel_size": 1,
                 "sequence_parallel": False,
             },
             "generation": {
+                "max_new_tokens": args.max_new_tokens,
                 "temperature": 1.0,
                 "top_p": 1.0,
                 "top_k": None,
                 "colocated": {"enabled": False, "resources": {"num_nodes": 1, "gpus_per_node": 1}},
-                "vllm_cfg": {"async_engine": True, "tensor_parallel_size": 1, "pipeline_parallel_size": 1},
+                "vllm_cfg": {
+                    "async_engine": True,
+                    "tensor_parallel_size": 1,
+                    "pipeline_parallel_size": 1,
+                    "expert_parallel_size": 1,
+                    "max_model_len": args.max_sequence_length,
+                },
             },
         },
         "grpo": {
@@ -116,6 +130,8 @@ def main() -> None:
         },
     }
     config = OmegaConf.merge(base, overrides)
+    # The Ultra recipe's Nano-specific parsers cannot process Qwen3 rollouts.
+    config.policy.generation.vllm_cfg.http_server_serving_chat_kwargs = {}
     config["on_policy_distillation"] = OmegaConf.create(
         {
             "enabled": True,
