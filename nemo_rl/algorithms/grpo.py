@@ -239,23 +239,6 @@ def setup(
         print(f"OPD mode: {opd_mode}", flush=True)
 
     if opd_mode == "xtoken_topk":
-        dtensor_config = policy_config["dtensor_cfg"]
-
-        if not dtensor_config["enabled"]:
-            raise ValueError("xtoken_topk requires the DTensor backend.")
-
-        if "_v2" not in dtensor_config or not dtensor_config["_v2"]:
-            raise ValueError("xtoken_topk requires DTensor V2.")
-
-        if dtensor_config["tensor_parallel_size"] != 1 or dtensor_config["context_parallel_size"] != 1:
-            raise ValueError("xtoken_topk currently requires TP=CP=1.")
-
-        if policy_config["dynamic_batching"]["enabled"]:
-            raise ValueError("xtoken_topk requires fixed microbatches.")
-
-        if "sequence_packing" in policy_config and policy_config["sequence_packing"]["enabled"]:
-            raise ValueError("xtoken_topk does not support sequence packing yet.")
-
         validate_xtoken_mode(master_config)
 
     # Set seed for all random number generators
@@ -1328,10 +1311,11 @@ def async_grpo_train(
         "Set policy.generation.vllm_cfg.async_engine to true in your config."
     )
     xtoken_enabled = opd_module.get_opd_mode(master_config) == "xtoken_topk"
+    xtoken_fresh = xtoken_enabled and master_config["grpo"]["async_grpo"]["max_trajectory_age_steps"] == 0
     if xtoken_enabled:
         validate_xtoken_mode(master_config)
-        if max_trajectory_age_steps != 0:
-            raise ValueError("xtoken_topk requires max_trajectory_age_steps=0 at the training call")
+        if max_trajectory_age_steps != master_config["grpo"]["async_grpo"]["max_trajectory_age_steps"]:
+            raise ValueError("X-Token training call must use the configured trajectory age")
     assert xtoken_enabled or master_config["loss_fn"]["use_importance_sampling_correction"] is True, (
         "Importance sampling correction must be enabled for async GRPO for good convergence due to off-policy samples!"
     )
@@ -1438,7 +1422,7 @@ def async_grpo_train(
             print(f"📦 Restoring replay buffer from checkpoint: {replay_buffer_path}")
             try:
                 replay_buffer_state = torch.load(replay_buffer_path, weights_only=False)
-                if xtoken_enabled:
+                if xtoken_fresh:
                     validate_xtoken_replay_state(replay_buffer_state, step)
                 ray.get(
                     replay_buffer.load_state_dict.remote(
@@ -1689,7 +1673,7 @@ def async_grpo_train(
                     # Extract trajectories and metadata from sample result
                     trajectories = sample_result["trajectories"]
                     avg_trajectory_age = sample_result["avg_trajectory_age"]
-                    if xtoken_enabled and avg_trajectory_age != 0:
+                    if xtoken_fresh and avg_trajectory_age != 0:
                         raise RuntimeError("xtoken_topk refuses stale rollout batches")
 
                     print(
@@ -1699,6 +1683,15 @@ def async_grpo_train(
                     # Concatenate per-prompt groups into a single training batch
                     per_prompt_batches = [t["batch"] for t in trajectories]
                     repeated_batch = BatchedDataDict.from_batches(per_prompt_batches)
+                    if xtoken_enabled:
+                        repeated_batch["behavior_version"] = torch.cat(
+                            [
+                                torch.full((group.size,), version, dtype=torch.long)
+                                for group, version in zip(
+                                    per_prompt_batches, sample_result["trajectory_versions"], strict=True
+                                )
+                            ]
+                        )
 
                     # Teacher logprobs are stored in batch dict by collection-time
                     # computation and padded by from_batches. Extract here.

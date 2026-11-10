@@ -732,15 +732,16 @@ class BatchedDataDict(UserDict, Generic[DictT]):
                 ]
         return repeated_batch
 
-    def truncate_tensors(self, dim: int, truncated_len: int):
+    def truncate_tensors(self, dim: int, truncated_len: int, *, skip_keys=None):
         """Truncates tensors in this dict of a given dim to a given length."""
         for k, v in self.items():
+            if skip_keys is not None and k in skip_keys:
+                continue
             if torch.is_tensor(v) and len(v.shape) >= dim + 1:
                 self.data[k] = torch.narrow(v, dim=dim, start=0, length=truncated_len)
 
     def make_microbatch_iterator_with_dynamic_shapes(
-        self,
-        sequence_dim: int = 1,
+        self, sequence_dim: int = 1, *, skip_keys=None
     ) -> Iterator["SlicedDataDict"]:
         """Makes an iterator that yields microbatchs of dynamic batch and sequence sizes.
 
@@ -760,7 +761,7 @@ class BatchedDataDict(UserDict, Generic[DictT]):
             self.micro_batch_lengths[0], self.micro_batch_indices[0]
         ):
             mb = self.slice(start_idx, end_idx)
-            mb.truncate_tensors(dim=sequence_dim, truncated_len=seqlen)
+            mb.truncate_tensors(dim=sequence_dim, truncated_len=seqlen, skip_keys=skip_keys)
             yield mb
 
     def get_microbatch_iterator_dynamic_shapes_len(self) -> int:

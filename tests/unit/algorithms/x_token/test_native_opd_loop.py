@@ -48,9 +48,16 @@ class Factory:
 
 
 @pytest.mark.parametrize("mode", ["xtoken_topk", "sampled_token"])
-def test_native_driver_runs_two_steps_and_refits_before_fresh_collection(setup, monkeypatch, mode):
+@pytest.mark.parametrize("backend", ["dtensor", "megatron"])
+@pytest.mark.parametrize("age", [0, 1])
+def test_native_driver_runs_two_steps_and_refits_before_fresh_collection(setup, monkeypatch, mode, backend, age):
     cfg, student, teacher, batch = setup
+    if backend == "megatron":
+        cfg["policy"]["dtensor_cfg"]["enabled"] = False
+        cfg["policy"]["megatron_cfg"] = {"enabled": True, "tensor_model_parallel_size": 2,
+            "context_parallel_size": 2, "pipeline_model_parallel_size": 2, "sequence_parallel": True}
     cfg["on_policy_distillation"]["mode"] = mode
+    cfg["grpo"]["async_grpo"]["max_trajectory_age_steps"] = age
     cfg["grpo"].update({"max_num_steps": 2, "val_period": 0, "val_at_start": False,
                         "val_at_end": False, "overlong_filtering": False})
     cfg["loss_fn"].update({"use_importance_sampling_correction": True, "force_on_policy_ratio": True})
@@ -74,7 +81,8 @@ def test_native_driver_runs_two_steps_and_refits_before_fresh_collection(setup, 
         def fill(self):
             for index in range(2):
                 group = {"batch": deepcopy(batch.slice(index, index + 1)), "rollout_metrics": {}}
-                assert self.buffer.push_with_wait_signal.remote(group, self.version, self.version) == "success"
+                generation_version = max(0, self.version - age)
+                assert self.buffer.push_with_wait_signal.remote(group, generation_version, self.version) == "success"
 
         def start_collection(self, dataloader):
             trace.append("collect")
@@ -108,6 +116,9 @@ def test_native_driver_runs_two_steps_and_refits_before_fresh_collection(setup, 
         optimizer.zero_grad()
         valid_tokens = (data["token_mask"][:, 1:] * data["sample_mask"][:, None]).sum()
         if mode == "xtoken_topk":
+            version = trace.count("train")
+            assert data["behavior_version"].tolist() == [max(0, version - age)] * 2
+            assert data["training_version"].tolist() == [version] * 2
             assert kwargs["check_dim_skip_keys"] == integration.xtoken_non_student_seq_keys()
             loss, metrics = loss_fn(logits, data, data["sample_mask"].sum(), valid_tokens)
         else:
@@ -163,7 +174,7 @@ def test_native_driver_runs_two_steps_and_refits_before_fresh_collection(setup, 
     state = {"current_step": 0, "consumed_samples": 0, "total_valid_tokens": 0}
     logger = SimpleNamespace(log_metrics=lambda metrics, step, **kwargs: logged.append((step, kwargs["prefix"], metrics)))
     scope["async_grpo_train"](policy, generation, object(), None, student, loss_fn, {}, None,
-                              logger, checkpoint, state, cfg, max_trajectory_age_steps=0)
+                              logger, checkpoint, state, cfg, max_trajectory_age_steps=age)
     assert trace.count("train") == 2
     assert trace.count("refit") == 3
     if mode == "xtoken_topk":

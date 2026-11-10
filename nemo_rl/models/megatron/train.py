@@ -188,9 +188,9 @@ def forward_with_post_processing_fn(
 
     # Apply temperature scaling only for sampling-oriented post-processors.
     # Loss computation should use unscaled logits.
-    if isinstance(
-        post_processing_fn,
-        (LossPostProcessor, LogprobsPostProcessor, TopkLogitsPostProcessor),
+    if isinstance(post_processing_fn, (LossPostProcessor, LogprobsPostProcessor, TopkLogitsPostProcessor)) and not (
+        isinstance(post_processing_fn, LossPostProcessor)
+        and getattr(post_processing_fn.loss_fn, "requires_raw_logits", False) is True
     ):
         apply_temperature_scaling(output_tensor, cfg)
 
@@ -317,7 +317,8 @@ class LossPostProcessor:
         """
         loss_fn = self.loss_fn
         pack_sequences = self.cfg["sequence_packing"]["enabled"]
-        if pack_sequences and packed_seq_params is not None:
+        handles_packing = getattr(loss_fn, "handles_sequence_packing", False) is True
+        if pack_sequences and packed_seq_params is not None and not handles_packing:
             fuse_loss = self.cfg["sequence_packing"].get("fuse_loss", False)
             wrapper_cls = SequencePackingFusionLossWrapper if fuse_loss else SequencePackingLossWrapper
             loss_fn = wrapper_cls(
@@ -334,9 +335,10 @@ class LossPostProcessor:
             vocab_parallel_rank=get_tensor_model_parallel_rank(),
             vocab_parallel_group=get_tensor_model_parallel_group(),
             context_parallel_group=get_context_parallel_group(),
+            **({"packed_seq_params": packed_seq_params} if handles_packing else {}),
         )
 
-        if self.cp_normalize:
+        if self.cp_normalize and getattr(loss_fn, "cp_replicated_with_identity_grad", False) is not True:
             cp_size = get_context_parallel_world_size()
             prev_loss_fn = loss_fn_wrapped
 

@@ -93,20 +93,20 @@ def test_mode_defaults_and_rejection():
         opd_outsource.get_opd_mode({"on_policy_distillation": {"enabled": True, "mode": "typo"}})
 
 
-@pytest.mark.parametrize("mutation", ["stale", "inflight", "colocated", "multiple_updates", "reward", "teacher_model", "nan_weight", "temperature", "top_p", "top_k"])
+@pytest.mark.parametrize("mutation", ["negative_age", "inflight", "colocated", "multiple_updates", "reference_kl", "teacher_model", "nan_weight", "temperature", "top_p", "top_k"])
 def test_rejects_unsupported_contract(setup, mutation):
     cfg, *_ = setup
     integration.validate_xtoken_mode(cfg)
-    if mutation == "stale":
-        cfg["grpo"]["async_grpo"]["max_trajectory_age_steps"] = 1
+    if mutation == "negative_age":
+        cfg["grpo"]["async_grpo"]["max_trajectory_age_steps"] = -1
     elif mutation == "inflight":
         cfg["grpo"]["async_grpo"]["in_flight_weight_updates"] = True
     elif mutation == "colocated":
         cfg["policy"]["generation"]["colocated"]["enabled"] = True
     elif mutation == "multiple_updates":
         cfg["policy"]["train_global_batch_size"] = 1
-    elif mutation == "reward":
-        cfg["grpo"]["reward_shaping"]["enabled"] = True
+    elif mutation == "reference_kl":
+        cfg["loss_fn"]["reference_policy_kl_penalty"] = .1
     elif mutation == "teacher_model":
         cfg["on_policy_distillation"]["teacher_model_by_agent_name"]["other"] = {"url": "http://fixture", "model": "different"}
     elif mutation in {"temperature", "top_p", "top_k"}:

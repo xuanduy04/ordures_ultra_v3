@@ -334,6 +334,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         eval_mode: bool = False,
         gbs: Optional[int] = None,
         mbs: Optional[int] = None,
+        check_dim_skip_keys=None,
     ) -> dict[str, Any]:
         """Train the policy on a batch of data with a given loss function."""
         self.timer.start("train")
@@ -395,17 +396,14 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
                         mtp_loss_mask = (batch["advantages"] > 0) * mtp_loss_mask
                     batch["mtp_loss_mask"] = mtp_loss_mask
 
-                (
-                    data_iterator,
-                    num_microbatches,
-                    micro_batch_size,
-                    seq_length,
-                    padded_seq_length,
-                ) = get_microbatch_iterator(
-                    batch,
-                    self.cfg,
-                    mbs,
-                    straggler_timer=self.mcore_state.straggler_timer,
+                (data_iterator, num_microbatches, micro_batch_size, seq_length, padded_seq_length) = (
+                    get_microbatch_iterator(
+                        batch,
+                        self.cfg,
+                        mbs,
+                        straggler_timer=self.mcore_state.straggler_timer,
+                        check_dim_skip_keys=check_dim_skip_keys,
+                    )
                 )
                 # Track total microbatches for MoE aux-loss averaging
                 total_num_microbatches += int(num_microbatches)

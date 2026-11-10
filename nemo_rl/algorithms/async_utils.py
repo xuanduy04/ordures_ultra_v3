@@ -270,7 +270,11 @@ class ReplayBuffer:
                 f"🗑️ Consumed and removed {len(selected)} groups from buffer, old buffer size: {total_trajectories}, new buffer size: {len(self.trajectories)}, new target weight versions {self.target_weight_versions}"
             )
 
-            return {"trajectories": sampled_items, "avg_trajectory_age": avg_trajectory_age}
+            return {
+                "trajectories": sampled_items,
+                "avg_trajectory_age": avg_trajectory_age,
+                "trajectory_versions": sampled_weights,
+            }
 
     def size(self) -> int:
         """Return current buffer size."""
@@ -514,8 +518,11 @@ class AsyncTrajectoryCollector:
         self.master_config = master_config
         self.replay_buffer = replay_buffer
         self.on_policy_distillation_cfg = on_policy_distillation_cfg or {}
-        self._fresh_xtoken = get_opd_mode(self.master_config) == "xtoken_topk"
-        self._has_opd_teachers = is_opd_enabled(self.master_config) and not self._fresh_xtoken
+        xtoken_enabled = get_opd_mode(self.master_config) == "xtoken_topk"
+        self._fresh_xtoken = (
+            xtoken_enabled and self.master_config["grpo"]["async_grpo"]["max_trajectory_age_steps"] == 0
+        )
+        self._has_opd_teachers = is_opd_enabled(self.master_config) and not xtoken_enabled
         self._teacher_logprob_client = VLLMTeacherLogprobClient() if self._has_opd_teachers else None
         self.running = False
         self.data_exhausted = False

@@ -16,23 +16,34 @@ def validate_xtoken_mode(master_config):
     policy = master_config["policy"]
     grpo = master_config["grpo"]
     cfg = master_config["on_policy_distillation"]["xtoken"]
+    megatron = "megatron_cfg" in policy and policy["megatron_cfg"]["enabled"]
+    dtensor = "dtensor_cfg" in policy and policy["dtensor_cfg"]["enabled"]
+    if megatron == dtensor:
+        raise ValueError("xtoken_topk requires one enabled policy backend")
+    if dtensor:
+        backend = policy["dtensor_cfg"]
+        if "_v2" not in backend or not backend["_v2"]:
+            raise ValueError("xtoken_topk requires DTensor V2 for the DTensor backend")
+        if backend["tensor_parallel_size"] != 1 or backend["context_parallel_size"] != 1:
+            raise ValueError("The DTensor X-Token path requires TP=CP=1; Megatron handles sharded logits")
+        if policy["dynamic_batching"]["enabled"] or policy["sequence_packing"]["enabled"]:
+            raise ValueError("The DTensor X-Token path requires fixed microbatches without packing")
     async_cfg = grpo["async_grpo"]
-    if not async_cfg["enabled"] or async_cfg["max_trajectory_age_steps"] != 0:
-        raise ValueError("xtoken_topk requires async collection with max_trajectory_age_steps=0")
-    if "in_flight_weight_updates" in async_cfg and async_cfg["in_flight_weight_updates"]:
+    age = async_cfg["max_trajectory_age_steps"]
+    if not async_cfg["enabled"] or age < 0:
+        raise ValueError("xtoken_topk requires native async collection with a nonnegative trajectory age")
+    if age == 0 and "in_flight_weight_updates" in async_cfg and async_cfg["in_flight_weight_updates"]:
         raise ValueError("xtoken_topk requires refit after all rollouts have completed")
     if policy["generation"]["colocated"]["enabled"]:
         raise ValueError("Native OPD xtoken_topk requires non-colocated generation")
     generation = policy["generation"]
-    if generation["temperature"] != 1 or generation["top_p"] != 1 or generation["top_k"]:
+    if age == 0 and (generation["temperature"] != 1 or generation["top_p"] != 1 or generation["top_k"]):
         raise ValueError("U7 fresh rollouts require temperature=1, top_p=1 and no generation top-k")
     expected = grpo["num_prompts_per_step"] * grpo["num_generations_per_prompt"]
-    if policy["train_global_batch_size"] != expected:
+    if age == 0 and policy["train_global_batch_size"] != expected:
         raise ValueError("xtoken_topk requires one optimizer step per fresh rollout batch")
     if master_config["loss_fn"]["reference_policy_kl_penalty"] != 0:
         raise ValueError("xtoken_topk is KD-only; reference policy KL must be zero")
-    if grpo["reward_shaping"]["enabled"]:
-        raise ValueError("xtoken_topk does not use reward shaping")
     for key in ("kl_loss_weight", "tail_epsilon"):
         if not math.isfinite(cfg[key]):
             raise ValueError(key + " must be finite")
@@ -113,6 +124,13 @@ class XTokenOPDBatchBuilder:
         if len(teacher_tokenizer) > self.cfg["remote"]["model_vocab_size"]:
             raise ValueError("Teacher tokenizer IDs exceed remote.model_vocab_size")
         policy = master_config["policy"]
+        self.fresh_rollouts = master_config["grpo"]["async_grpo"]["max_trajectory_age_steps"] == 0
+        divisor = policy["make_sequence_length_divisible_by"]
+        if "megatron_cfg" in policy and policy["megatron_cfg"]["enabled"]:
+            backend = policy["megatron_cfg"]
+            cp = backend["context_parallel_size"]
+            sp = backend["tensor_model_parallel_size"] if backend["sequence_parallel"] else 1
+            divisor = math.lcm(divisor, (2 * cp if cp > 1 else 1) * sp)
         stop_ids = student_tokenizer.eos_token_id
         stop_ids = stop_ids if isinstance(stop_ids, list) else [stop_ids]
         if "stop_token_ids" in policy["generation"] and policy["generation"]["stop_token_ids"] is not None:
@@ -130,7 +148,7 @@ class XTokenOPDBatchBuilder:
             ],
             policy["max_total_sequence_length"],
             [self.cfg["teacher_max_sequence_length"]],
-            policy["make_sequence_length_divisible_by"],
+            divisor,
             [1],
             [token for token in stop_ids if token is not None],
         )
@@ -142,7 +160,7 @@ class XTokenOPDBatchBuilder:
         for index, messages in enumerate(batch["message_log"]):
             params = batch["full_result"][index]["responses_create_params"]
             for key in ("temperature", "top_p"):
-                if key in params and params[key] != 1:
+                if self.fresh_rollouts and key in params and params[key] != 1:
                     raise ValueError("U7 rollout sampling must use " + key + "=1")
             if set(params) & {"tools", "instructions", "previous_response_id"}:
                 raise ValueError("xtoken_topk currently supports text-only single-turn Gym rollouts")
@@ -172,6 +190,9 @@ class XTokenOPDBatchBuilder:
             prompts=prompts, sample_mask=batch["loss_multiplier"], idx=list(range(len(rows)))
         )
         data = self.collator(prompt_batch, generation, prompt_ids, policy_version, policy_version)
+        data["training_version"] = torch.full((len(rows),), policy_version, dtype=torch.long)
+        if "behavior_version" in batch:
+            data["behavior_version"] = batch["behavior_version"].clone()
         if (
             data["teacher_0_input_ids"].numel() * (self.cfg["remote"]["top_k"] + 1)
             > self.cfg["remote"]["max_score_elements"]

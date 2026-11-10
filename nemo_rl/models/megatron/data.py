@@ -120,6 +120,7 @@ def get_microbatch_iterator(
     mbs: int,
     straggler_timer: StragglerDetector,
     seq_length_key: Optional[str] = None,
+    check_dim_skip_keys=None,
 ) -> Tuple[Iterator[ProcessedMicrobatch], int, int, int, int]:
     """Create a processed microbatch iterator from a batch of data.
 
@@ -146,14 +147,14 @@ def get_microbatch_iterator(
     pad_full_seq_to = None
     pad_packed_seq_to_multiple_of = 1
 
-    _, seq_dim_size = get_and_validate_seqlen(data)
+    _, seq_dim_size = get_and_validate_seqlen(data, skip_keys=check_dim_skip_keys)
 
     # Auto-detect seq_length_key if not provided
     if seq_length_key is None and cfg["sequence_packing"]["enabled"]:
         seq_length_key = "input_lengths"
 
     if cfg["dynamic_batching"]["enabled"]:
-        raw_iterator = data.make_microbatch_iterator_with_dynamic_shapes()
+        raw_iterator = data.make_microbatch_iterator_with_dynamic_shapes(skip_keys=check_dim_skip_keys)
         data_iterator_len = data.get_microbatch_iterator_dynamic_shapes_len()
     elif cfg["sequence_packing"]["enabled"]:
         raw_iterator = data.make_microbatch_iterator_for_packable_sequences()
@@ -684,11 +685,13 @@ def _unpack_sequences_from_megatron(
     return unpacked_output
 
 
-def get_and_validate_seqlen(data: BatchedDataDict[Any]):
+def get_and_validate_seqlen(data: BatchedDataDict[Any], *, skip_keys=None):
     # dim 1 is always assumed to be the sequence dim, sanity check this here
     sequence_dim = 1
     seq_dim_size = data["input_ids"].shape[sequence_dim]
     for k, v in data.items():
+        if skip_keys is not None and k in skip_keys:
+            continue
         if torch.is_tensor(v) and len(v.shape) > 1:
             assert v.shape[sequence_dim] == seq_dim_size, (
                 f"Dim 1 must be the sequence dim, expected dim 1={seq_dim_size} but got shape {v.shape} for key {k}"
