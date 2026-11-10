@@ -130,6 +130,8 @@ def main() -> None:
         },
     }
     config = OmegaConf.merge(base, overrides)
+    if "_teachers" in config and OmegaConf.is_missing(config._teachers, "general"):
+        config._teachers.general = args.teacher_model
     # The Ultra recipe's Nano-specific parsers cannot process Qwen3 rollouts.
     config.policy.generation.vllm_cfg.http_server_serving_chat_kwargs = {}
     config["on_policy_distillation"] = OmegaConf.create(
