@@ -71,7 +71,12 @@ def main() -> None:
         },
     }
     overrides = {
-        "cluster": {"num_nodes": 1, "gpus_per_node": 3},
+        # Single-node pilot: the Ultra base config sets segment_size=16 to pin
+        # NVLink domains across a multi-node cluster. With num_nodes=1, grpo.py
+        # still requires train_nodes+inference_nodes alive nodes even though
+        # train and inference share this node, so topology pinning must be off
+        # or the run aborts before the first step.
+        "cluster": {"num_nodes": 1, "gpus_per_node": 3, "segment_size": None},
         "policy": {
             "model_name": str(args.student),
             "tokenizer": {
