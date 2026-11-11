@@ -600,33 +600,48 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
         # /tokenize endpoint
         ########################################
 
-        # This MRO is necessary i.e. NeMoRLOpenAIChatRequestMixin > TokenizeRequest
-        class NeMoRLTokenizeChatRequest(NeMoRLOpenAIChatRequestMixin, TokenizeChatRequest):
-            required_prefix_token_ids: Optional[List[int]] = None
+        # vLLM 0.32 renamed OpenAIServingTokenization to ServingTokenization and
+        # changed its constructor to require an OnlineRenderer. NeMo-Gym sends
+        # prompt_token_ids here, so the /tokenize route is optional: keep it on
+        # the vendored vLLM build and skip it on released builds.
+        try:
+            from vllm.entrypoints.serve.tokenize.serving import OpenAIServingTokenization
+        except ImportError:
+            OpenAIServingTokenization = None
+        if OpenAIServingTokenization is None:
+            print(
+                'NeMo-RL: /tokenize endpoint disabled; this vLLM build exposes '
+                'ServingTokenization instead of OpenAIServingTokenization',
+                flush=True,
+            )
+        else:
+            # This MRO is necessary i.e. NeMoRLOpenAIChatRequestMixin > TokenizeRequest
+            class NeMoRLTokenizeChatRequest(NeMoRLOpenAIChatRequestMixin, TokenizeChatRequest):
+                required_prefix_token_ids: Optional[List[int]] = None
 
-        NeMoRLTokenizeRequest = Union[TokenizeCompletionRequest, NeMoRLTokenizeChatRequest]
+            NeMoRLTokenizeRequest = Union[TokenizeCompletionRequest, NeMoRLTokenizeChatRequest]
 
-        # This MRO is necessary i.e. NeMoRLOpenAIServingMixin > OpenAIServingTokenization
-        class NeMoRLOpenAIServingTokenization(NeMoRLOpenAIServingMixin, OpenAIServingTokenization):
-            pass
+            # This MRO is necessary i.e. NeMoRLOpenAIServingMixin > OpenAIServingTokenization
+            class NeMoRLOpenAIServingTokenization(NeMoRLOpenAIServingMixin, OpenAIServingTokenization):
+                pass
 
-        serving_tokenization_kwargs = dict(
-            request_logger=serving_chat_kwargs["request_logger"],
-            chat_template=serving_chat_kwargs["chat_template"],
-            chat_template_content_format=serving_chat_kwargs["chat_template_content_format"],
-            engine_client=serving_chat_kwargs["engine_client"],
-            models=serving_chat_kwargs["models"],
-        )
-        openai_serving_tokenization = NeMoRLOpenAIServingTokenization(**serving_tokenization_kwargs)
+            serving_tokenization_kwargs = dict(
+                request_logger=serving_chat_kwargs["request_logger"],
+                chat_template=serving_chat_kwargs["chat_template"],
+                chat_template_content_format=serving_chat_kwargs["chat_template_content_format"],
+                engine_client=serving_chat_kwargs["engine_client"],
+                models=serving_chat_kwargs["models"],
+            )
+            openai_serving_tokenization = NeMoRLOpenAIServingTokenization(**serving_tokenization_kwargs)
 
-        @app.post("/tokenize")
-        async def tokenize(request: NeMoRLTokenizeRequest, raw_request: Request):
-            generator = await openai_serving_tokenization.create_tokenize(request, raw_request)
+            @app.post("/tokenize")
+            async def tokenize(request: NeMoRLTokenizeRequest, raw_request: Request):
+                generator = await openai_serving_tokenization.create_tokenize(request, raw_request)
 
-            if isinstance(generator, ErrorResponse):
-                return JSONResponse(content=generator.model_dump(), status_code=generator.error.code)
-            elif isinstance(generator, TokenizeResponse):
-                return JSONResponse(content=generator.model_dump())
+                if isinstance(generator, ErrorResponse):
+                    return JSONResponse(content=generator.model_dump(), status_code=generator.error.code)
+                elif isinstance(generator, TokenizeResponse):
+                    return JSONResponse(content=generator.model_dump())
 
         ########################################
         # Logging
