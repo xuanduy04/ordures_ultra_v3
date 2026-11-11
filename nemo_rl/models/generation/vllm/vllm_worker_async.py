@@ -392,7 +392,6 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
             TokenizeCompletionRequest,
             TokenizeResponse,
         )
-        from vllm.entrypoints.serve.tokenize.serving import OpenAIServingTokenization
         from vllm.tool_parsers.abstract_tool_parser import ToolParserManager
         from vllm.v1.engine.async_llm import logger as vllm_async_llm_logger
 
@@ -563,6 +562,28 @@ class VllmAsyncGenerationWorker(BaseVllmGenerationWorker):
             from vllm.reasoning.abs_reasoning_parsers import ReasoningParserManager
 
             ReasoningParserManager.import_reasoning_parser(reasoning_parser_plugin)
+
+        # vLLM 0.32 moved chat rendering into OnlineRenderer and made it a
+        # required constructor argument. Build it from the engine client when
+        # the installed OpenAIServingChat expects it; the vendored vLLM does not.
+        import inspect as _inspect
+
+        if "online_renderer" in _inspect.signature(OpenAIServingChat.__init__).parameters:
+            try:
+                from vllm.renderers.online_renderer import OnlineRenderer
+            except ModuleNotFoundError:
+                OnlineRenderer = None
+            if OnlineRenderer is not None:
+                serving_chat_kwargs["online_renderer"] = OnlineRenderer(
+                    model_config=engine_client.model_config,
+                    renderer=engine_client.renderer,
+                    request_logger=serving_chat_kwargs.get("request_logger"),
+                    chat_template=serving_chat_kwargs.get("chat_template"),
+                    chat_template_content_format=serving_chat_kwargs.get(
+                        "chat_template_content_format", "auto"
+                    ),
+                )
+                print("NeMo-RL: wired OnlineRenderer for released vLLM", flush=True)
 
         openai_serving_chat = NeMoRLOpenAIServingChat(**serving_chat_kwargs)
 
