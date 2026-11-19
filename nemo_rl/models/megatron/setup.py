@@ -914,7 +914,8 @@ def setup_model_and_optimizer(
         with ExitStack() as hooks:
             if (
                 load_optimizer
-                and weights_path is not None
+                and megatron_cfg.checkpoint.load is not None
+                and checkpoint_exists(megatron_cfg.checkpoint.load)
                 and os.environ.get("NRL_MEGATRON_CPU_STAGE_OPTIMIZER_LOAD") == "1"
             ):
                 _register_optimizer_load_staging(optimizer, hooks)
