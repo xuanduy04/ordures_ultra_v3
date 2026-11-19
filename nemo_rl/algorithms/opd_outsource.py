@@ -274,6 +274,8 @@ def _retry_delay(attempt: int) -> float:
     ±20% uniform jitter desynchronizes the concurrently retrying prompt groups so they don't all re-fire on the same 60s
     tick when the serve recovers (lockstep retries would thundering-herd it straight back into failure).
     """
+    if _RETRY_BACKOFF_BASE_S == 0:
+        return 0.0
     max_exponent = math.ceil(math.log2(_MAX_RETRY_BACKOFF_S / _RETRY_BACKOFF_BASE_S))
     base = min(_RETRY_BACKOFF_BASE_S * (2 ** min(attempt, max_exponent)), _MAX_RETRY_BACKOFF_S)
     return base * random.uniform(0.8, 1.2)

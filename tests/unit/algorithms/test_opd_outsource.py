@@ -369,6 +369,11 @@ def test_retry_delay_jitter_bounds(monkeypatch):
             assert base * 0.8 <= delay <= base * 1.2
 
 
+def test_retry_delay_stays_capped_for_large_attempt():
+    cap = opd_module._MAX_RETRY_BACKOFF_S
+    assert cap * 0.8 <= opd_module._retry_delay(10_000) <= cap * 1.2
+
+
 # ---------------------------------------------------------------------------
 # score_group — payload construction
 # ---------------------------------------------------------------------------
