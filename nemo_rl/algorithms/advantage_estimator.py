@@ -388,18 +388,7 @@ def create_advantage_estimator(master_config: Mapping[str, Any]) -> BaseAdvantag
     loss_config = master_config["loss_fn"]
 
     # Provide backward-compatible defaults when advantage_estimator is not in config.
-    # Fall back to top-level grpo.normalize_rewards / grpo.use_leave_one_out_baseline
-    # which older configs still use.
-    advantage_estimator_config = grpo_config.get(
-        "advantage_estimator",
-        # default =
-        {
-            "name": "grpo",
-            "normalize_rewards": grpo_config.get("normalize_rewards", True),
-            "use_leave_one_out_baseline": grpo_config.get("use_leave_one_out_baseline", False),
-            "minus_baseline": True,
-        },
-    )
+    advantage_estimator_config = grpo_config.get("advantage_estimator", "'advantage_estimator' not specified in config")
 
     advantage_estimator_name = advantage_estimator_config["name"]
     if advantage_estimator_name == "opd":

@@ -40,6 +40,7 @@ def import_model_from_hf_name(
         model_provider.num_layers_in_last_pipeline_stage
     )
     orig_pipeline_dtype = model_provider.pipeline_dtype
+    orig_gradient_accumulation_fusion = model_provider.gradient_accumulation_fusion
 
     if megatron_config is not None:
         model_provider.tensor_model_parallel_size = megatron_config[
@@ -63,6 +64,12 @@ def import_model_from_hf_name(
         ]
         model_provider.pipeline_dtype = megatron_config["pipeline_dtype"]
         model_provider.sequence_parallel = megatron_config["sequence_parallel"]
+        # Building the model already fails when gradient_accumulation_fusion is True and the
+        # fused_weight_gradient_mlp_cuda extension is missing, so the override must apply here too
+        if "gradient_accumulation_fusion" in megatron_config:
+            model_provider.gradient_accumulation_fusion = megatron_config[
+                "gradient_accumulation_fusion"
+            ]
     model_provider.finalize()
     model_provider.initialize_model_parallel(seed=0)
     megatron_model = model_provider.provide_distributed_model(wrap_with_ddp=False)
@@ -79,6 +86,8 @@ def import_model_from_hf_name(
     config.num_layers_in_first_pipeline_stage = orig_num_layers_in_first_pipeline_stage
     config.num_layers_in_last_pipeline_stage = orig_num_layers_in_last_pipeline_stage
     config.pipeline_dtype = orig_pipeline_dtype
+    # Keep the converted checkpoint identical to a plain conversion; training re-applies the override
+    config.gradient_accumulation_fusion = orig_gradient_accumulation_fusion
 
     bridge.save_megatron_model(megatron_model, output_path)
 
