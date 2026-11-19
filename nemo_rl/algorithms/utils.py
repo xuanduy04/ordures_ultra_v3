@@ -594,7 +594,12 @@ def print_performance_metrics(
     # Throughputs
     # =====================================================
 
-    policy_and_reference_logprobs_time = timing_metrics["policy_and_reference_logprobs"]
+    # X-Token scores the teacher separately and can skip this phase entirely.
+    policy_and_reference_logprobs_time = (
+        timing_metrics["policy_and_reference_logprobs"]
+        if "policy_and_reference_logprobs" in timing_metrics
+        else 0.0
+    )
     policy_training_time = timing_metrics["policy_training"]
     total_time = timing_metrics["total_step_time"]
     refit_time = timing_metrics["weight_sync"]
@@ -603,8 +608,8 @@ def print_performance_metrics(
     # if training time < generation time, generation time = training time + exposed generation time
     generation_time = (
         timing_metrics["exposed_generation"]
-        + timing_metrics["policy_and_reference_logprobs"]
-        + timing_metrics["policy_training"]
+        + policy_and_reference_logprobs_time
+        + policy_training_time
     )
 
     num_nodes = master_config["cluster"]["num_nodes"]
@@ -667,11 +672,6 @@ def print_performance_metrics(
     policy_training_tokens_per_sec_per_gpu = (
         metrics["total_num_tokens"] / policy_training_time / training_num_gpus
     )
-    policy_and_reference_logprobs_tokens_per_sec_per_gpu = (
-        metrics["total_num_tokens"]
-        / policy_and_reference_logprobs_time
-        / training_num_gpus
-    )
     training_worker_group_tokens_per_sec_per_gpu = (
         metrics["total_num_tokens"]
         / (policy_training_time + policy_and_reference_logprobs_time)
@@ -687,9 +687,18 @@ def print_performance_metrics(
     print(
         f"    - Policy Training (Tokens/sec/gpu): {policy_training_tokens_per_sec_per_gpu:.2f}"
     )
-    print(
-        f"    - Policy and Reference Logprobs (Tokens/sec/gpu): {policy_and_reference_logprobs_tokens_per_sec_per_gpu:.2f}"
-    )
+    if policy_and_reference_logprobs_time > 0:
+        logprobs_tokens_per_sec_per_gpu = (
+            metrics["total_num_tokens"]
+            / policy_and_reference_logprobs_time
+            / training_num_gpus
+        )
+        print(
+            f"    - Policy and Reference Logprobs (Tokens/sec/gpu): {logprobs_tokens_per_sec_per_gpu:.2f}"
+        )
+        performance_metrics["policy_and_reference_logprobs_tokens_per_sec_per_gpu"] = (
+            logprobs_tokens_per_sec_per_gpu
+        )
     print(
         f"    - Training Worker Group (Tokens/sec/gpu): {training_worker_group_tokens_per_sec_per_gpu:.2f}"
     )
@@ -755,7 +764,6 @@ def print_performance_metrics(
             "samples_per_sec_per_gpu": e2e_samples_per_sec_per_gpu,
             "tokens_per_sec_per_gpu": e2e_tokens_per_sec_per_gpu,
             "policy_training_tokens_per_sec_per_gpu": policy_training_tokens_per_sec_per_gpu,
-            "policy_and_reference_logprobs_tokens_per_sec_per_gpu": policy_and_reference_logprobs_tokens_per_sec_per_gpu,
             "training_worker_group_tokens_per_sec_per_gpu": training_worker_group_tokens_per_sec_per_gpu,
             "generation_tokens_per_sec_per_gpu": generation_tokens_per_sec_per_gpu,
             "training_worker_group_tokens_per_sec": training_worker_group_tokens_per_sec_per_gpu
