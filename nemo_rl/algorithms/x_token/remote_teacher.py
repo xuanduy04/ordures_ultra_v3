@@ -4,11 +4,17 @@ import asyncio
 import json
 import math
 import os
+import time
 
 import aiohttp
 import torch
 
-from nemo_rl.algorithms.opd_outsource import VLLMTeacherLogprobClient
+from nemo_rl.algorithms.opd_outsource import (
+    _REQUEST_TIMEOUT_S,
+    _RETRYABLE_STATUS_CODES,
+    VLLMTeacherLogprobClient,
+    _retry_delay,
+)
 
 
 class TeacherCapabilityError(RuntimeError):
@@ -24,7 +30,7 @@ class XTokenFullLogprobClient(VLLMTeacherLogprobClient):
     selection.
     """
 
-    def __init__(self, config):
+    def __init__(self, config, *, opd_delivery: bool = False):
         for key in ("model_vocab_size", "max_score_elements", "max_response_bytes", "max_attempts"):
             if type(config[key]) is not int or config[key] <= 0:
                 raise ValueError(key + " must be a positive integer")
@@ -34,6 +40,7 @@ class XTokenFullLogprobClient(VLLMTeacherLogprobClient):
         if not math.isfinite(config["retry_backoff_s"]) or config["retry_backoff_s"] < 0:
             raise ValueError("retry_backoff_s must be finite and nonnegative")
         self.config = config
+        self._opd_delivery = opd_delivery
         super().__init__()
 
     async def _score_on_loop(self, teacher, input_ids, input_lengths):
@@ -135,16 +142,24 @@ class XTokenFullLogprobClient(VLLMTeacherLogprobClient):
 
     async def _dense_request(self, teacher, payload, headers):
         url = teacher["url"].rstrip("/") + "/v1/completions"
-        for attempt in range(self.config["max_attempts"]):
+        timeout_s = self.config["request_timeout_s"]
+        if self._opd_delivery:
+            # Match sampled-token OPD: keep the batch waiting through teacher overload.
+            timeout_s = max(timeout_s, _REQUEST_TIMEOUT_S)
+        timeout = aiohttp.ClientTimeout(total=timeout_s)
+        started_at = time.monotonic()
+        attempt = 0
+        while True:
+            status = None
             try:
-                timeout = aiohttp.ClientTimeout(total=self.config["request_timeout_s"])
                 async with self._session.post(url, json=payload, headers=headers, timeout=timeout) as response:
-                    if response.status >= 400:
-                        if response.status not in {429, 500, 502, 503, 504}:
+                    status = response.status
+                    if status >= 400:
+                        if status not in _RETRYABLE_STATUS_CODES:
                             raise TeacherCapabilityError(
-                                f"Teacher rejected full-vocab scoring (HTTP {response.status}); server was not modified"
+                                f"Teacher rejected full-vocab scoring (HTTP {status}); server was not modified"
                             )
-                        raise RuntimeError(f"Transient teacher HTTP {response.status}")
+                        raise RuntimeError(f"Transient teacher HTTP {status}")
                     limit = self.config["max_response_bytes"]
                     if response.content_length is not None and response.content_length > limit:
                         raise TeacherCapabilityError("Teacher response exceeds configured byte limit")
@@ -156,10 +171,22 @@ class XTokenFullLogprobClient(VLLMTeacherLogprobClient):
                     return json.loads(body)
             except TeacherCapabilityError:
                 raise
-            except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError, json.JSONDecodeError):
-                if attempt + 1 == self.config["max_attempts"]:
+            except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError, json.JSONDecodeError) as exc:
+                if self._opd_delivery:
+                    delay = _retry_delay(attempt)
+                    elapsed = time.monotonic() - started_at
+                    reason = f"HTTP {status}" if status in _RETRYABLE_STATUS_CODES else type(exc).__name__
+                    print(
+                        f"[X-Token teacher] Attempt {attempt + 1} failed ({elapsed:.0f}s so far): "
+                        f"{reason}; retrying in {delay:.1f}s",
+                        flush=True,
+                    )
+                elif attempt + 1 >= self.config["max_attempts"]:
                     raise
-                await asyncio.sleep(self.config["retry_backoff_s"])
+                else:
+                    delay = self.config["retry_backoff_s"]
+                await asyncio.sleep(delay)
+                attempt += 1
 
 
 class RemoteTeacherPolicy:
@@ -218,8 +245,8 @@ class RemoteTeacherPolicy:
 class XTokenTopKLogprobClient(XTokenFullLogprobClient):
     """Preserve global-normalized top-k probabilities and the optional actual token."""
 
-    def __init__(self, config):
-        super().__init__(config)
+    def __init__(self, config, *, opd_delivery: bool = False):
+        super().__init__(config, opd_delivery=opd_delivery)
         if type(config["top_k"]) is not int or not 1 <= config["top_k"] <= config["model_vocab_size"]:
             raise ValueError("top_k must be between 1 and model_vocab_size")
 

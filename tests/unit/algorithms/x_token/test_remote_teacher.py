@@ -205,6 +205,51 @@ def test_xtoken_bounded_transport_does_not_use_unlimited_opd_retry(client_config
         asyncio.run(client.close())
 
 
+def test_opd_delivery_keeps_the_same_request_until_teacher_recovers(client_config, monkeypatch):
+    client_config.update(top_k=2, max_attempts=1)
+    client = XTokenTopKLogprobClient(client_config, opd_delivery=True)
+    payload = {"prompt": [[1, 2]], "prompt_logprobs": 2}
+    requests = []
+    delays = []
+
+    class Response:
+        content_length = None
+
+        def __init__(self):
+            self.content = self
+
+        async def __aenter__(self):
+            if len(requests) == 1:
+                raise asyncio.TimeoutError()
+            self.status = 503 if sum(delays) < 20 * 60 else 200
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        async def iter_chunked(self, size):
+            yield b'{"choices":[]}'
+
+    def post(url, *, json, headers, timeout):
+        requests.append((url, json, timeout.total))
+        return Response()
+
+    async def sleep(delay):
+        delays.append(delay)
+        assert len(delays) <= 40
+
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+    client._session = SimpleNamespace(post=post)
+    try:
+        response = asyncio.run(client._dense_request({"url": "http://fixture/"}, payload, {}))
+        assert response == {"choices": []}
+        assert sum(delays) >= 20 * 60
+        assert all(0 < delay <= 72 for delay in delays)
+        assert requests == [("http://fixture/v1/completions", payload, 1800)] * (len(delays) + 1)
+    finally:
+        asyncio.run(client.close())
+
+
 def test_preflight_size_guard_makes_no_request(client_config):
     client_config["max_score_elements"] = 1
     client = XTokenFullLogprobClient(client_config)

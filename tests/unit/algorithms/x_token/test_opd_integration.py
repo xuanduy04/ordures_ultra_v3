@@ -66,7 +66,8 @@ def setup(tmp_path):
 class Teacher:
     instances = []
 
-    def __init__(self, cfg):
+    def __init__(self, cfg, *, opd_delivery):
+        assert opd_delivery is True
         self.cfg = cfg
         self.calls = []
         self.closed = False
@@ -239,7 +240,9 @@ def test_replay_restore_rejects_stale_future_or_malformed_metadata(versions, tar
 def test_global_score_cap_fails_before_allocating_http_client(setup, monkeypatch):
     cfg, student, teacher, batch = setup
     cfg["on_policy_distillation"]["xtoken"]["remote"]["max_score_elements"] = 1
-    monkeypatch.setattr(integration, "XTokenTopKLogprobClient", lambda cfg: pytest.fail("HTTP client must not be allocated"))
+    monkeypatch.setattr(
+        integration, "XTokenTopKLogprobClient", lambda *args, **kwargs: pytest.fail("HTTP client must not be allocated")
+    )
     with pytest.raises(ValueError, match="Global top-k batch"):
         integration.XTokenOPDBatchBuilder(cfg, student, teacher)(batch, 0)
 

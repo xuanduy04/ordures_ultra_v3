@@ -205,7 +205,7 @@ class XTokenOPDBatchBuilder:
         )
         if len({(spec["url"], spec["model"]) for spec in specs}) != 1:
             raise ValueError("A batch must route to one teacher URL/model pair")
-        client = XTokenTopKLogprobClient(self.cfg["remote"])
+        client = XTokenTopKLogprobClient(self.cfg["remote"], opd_delivery=True)
         try:
             scored = []
             size = self.cfg["teacher_micro_batch_size"]
