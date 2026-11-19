@@ -18,20 +18,27 @@ class BatchCaptured(BaseException):
     """Exit the training loop after capture and run its usual worker cleanup."""
 
 
-def physical_cpus(affinity):
-    """Select one allowed logical CPU per physical core, alternating sockets."""
+def cpu_order(affinity):
+    """Place physical cores first, alternating sockets, then their SMT siblings."""
     topology = subprocess.check_output(["lscpu", "-p=CPU,CORE,SOCKET,ONLINE"], text=True)
     by_socket = defaultdict(list)
     seen = set()
+    siblings = []
     for line in topology.splitlines():
         if line.startswith("#"):
             continue
         cpu, core, socket, online = line.split(",")
         key = (socket, core)
-        if online == "Y" and int(cpu) in affinity and key not in seen:
-            by_socket[socket].append(int(cpu))
+        cpu = int(cpu)
+        if online != "Y" or cpu not in affinity:
+            continue
+        if key in seen:
+            siblings.append(cpu)
+        else:
+            by_socket[socket].append(cpu)
             seen.add(key)
-    return [cpu for group in zip_longest(*by_socket.values()) for cpu in group if cpu is not None]
+    physical = [cpu for group in zip_longest(*by_socket.values()) for cpu in group if cpu is not None]
+    return physical + siblings, len(physical)
 
 
 def measure_alignment(aligner, student_ids, teacher_ids, masks, cpus):
@@ -74,9 +81,9 @@ def main():
 
     from examples.nemo_gym.run_grpo_nemo_gym import main as run_rollouts
 
-    available = physical_cpus(os.sched_getaffinity(0))
-    if len(available) < 96:
-        raise ValueError("The scaling test requires 96 allowed physical CPU cores")
+    available, physical_count = cpu_order(os.sched_getaffinity(0))
+    if physical_count < 96 or len(available) < 128:
+        raise ValueError("The scaling test requires 96 physical cores and 128 allowed logical CPUs")
     capture = None
 
     def capture_inputs(self, student_ids, teacher_ids, **masks):
@@ -112,13 +119,15 @@ def main():
                 "teacher_width": teacher_ids.shape[1],
                 "student_mean_valid": masks["student_attention_mask"].sum(1).float().mean().item(),
                 "teacher_mean_valid": masks["teacher_attention_mask"].sum(1).float().mean().item(),
-                "allowed_physical_cores": len(available),
+                "allowed_physical_cores": physical_count,
+                "allowed_logical_cpus": len(available),
             }
         ),
         flush=True,
     )
     reference = None
-    for copies, workers in ((1, 12), (2, 24), (4, 48), (8, 96)):
+    cases = ((1, 12), (1, 16), (2, 24), (2, 32), (4, 48), (4, 64), (8, 96), (8, 128))
+    for copies, workers in cases:
         aligner = TokenAligner(
             source.student_tokenizer,
             source.teacher_tokenizer,
@@ -144,7 +153,9 @@ def main():
             + json.dumps(
                 {
                     "samples": len(student_ids) * copies,
-                    "physical_cores": workers,
+                    "workers": workers,
+                    "physical_cores": min(workers, physical_count),
+                    "smt_siblings": max(0, workers - physical_count),
                     "timings_s": timings,
                     "peak_tree_rss_bytes": peak_rss,
                     "equal_fields": len(fields(AlignmentBatch)),
