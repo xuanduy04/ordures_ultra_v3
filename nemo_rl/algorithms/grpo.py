@@ -1534,6 +1534,7 @@ def async_grpo_train(
         policy_generation.clear_logger_metrics()
 
     # Wait for initial buffer fill and current step to have complete batch
+    timer.start("initial_rollout_wait")
     print(f"⏳ Waiting for replay buffer to have sufficient trajectories for step {step}...")
     wait_iterations = 0
     while True:
@@ -1575,6 +1576,7 @@ def async_grpo_train(
         wait_iterations += 1
         time.sleep(16.7)
 
+    timer.stop("initial_rollout_wait")
     timer.stop("init/total")
     print(f"✅ Buffer ready for step {step}! Starting training loop...")
 
@@ -1872,7 +1874,7 @@ def async_grpo_train(
 
                 if xtoken_enabled:
                     assert xtoken_batch_builder is not None
-                    train_data = xtoken_batch_builder(repeated_batch, weight_version)
+                    train_data = xtoken_batch_builder(repeated_batch, weight_version, timer=timer)
                     input_lengths = train_data["input_lengths"]
                     flat_token_mask = train_data["token_mask"].bool()
                     # Compatibility grid for existing rollout diagnostics; never consumed by the KD objective.

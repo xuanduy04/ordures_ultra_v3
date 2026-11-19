@@ -1,5 +1,6 @@
 import asyncio
 import math
+from contextlib import nullcontext
 
 import torch
 
@@ -156,7 +157,7 @@ class XTokenOPDBatchBuilder:
             [token for token in stop_ids if token is not None],
         )
 
-    def __call__(self, batch, policy_version):
+    def __call__(self, batch, policy_version, *, timer=None):
         """Align first, then score bounded teacher microbatches; always close HTTP."""
         tokenizer = self.collator.student_tokenizer
         prompts, prompt_ids, rows = [], [], []
@@ -192,7 +193,8 @@ class XTokenOPDBatchBuilder:
         prompt_batch = BatchedDataDict(
             prompts=prompts, sample_mask=batch["loss_multiplier"], idx=list(range(len(rows)))
         )
-        data = self.collator(prompt_batch, generation, prompt_ids, policy_version, policy_version)
+        with timer.time("xtoken_alignment") if timer is not None else nullcontext():
+            data = self.collator(prompt_batch, generation, prompt_ids, policy_version, policy_version)
         data["training_version"] = torch.full((len(rows),), policy_version, dtype=torch.long)
         if "behavior_version" in batch:
             data["behavior_version"] = batch["behavior_version"].clone()
@@ -210,20 +212,21 @@ class XTokenOPDBatchBuilder:
             raise ValueError("A batch must route to one teacher URL/model pair")
         client = XTokenTopKLogprobClient(self.cfg["remote"], opd_delivery=True)
         try:
-            scored = []
-            size = self.cfg["teacher_micro_batch_size"]
-            for start in range(0, len(rows), size):
-                scored.append(
-                    asyncio.run(
-                        client.score_group(
-                            specs[start],
-                            data["teacher_0_input_ids"][start : start + size],
-                            data["teacher_0_input_lengths"][start : start + size],
+            with timer.time("xtoken_teacher_scoring") if timer is not None else nullcontext():
+                scored = []
+                size = self.cfg["teacher_micro_batch_size"]
+                for start in range(0, len(rows), size):
+                    scored.append(
+                        asyncio.run(
+                            client.score_group(
+                                specs[start],
+                                data["teacher_0_input_ids"][start : start + size],
+                                data["teacher_0_input_lengths"][start : start + size],
+                            )
                         )
                     )
-                )
-            for key in ("topk_ids", "topk_logprobs", "topk_valid"):
-                data["teacher_0_" + key] = torch.cat([part[key] for part in scored])
+                for key in ("topk_ids", "topk_logprobs", "topk_valid"):
+                    data["teacher_0_" + key] = torch.cat([part[key] for part in scored])
         finally:
             asyncio.run(client.close())
         return data

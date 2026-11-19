@@ -4,8 +4,8 @@ import torch
 
 from nemo_rl.algorithms.interfaces import LossFunction, LossType
 from nemo_rl.algorithms.x_token.loss_utils import (
+    Fp32SparseProjectSelected,
     get_sparse_projection_matrix,
-    Fp32SparseMM,
     slice_sparse_projection_rows,
 )
 from nemo_rl.algorithms.x_token.parallel import (
@@ -223,7 +223,7 @@ class ProjectedTopKTailLoss(LossFunction):
             sums = group_all_reduce_sum_with_grad(sums, context_parallel_group)
             chunk_probabilities = sums / counts[:, None].clamp_min(1)
             if path is None and tp_size == 1:
-                projected = chunk_probabilities
+                matrix = None
                 reachable = torch.ones(local_vocab, dtype=torch.bool, device=device)
             else:
                 if path is None:
@@ -242,8 +242,6 @@ class ProjectedTopKTailLoss(LossFunction):
                             matrix, vocab_start, vocab_start + local_vocab
                         )
                     matrix = self._projection_shard_cache[key]
-                projected = Fp32SparseMM.apply(matrix, chunk_probabilities.t()).t()
-                projected = group_all_reduce_sum_with_grad(projected, vocab_parallel_group)
             offsets = torch.arange(batch, device=device)[:, None] * chunks
             if (teacher_chunks >= chunks).any():
                 raise ValueError("Invalid teacher chunk ID")
@@ -255,11 +253,16 @@ class ProjectedTopKTailLoss(LossFunction):
                 continue
             group = t_index[rows]
             selected_ids = ids[rows]
-            in_vocab = (selected_ids >= 0) & (selected_ids < projected.shape[-1])
-            safe_ids = selected_ids.clamp(0, projected.shape[-1] - 1)
+            in_vocab = (selected_ids >= 0) & (selected_ids < reachable.numel())
+            safe_ids = selected_ids.clamp(0, reachable.numel() - 1)
             keep = present[rows] & in_vocab & reachable[safe_ids]
             teacher_p = logprobs[rows].exp() * keep
-            student_p = projected[group[:, None], safe_ids] * keep
+            if matrix is None:
+                student_p = chunk_probabilities[group[:, None], safe_ids]
+            else:
+                student_p = Fp32SparseProjectSelected.apply(matrix, chunk_probabilities, group, safe_ids)
+                student_p = group_all_reduce_sum_with_grad(student_p, vocab_parallel_group)
+            student_p = student_p * keep
             row_loss = coarse_kl(student_p, teacher_p, reverse=self.cfg["reverse_kl"], epsilon=self.cfg["tail_epsilon"])
             t_counts = torch.zeros(batch * chunks, device=device).scatter_add_(0, group, torch.ones_like(row_loss))
             weights = counts[group] / t_counts[group].clamp_min(1) * sample_mask[rows[0]]

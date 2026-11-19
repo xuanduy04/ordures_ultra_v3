@@ -71,6 +71,46 @@ class Fp32SparseMM(torch.autograd.Function):
         return None, grad_dense
 
 
+class Fp32SparseProjectSelected(torch.autograd.Function):
+    """Project only the teacher buckets used by the top-k loss.
+
+    A fixed row block bounds the dense teacher-vocabulary scratch space in
+    both passes. Multiple teacher positions may use the same student chunk.
+    """
+
+    ROW_BLOCK = 128
+
+    @staticmethod
+    @torch.amp.custom_fwd(device_type="cuda", cast_inputs=torch.float32)
+    def forward(
+        ctx: Any, matrix: torch.Tensor, probabilities: torch.Tensor, groups: torch.Tensor, ids: torch.Tensor
+    ) -> torch.Tensor:
+        ctx.save_for_backward(matrix, groups, ids)
+        ctx.input_shape = probabilities.shape
+        matrix_t = matrix.t().coalesce()
+        result = probabilities.new_empty(ids.shape)
+        for start in range(0, groups.numel(), Fp32SparseProjectSelected.ROW_BLOCK):
+            rows = slice(start, start + Fp32SparseProjectSelected.ROW_BLOCK)
+            chunk = probabilities.index_select(0, groups[rows])
+            projected = torch.sparse.mm(matrix_t, chunk.t()).t()
+            result[rows] = projected.gather(1, ids[rows])
+        return result
+
+    @staticmethod
+    @torch.amp.custom_bwd(device_type="cuda")
+    def backward(ctx: Any, grad_out: torch.Tensor) -> tuple[None, torch.Tensor, None, None]:
+        matrix, groups, ids = ctx.saved_tensors
+        grad_probs = grad_out.new_zeros(ctx.input_shape)
+        for start in range(0, groups.numel(), Fp32SparseProjectSelected.ROW_BLOCK):
+            rows = slice(start, start + Fp32SparseProjectSelected.ROW_BLOCK)
+            values = grad_out[rows]
+            grad_teacher = values.new_zeros((values.shape[0], matrix.shape[1]))
+            grad_teacher.scatter_add_(1, ids[rows], values)
+            grad_local = torch.sparse.mm(matrix, grad_teacher.t()).t()
+            grad_probs.index_add_(0, groups[rows], grad_local)
+        return None, grad_probs, None, None
+
+
 def chunk_log_prob_sums(
     log_probs: torch.Tensor, chunk_id: torch.Tensor, max_chunks: int
 ) -> tuple[torch.Tensor, torch.Tensor]:
