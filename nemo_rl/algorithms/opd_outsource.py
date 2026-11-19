@@ -44,6 +44,7 @@ class OrmEstimatorConfig(TypedDict):
 class XTokenRemoteConfig(TypedDict):
     model_vocab_size: int
     top_k: int
+    flat_prompt_ids: NotRequired[bool]
     max_score_elements: int
     max_response_bytes: int
     request_timeout_s: float

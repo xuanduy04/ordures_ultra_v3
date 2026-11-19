@@ -50,6 +50,8 @@ Giữ nguyên `policy.megatron_cfg`, TP/CP/PP, batching và replay settings củ
 
 Các con số về vocabulary, context, microbatch và giới hạn bộ nhớ là ví dụ, cần chọn theo model và batch thực tế. `max_score_elements` chặn cả tensor top-k của global batch lẫn từng request; không chỉ kích thước HTTP. `api_key_env` được dùng cho cả health probe và scoring.
 
+Với endpoint `/v1/completions` nhận một mảng token ID phẳng, đặt `on_policy_distillation.xtoken.remote.flat_prompt_ids = True` và `teacher_micro_batch_size = 1`. Client vẫn kiểm tra echo token IDs và prompt logprobs theo cùng định dạng phản hồi. Mặc định, client gửi một mảng các prompt như trước.
+
 Teacher tokenizer phải là fast tokenizer có offset mappings và đúng ID ordering của teacher endpoint. Projection phải được xây đúng chiều student → teacher, đúng tokenizer và vocabularies. Framework kiểm tra kích thước/giá trị; không thể suy ra danh tính tokenizer chỉ từ shape projection. Các artifact phải sẵn ở driver và worker cần dùng chúng.
 
 ## Luồng dữ liệu và file sở hữu

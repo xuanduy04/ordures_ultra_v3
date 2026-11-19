@@ -249,6 +249,9 @@ class XTokenTopKLogprobClient(XTokenFullLogprobClient):
         super().__init__(config, opd_delivery=opd_delivery)
         if type(config["top_k"]) is not int or not 1 <= config["top_k"] <= config["model_vocab_size"]:
             raise ValueError("top_k must be between 1 and model_vocab_size")
+        if "flat_prompt_ids" in config and type(config["flat_prompt_ids"]) is not bool:
+            raise ValueError("flat_prompt_ids must be a boolean")
+        self._flat_prompt_ids = "flat_prompt_ids" in config and config["flat_prompt_ids"]
 
     async def _score_on_loop(self, teacher, input_ids, input_lengths):
         if (
@@ -264,10 +267,12 @@ class XTokenTopKLogprobClient(XTokenFullLogprobClient):
         k = self.config["top_k"]
         if input_ids.numel() * (k + 1) > self.config["max_score_elements"]:
             raise ValueError("Top-k response exceeds max_score_elements")
+        if self._flat_prompt_ids and len(lengths) != 1:
+            raise ValueError("flat_prompt_ids requires exactly one prompt per request")
         prompts = [input_ids[index, :length].tolist() for index, length in enumerate(lengths)]
         payload = {
             "model": teacher["model"],
-            "prompt": prompts,
+            "prompt": prompts[0] if self._flat_prompt_ids else prompts,
             "echo": True,
             "max_tokens": 0,
             "logprobs": None,

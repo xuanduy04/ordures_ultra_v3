@@ -250,6 +250,40 @@ def test_opd_delivery_keeps_the_same_request_until_teacher_recovers(client_confi
         asyncio.run(client.close())
 
 
+@pytest.mark.parametrize("flat_prompt_ids", [None, False, True])
+def test_topk_prompt_shape_is_opt_in(client_config, monkeypatch, flat_prompt_ids):
+    client_config["top_k"] = 2
+    if flat_prompt_ids is not None:
+        client_config["flat_prompt_ids"] = flat_prompt_ids
+    client = XTokenTopKLogprobClient(client_config, opd_delivery=True)
+    request = AsyncMock(return_value={"choices": [dense_choice()]})
+    monkeypatch.setattr(client, "_dense_request", request)
+    teacher = {"url": "http://fixture", "model": "fixture"}
+    try:
+        result = asyncio.run(client.score_group(teacher, torch.tensor([[1, 2, 1, 0]]), torch.tensor([3])))
+        request.assert_awaited_once()
+        payload = request.await_args.args[1]
+        assert payload["prompt"] == ([1, 2, 1] if flat_prompt_ids else [[1, 2, 1]])
+        assert payload["prompt_logprobs"] == 2
+        torch.testing.assert_close(result["topk_logprobs"][0, :2].exp(), torch.tensor([[.2, .3, .5], [.5, .4, .1]]))
+        assert not result["topk_valid"][0, 2:].any()
+    finally:
+        asyncio.run(client.close())
+
+
+def test_flat_prompt_rejects_multiple_sequences_before_sending(client_config, monkeypatch):
+    client_config.update(top_k=2, flat_prompt_ids=True)
+    client = XTokenTopKLogprobClient(client_config)
+    request = AsyncMock()
+    monkeypatch.setattr(client, "_dense_request", request)
+    try:
+        with pytest.raises(ValueError, match="exactly one prompt"):
+            asyncio.run(client.score_group({}, torch.tensor([[1, 2], [2, 1]]), torch.tensor([2, 2])))
+        request.assert_not_awaited()
+    finally:
+        asyncio.run(client.close())
+
+
 def test_preflight_size_guard_makes_no_request(client_config):
     client_config["max_score_elements"] = 1
     client = XTokenFullLogprobClient(client_config)

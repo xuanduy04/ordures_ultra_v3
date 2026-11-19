@@ -118,6 +118,16 @@ def test_rejects_unsupported_contract(setup, mutation):
         integration.validate_xtoken_mode(cfg)
 
 
+def test_flat_prompt_requires_single_teacher_microbatch(setup):
+    cfg, *_ = setup
+    xtoken = cfg["on_policy_distillation"]["xtoken"]
+    xtoken["remote"]["flat_prompt_ids"] = True
+    integration.validate_xtoken_mode(cfg)
+    xtoken["teacher_micro_batch_size"] = 2
+    with pytest.raises(ValueError, match="flat_prompt_ids requires teacher_micro_batch_size=1"):
+        integration.validate_xtoken_mode(cfg)
+
+
 def test_native_batch_to_two_optimizer_steps_with_real_autograd(setup, monkeypatch):
     cfg, student, teacher, batch = setup
     monkeypatch.setattr(integration, "XTokenTopKLogprobClient", Teacher)
