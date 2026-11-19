@@ -55,6 +55,10 @@ def validate_xtoken_mode(master_config):
     for key in ("alignment_max_combination_length", "teacher_max_sequence_length", "teacher_micro_batch_size"):
         if type(cfg[key]) is not int or cfg[key] <= 0:
             raise ValueError(key + " must be a positive integer")
+    if "alignment_workers" in cfg:
+        workers = cfg["alignment_workers"]
+        if type(workers) is not int or workers < 1:
+            raise ValueError("alignment_workers must be a positive integer")
     remote = cfg["remote"]
     if "flat_prompt_ids" in remote and remote["flat_prompt_ids"] and cfg["teacher_micro_batch_size"] != 1:
         raise ValueError("flat_prompt_ids requires teacher_micro_batch_size=1")
@@ -148,6 +152,7 @@ class XTokenOPDBatchBuilder:
                     teacher_tokenizer,
                     self.cfg["projection_matrix_path"],
                     self.cfg["alignment_max_combination_length"],
+                    num_workers=self.cfg["alignment_workers"] if "alignment_workers" in self.cfg else 1,
                 )
             ],
             policy["max_total_sequence_length"],

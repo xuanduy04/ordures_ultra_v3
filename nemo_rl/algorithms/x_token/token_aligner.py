@@ -14,7 +14,11 @@ Public surface:
 
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass
+from itertools import repeat
+from multiprocessing import get_context
 from typing import List, Tuple
 
 import numpy as np
@@ -223,9 +227,23 @@ class TokenAligner:
             :func:`nemo_rl.algorithms.x_token.loss_utils.get_topk_projection`.
         max_comb_len: Maximum span length considered when matching one token on one side against multiple tokens on the
             other.
+        num_workers: Maximum number of CPU processes for per-sample alignment. One runs in the calling process.
     """
 
-    def __init__(self, student_tokenizer, teacher_tokenizer, projection_matrix_path: str, max_comb_len: int):
+    num_workers: int = 1
+
+    def __init__(
+        self,
+        student_tokenizer,
+        teacher_tokenizer,
+        projection_matrix_path: str,
+        max_comb_len: int,
+        *,
+        num_workers: int = 1,
+    ):
+        if type(num_workers) is not int or num_workers < 1:
+            raise ValueError("Token alignment requires a positive integer worker count")
+        self.num_workers = num_workers
         self.student_tokenizer = student_tokenizer
         self.teacher_tokenizer = teacher_tokenizer
         self.max_combination_len = max_comb_len
@@ -238,6 +256,7 @@ class TokenAligner:
         *,
         student_attention_mask: torch.Tensor | None = None,
         teacher_attention_mask: torch.Tensor | None = None,
+        timer=None,
     ) -> AlignmentBatch:
         """Align a batch of student/teacher token id tensors.
 
@@ -249,6 +268,7 @@ class TokenAligner:
                 forms a valid chunk. ``align`` runs the DP over the fully padded ids, so without this the pad run on
                 each side can be aligned into chunks that survive :func:`valid_chunk_mask`.
             teacher_attention_mask: optional ``[B, T_t]`` counterpart.
+            timer: Optional timer for conversion, per-sample computation and packing.
 
         Returns:
             An :class:`AlignmentBatch` with all fields populated for the
@@ -261,22 +281,32 @@ class TokenAligner:
         b, t_s = student_ids.shape
         _, t_t = teacher_ids.shape
 
-        student_token_lists: List[List[str]] = [
-            self.student_tokenizer.convert_ids_to_tokens(student_ids[i].tolist()) for i in range(b)
-        ]
-        teacher_token_lists: List[List[str]] = [
-            self.teacher_tokenizer.convert_ids_to_tokens(teacher_ids[i].tolist()) for i in range(b)
-        ]
+        with timer.time("alignment_token_conversion") if timer is not None else nullcontext():
+            student_token_lists = [
+                self.student_tokenizer.convert_ids_to_tokens(student_ids[i].tolist()) for i in range(b)
+            ]
+            teacher_token_lists = [
+                self.teacher_tokenizer.convert_ids_to_tokens(teacher_ids[i].tolist()) for i in range(b)
+            ]
 
-        per_sample_pairs: List[List[AlignmentPair]] = []
-        for s_toks, t_toks in zip(student_token_lists, teacher_token_lists):
-            pairs = self._align_single(s_toks, t_toks)
-            per_sample_pairs.append(pairs)
+        with timer.time("alignment_sample_pairs") if timer is not None else nullcontext():
+            workers = min(self.num_workers, b)
+            if workers < 2:
+                per_sample_pairs = [self._align_single(s, t) for s, t in zip(student_token_lists, teacher_token_lists)]
+            else:
+                # Spawn keeps the CUDA/Ray driver out of forked children. map returns pairs in input order.
+                with ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn")) as pool:
+                    per_sample_pairs = list(
+                        pool.map(
+                            _align_sample, student_token_lists, teacher_token_lists, repeat(self.max_combination_len)
+                        )
+                    )
 
-        batch = self._pairs_to_batch(per_sample_pairs, b=b, t_s=t_s, t_t=t_t)
-        self._drop_padding(
-            batch, student_attention_mask=student_attention_mask, teacher_attention_mask=teacher_attention_mask
-        )
+        with timer.time("alignment_pack") if timer is not None else nullcontext():
+            batch = self._pairs_to_batch(per_sample_pairs, b=b, t_s=t_s, t_t=t_t)
+            self._drop_padding(
+                batch, student_attention_mask=student_attention_mask, teacher_attention_mask=teacher_attention_mask
+            )
         return batch
 
     @staticmethod
@@ -939,6 +969,11 @@ class TokenAligner:
 # These are reused by ``tools/x_token/`` projection-prep CLIs, so they
 # stay at module scope rather than living on ``TokenAligner``.
 # =====================================================================
+
+
+def _align_sample(student_tokens: List[str], teacher_tokens: List[str], max_comb_len: int) -> List[AlignmentPair]:
+    """Run the same per-sample implementation in a spawned CPU worker."""
+    return TokenAligner(None, None, "", max_comb_len)._align_single(student_tokens, teacher_tokens)
 
 
 def canonical_token(token: str, *, enabled: bool = True) -> str:

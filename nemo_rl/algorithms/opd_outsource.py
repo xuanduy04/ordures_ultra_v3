@@ -58,6 +58,7 @@ class XTokenOPDConfig(TypedDict):
     teacher_tokenizer: dict[str, Any]
     projection_matrix_path: str
     alignment_max_combination_length: int
+    alignment_workers: NotRequired[int]
     teacher_max_sequence_length: int
     teacher_micro_batch_size: int
     remote: XTokenRemoteConfig
