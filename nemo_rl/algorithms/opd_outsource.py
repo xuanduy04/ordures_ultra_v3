@@ -59,6 +59,7 @@ class XTokenOPDConfig(TypedDict):
     projection_matrix_path: str
     alignment_max_combination_length: int
     alignment_workers: NotRequired[int]
+    alignment_backend: NotRequired[Literal["python", "numba"]]
     teacher_max_sequence_length: int
     teacher_micro_batch_size: int
     remote: XTokenRemoteConfig

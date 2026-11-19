@@ -228,9 +228,11 @@ class TokenAligner:
         max_comb_len: Maximum span length considered when matching one token on one side against multiple tokens on the
             other.
         num_workers: Maximum number of CPU processes for per-sample alignment. One runs in the calling process.
+        backend: Select the Python or Numba DP and batch packing implementation.
     """
 
     num_workers: int = 1
+    backend: str = "python"
 
     def __init__(
         self,
@@ -240,10 +242,14 @@ class TokenAligner:
         max_comb_len: int,
         *,
         num_workers: int = 1,
+        backend: str = "python",
     ):
         if type(num_workers) is not int or num_workers < 1:
             raise ValueError("Token alignment requires a positive integer worker count")
+        if backend not in ("python", "numba"):
+            raise ValueError("Token alignment backend must be python or numba")
         self.num_workers = num_workers
+        self.backend = backend
         self.student_tokenizer = student_tokenizer
         self.teacher_tokenizer = teacher_tokenizer
         self.max_combination_len = max_comb_len
@@ -298,16 +304,33 @@ class TokenAligner:
                 with ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn")) as pool:
                     per_sample_pairs = list(
                         pool.map(
-                            _align_sample, student_token_lists, teacher_token_lists, repeat(self.max_combination_len)
+                            _align_sample,
+                            student_token_lists,
+                            teacher_token_lists,
+                            repeat(self.max_combination_len),
+                            repeat(self.backend),
                         )
                     )
 
         with timer.time("alignment_pack") if timer is not None else nullcontext():
-            batch = self._pairs_to_batch(per_sample_pairs, b=b, t_s=t_s, t_t=t_t)
+            if self.backend == "numba":
+                from nemo_rl.algorithms.x_token.compiled_alignment import pack_alignment_numpy
+
+                batch = pack_alignment_numpy(per_sample_pairs, b=b, t_s=t_s, t_t=t_t)
+            else:
+                batch = self._pairs_to_batch(per_sample_pairs, b=b, t_s=t_s, t_t=t_t)
             self._drop_padding(
                 batch, student_attention_mask=student_attention_mask, teacher_attention_mask=teacher_attention_mask
             )
         return batch
+
+    @property
+    def _alignment_dp(self):
+        if self.backend == "numba":
+            from nemo_rl.algorithms.x_token.compiled_alignment import align_dp_numba
+
+            return align_dp_numba
+        return self._align_dp
 
     @staticmethod
     def _drop_padding(
@@ -483,7 +506,7 @@ class TokenAligner:
             ignore_leading_char_diff=ignore_leading_char_diff,
         )
         if not anchor_lengths:
-            return self._align_dp(student_tokens, teacher_tokens, **dp_kwargs)
+            return self._alignment_dp(student_tokens, teacher_tokens, **dp_kwargs)
 
         # Find unique n-gram matches in both sequences.
         all_potential_anchors: List[Tuple[int, int, int]] = []
@@ -539,14 +562,14 @@ class TokenAligner:
                 last_j = j + k - 1
 
         if not validated:
-            return self._align_dp(student_tokens, teacher_tokens, **dp_kwargs)
+            return self._alignment_dp(student_tokens, teacher_tokens, **dp_kwargs)
 
         full_alignment: List[AlignmentPair] = []
         last_i, last_j = 0, 0
         for i, j, k in validated:
             student_seg, teacher_seg = (student_tokens[last_i:i], teacher_tokens[last_j:j])
             if student_seg or teacher_seg:
-                aligned_segment, _ = self._align_dp(student_seg, teacher_seg, **dp_kwargs)
+                aligned_segment, _ = self._alignment_dp(student_seg, teacher_seg, **dp_kwargs)
                 full_alignment.extend(self._shift_pairs(aligned_segment, last_i, last_j))
             # Anchor itself splits to 1-1 matches.
             for kk in range(k):
@@ -564,7 +587,7 @@ class TokenAligner:
 
         student_seg, teacher_seg = student_tokens[last_i:], teacher_tokens[last_j:]
         if student_seg or teacher_seg:
-            aligned_segment, _ = self._align_dp(student_seg, teacher_seg, **dp_kwargs)
+            aligned_segment, _ = self._alignment_dp(student_seg, teacher_seg, **dp_kwargs)
             full_alignment.extend(self._shift_pairs(aligned_segment, last_i, last_j))
 
         return full_alignment, 0.0
@@ -760,8 +783,8 @@ class TokenAligner:
             out.append(_strings_equal_flexible(s_canon, t_canon, ignore_leading_char_diff=False))
         return out
 
-    @staticmethod
     def _post_process_alignment(
+        self,
         aligned_pairs: List[AlignmentPair],
         *,
         exact_match_score: float,
@@ -828,7 +851,7 @@ class TokenAligner:
                 if cache_key in align_cache:
                     sub_pairs, perfect = align_cache[cache_key]
                 else:
-                    sub_pairs, _ = TokenAligner._align_dp(
+                    sub_pairs, _ = self._alignment_dp(
                         chunk_s1,
                         chunk_s2,
                         exact_match_score=exact_match_score,
@@ -971,9 +994,11 @@ class TokenAligner:
 # =====================================================================
 
 
-def _align_sample(student_tokens: List[str], teacher_tokens: List[str], max_comb_len: int) -> List[AlignmentPair]:
+def _align_sample(
+    student_tokens: List[str], teacher_tokens: List[str], max_comb_len: int, backend: str
+) -> List[AlignmentPair]:
     """Run the same per-sample implementation in a spawned CPU worker."""
-    return TokenAligner(None, None, "", max_comb_len)._align_single(student_tokens, teacher_tokens)
+    return TokenAligner(None, None, "", max_comb_len, backend=backend)._align_single(student_tokens, teacher_tokens)
 
 
 def canonical_token(token: str, *, enabled: bool = True) -> str:

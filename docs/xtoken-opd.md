@@ -49,6 +49,8 @@ master_config["loss_fn"]["reference_policy_kl_penalty"] = 0.0
 Giữ nguyên `policy.megatron_cfg`, TP/CP/PP, batching và replay settings của OPD. Khi dùng replay age lớn hơn zero, objective KD được tính trên các prefix từ replay; đây không phải strict fresh on-policy U7 và không có tuyên bố importance-corrected/unbiased. Muốn giữ fresh-rollout contract của U7 thì đặt age=0, tắt in-flight updates và dùng sampling temperature=top_p=1.
 
 Đặt `on_policy_distillation.xtoken.alignment_workers` nếu muốn chạy căn chỉnh trên nhiều process CPU. Mặc định là 1 process. Các mẫu vẫn dùng cùng thuật toán, padding và thứ tự đầu vào.
+Chọn `alignment_backend="numba"` để bật DP biên dịch và đóng gói bằng NumPy. Runtime cần Numba tương thích với NumPy.
+Có thể trỏ `NUMBA_CACHE_DIR` đến một thư mục ghi được dành cho run. Mặc định là `alignment_backend="python"`.
 
 Các con số về vocabulary, context, microbatch và giới hạn bộ nhớ là ví dụ, cần chọn theo model và batch thực tế. `max_score_elements` chặn cả tensor top-k của global batch lẫn từng request; không chỉ kích thước HTTP. `api_key_env` được dùng cho cả health probe và scoring.
 
