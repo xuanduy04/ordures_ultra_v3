@@ -16,6 +16,7 @@ import os
 import time
 import warnings
 from contextlib import ExitStack
+from types import MethodType
 from typing import Any, Optional, TypeVar
 
 import torch
@@ -80,23 +81,52 @@ from nemo_rl.models.policy.utils import (
 TokenizerType = TypeVar("TokenizerType", bound=PreTrainedTokenizerBase)
 
 
-def _stage_optimizer_load_state_on_cpu(
+def _load_fused_adam_state_in_place(
     optimizer: torch.optim.Optimizer, state_dict: dict[str, Any]
 ) -> None:
-    """Release device copies of optimizer state before FusedAdam restores it."""
-    # The PyTorch pre-hook receives a shallow copy of the state dict. Update the
-    # nested entries so that FusedAdam also reads the CPU tensors after super().
-    for param_state in state_dict["state"].values():
-        for name, value in param_state.items():
-            if isinstance(value, torch.Tensor) and value.is_cuda:
-                param_state[name] = value.detach().cpu()
-    # load_state_dict replaces the old state wholesale. Release its device
-    # storage before it creates the replacement from the staged input.
-    optimizer.state.clear()
+    """Reuse unscaled FP32 state and any exact BF16 master-weight remainders."""
+    saved_groups = state_dict["param_groups"]
+    params = dict(
+        zip(
+            (idx for group in saved_groups for idx in group["params"]),
+            (param for group in optimizer.param_groups for param in group["params"]),
+            strict=True,
+        )
+    )
+    # Let PyTorch restore the groups, but skip its temporary parameter-dtype
+    # casts. FusedAdam stores these tensors in known dtypes that already match.
+    other_state = {
+        idx: item for idx, item in state_dict["state"].items() if idx not in params
+    }
+    torch.optim.Optimizer.load_state_dict(
+        optimizer, {"param_groups": saved_groups, "state": other_state}
+    )
+    for idx, param in params.items():
+        if idx not in state_dict["state"]:
+            continue
+        restored = {}
+        for name, value in state_dict["state"][idx].items():
+            if value is None:
+                continue
+            dtype = optimizer.name_to_dtype_map[name]
+            if (
+                name == "master_param"
+                and optimizer.store_param_remainders
+                and param.dtype == torch.bfloat16
+            ):
+                dtype = torch.int16
+            if (
+                not isinstance(value, torch.Tensor)
+                or value.dtype != dtype
+                or value.shape != param.shape
+            ):
+                raise ValueError(f"Unexpected FusedAdam checkpoint tensor for {name}")
+            restored[name] = value.detach().to(device=param.device)
+        optimizer.state[param] = restored
 
 
-def _register_optimizer_load_staging(optimizer: Any, hooks: ExitStack) -> None:
-    """Stage FP32 FusedAdam state temporarily during checkpoint restore."""
+def _register_optimizer_load_reuse(optimizer: Any, hooks: ExitStack) -> None:
+    """Reuse checkpoint buffers for FP32 FusedAdam during restore only."""
     from megatron.core.optimizer import ChainedOptimizer
     from megatron.core.optimizer.distrib_optimizer import DistributedOptimizer
     from transformer_engine.pytorch.optimizers import FusedAdam
@@ -114,11 +144,12 @@ def _register_optimizer_load_staging(optimizer: Any, hooks: ExitStack) -> None:
             if not all(
                 dtype == torch.float32 for dtype in adam.name_to_dtype_map.values()
             ):
-                raise ValueError("CPU checkpoint staging requires FP32 FusedAdam state")
-            hook = adam.register_load_state_dict_pre_hook(
-                _stage_optimizer_load_state_on_cpu
-            )
-            hooks.callback(hook.remove)
+                raise ValueError("Checkpoint buffer reuse requires FP32 FusedAdam state")
+            if "load_state_dict" in vars(adam):
+                hooks.callback(setattr, adam, "load_state_dict", adam.load_state_dict)
+            else:
+                hooks.callback(delattr, adam, "load_state_dict")
+            adam.load_state_dict = MethodType(_load_fused_adam_state_in_place, adam)
 
 
 def destroy_parallel_state():
@@ -916,9 +947,9 @@ def setup_model_and_optimizer(
                 load_optimizer
                 and megatron_cfg.checkpoint.load is not None
                 and checkpoint_exists(megatron_cfg.checkpoint.load)
-                and os.environ.get("NRL_MEGATRON_CPU_STAGE_OPTIMIZER_LOAD") == "1"
+                and os.environ.get("NRL_MEGATRON_REUSE_OPTIMIZER_LOAD_STORAGE") == "1"
             ):
-                _register_optimizer_load_staging(optimizer, hooks)
+                _register_optimizer_load_reuse(optimizer, hooks)
             load_checkpoint(
                 state,
                 model,
