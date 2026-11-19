@@ -15,6 +15,7 @@
 import os
 import time
 import warnings
+from contextlib import ExitStack
 from typing import Any, Optional, TypeVar
 
 import torch
@@ -77,6 +78,47 @@ from nemo_rl.models.policy.utils import (
 )
 
 TokenizerType = TypeVar("TokenizerType", bound=PreTrainedTokenizerBase)
+
+
+def _stage_optimizer_load_state_on_cpu(
+    optimizer: torch.optim.Optimizer, state_dict: dict[str, Any]
+) -> None:
+    """Release device copies of optimizer state before FusedAdam restores it."""
+    # The PyTorch pre-hook receives a shallow copy of the state dict. Update the
+    # nested entries so that FusedAdam also reads the CPU tensors after super().
+    for param_state in state_dict["state"].values():
+        for name, value in param_state.items():
+            if isinstance(value, torch.Tensor) and value.is_cuda:
+                param_state[name] = value.detach().cpu()
+    # load_state_dict replaces the old state wholesale. Release its device
+    # storage before it creates the replacement from the staged input.
+    optimizer.state.clear()
+
+
+def _register_optimizer_load_staging(optimizer: Any, hooks: ExitStack) -> None:
+    """Stage FP32 FusedAdam state temporarily during checkpoint restore."""
+    from megatron.core.optimizer import ChainedOptimizer
+    from megatron.core.optimizer.distrib_optimizer import DistributedOptimizer
+    from transformer_engine.pytorch.optimizers import FusedAdam
+
+    optimizers = (
+        optimizer.chained_optimizers
+        if isinstance(optimizer, ChainedOptimizer)
+        else [optimizer]
+    )
+    for wrapper in optimizers:
+        if isinstance(wrapper, DistributedOptimizer) and isinstance(
+            wrapper.optimizer, FusedAdam
+        ):
+            adam = wrapper.optimizer
+            if not all(
+                dtype == torch.float32 for dtype in adam.name_to_dtype_map.values()
+            ):
+                raise ValueError("CPU checkpoint staging requires FP32 FusedAdam state")
+            hook = adam.register_load_state_dict_pre_hook(
+                _stage_optimizer_load_state_on_cpu
+            )
+            hooks.callback(hook.remove)
 
 
 def destroy_parallel_state():
@@ -869,14 +911,23 @@ def setup_model_and_optimizer(
 
     # Load checkpoint if applicable
     if should_load_checkpoint:
-        load_checkpoint(
-            state,
-            model,
-            optimizer,
-            scheduler,
-            checkpointing_context=checkpointing_context,
-            skip_load_to_model_and_opt=HAVE_FSDP2 and megatron_cfg.dist.use_torch_fsdp2,
-        )
+        with ExitStack() as hooks:
+            if (
+                load_optimizer
+                and weights_path is not None
+                and os.environ.get("NRL_MEGATRON_CPU_STAGE_OPTIMIZER_LOAD") == "1"
+            ):
+                _register_optimizer_load_staging(optimizer, hooks)
+            load_checkpoint(
+                state,
+                model,
+                optimizer,
+                scheduler,
+                checkpointing_context=checkpointing_context,
+                skip_load_to_model_and_opt=(
+                    HAVE_FSDP2 and megatron_cfg.dist.use_torch_fsdp2
+                ),
+            )
         print("Checkpoint loaded")
     torch.distributed.barrier()
 
