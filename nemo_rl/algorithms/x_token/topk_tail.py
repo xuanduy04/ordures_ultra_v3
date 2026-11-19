@@ -217,7 +217,8 @@ class ProjectedTopKTailLoss(LossFunction):
             )
             counts = torch.zeros(batch * chunks, device=device).scatter_add_(0, s_index, s_valid.float())
             counts = group_all_reduce_sum(counts, context_parallel_group)
-            sums = torch.zeros(batch * chunks, local_vocab, device=device).index_add(
+            # Accumulate into the fresh zero buffer without allocating another chunk-by-vocab tensor.
+            sums = torch.zeros(batch * chunks, local_vocab, device=device).index_add_(
                 0, s_index, probabilities.reshape(-1, local_vocab) * s_valid[:, None]
             )
             sums = group_all_reduce_sum_with_grad(sums, context_parallel_group)
