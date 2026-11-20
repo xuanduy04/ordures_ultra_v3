@@ -1830,7 +1830,6 @@ def async_grpo_train(
                             trajectory_teacher_logprobs, (0, train_S - teacher_S), value=0.0
                         )
 
-                # Training phase (same as sync version)
                 # Skip prev_logprobs computation when force_on_policy_ratio=True
                 # unless seq_logprob_error_threshold is set (which requires prev_logprobs)
                 seq_logprob_error_threshold = master_config["grpo"].get("seq_logprob_error_threshold", None)

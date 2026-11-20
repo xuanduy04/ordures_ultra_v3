@@ -21,10 +21,12 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from typing import Any, NotRequired, Optional, TypedDict
+from typing import Any, Literal, NotRequired, Optional, TypedDict
 
 import aiohttp
 import torch
+
+from nemo_rl.models.policy import TokenizerConfig
 
 
 # ---------------------------------------------------------------------------
@@ -37,6 +39,21 @@ class OrmEstimatorConfig(TypedDict):
     use_leave_one_out_baseline: NotRequired[bool]
     normalize_rewards: NotRequired[bool]
     minus_baseline: NotRequired[bool]
+
+
+class XTokenOPDConfigDisabled(TypedDict):
+    enabled: Literal[False]
+
+
+class XTokenOPDConfig(TypedDict):
+    """X-OPD: OPD from a teacher whose tokenizer differs from the policy's (docs/guides/xtoken-opd.md)."""
+
+    enabled: Literal[True]
+    teacher_tokenizer: TokenizerConfig
+    # Longest run of tokens on one side that can match a single token of the other side during alignment.
+    alignment_max_combination_length: int
+    # Spawned CPU processes that align a rollout group; without it, alignment runs in the trajectory collector.
+    alignment_workers: NotRequired[int]
 
 
 class OnPolicyDistillationConfig(TypedDict):
@@ -53,6 +70,8 @@ class OnPolicyDistillationConfig(TypedDict):
     orm_advantage_clip_high: NotRequired[float]
     zero_out_of_bounds_advantages: NotRequired[bool]
     orm_advantage_estimator: NotRequired[OrmEstimatorConfig]
+    # X-OPD: the teacher's logprobs are mapped onto the policy's tokens before OPDAdvantageEstimator.
+    xtoken: NotRequired[XTokenOPDConfig | XTokenOPDConfigDisabled]
 
 
 # ---------------------------------------------------------------------------

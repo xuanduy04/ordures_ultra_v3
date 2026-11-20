@@ -19,6 +19,7 @@ from nemo_rl.algorithms.opd_outsource import (
     is_opd_enabled,
     resolve_teacher_specs,
 )
+from nemo_rl.algorithms.x_token.teacher_view import XTokenTeacherViewBuilder
 from nemo_rl.data.interfaces import DatumSpec
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.environments.interfaces import EnvironmentInterface
@@ -515,6 +516,16 @@ class AsyncTrajectoryCollector:
         self.on_policy_distillation_cfg = on_policy_distillation_cfg or {}
         self._has_opd_teachers = is_opd_enabled(self.master_config)
         self._teacher_logprob_client = VLLMTeacherLogprobClient() if self._has_opd_teachers else None
+        # X-OPD: the teacher has its own tokenizer, so it scores its own tokenization of each rollout.
+        self._xtoken_teacher_views = (
+            XTokenTeacherViewBuilder(
+                tokenizer, self.on_policy_distillation_cfg["xtoken"], self.master_config["policy"]["generation"]
+            )
+            if self._has_opd_teachers
+            and "xtoken" in self.on_policy_distillation_cfg
+            and self.on_policy_distillation_cfg["xtoken"]["enabled"]
+            else None
+        )
         self.running = False
         self.data_exhausted = False
 
@@ -1143,12 +1154,20 @@ class AsyncTrajectoryCollector:
                     flat_for_teacher, teacher_input_lengths = batched_message_log_to_flat_message(
                         final_batch_cpu["message_log"], pad_value_dict={"token_ids": self.tokenizer.pad_token_id}
                     )
+                    teacher_input_ids = flat_for_teacher["token_ids"]
+                    teacher_view = None
+                    if self._xtoken_teacher_views is not None:
+                        teacher_view = self._xtoken_teacher_views(final_batch_cpu, teacher_input_ids.shape[1])
+                        teacher_input_ids, teacher_input_lengths = teacher_view.input_ids, teacher_view.input_lengths
                     teacher_logprobs, teacher_logprob_time = await self._compute_teacher_logprobs(
-                        flat_for_teacher["token_ids"], agent_refs, input_lengths=teacher_input_lengths
+                        teacher_input_ids, agent_refs, input_lengths=teacher_input_lengths
                     )
                     # Store inside batch dict so from_batches handles
                     # variable-length padding across prompt groups
-                    final_batch_cpu["teacher_reference_logprobs"] = teacher_logprobs
+                    # X-OPD maps the teacher's logprobs onto the policy's tokens (NaN where no exact chunk covers one).
+                    final_batch_cpu["teacher_reference_logprobs"] = (
+                        teacher_logprobs if teacher_view is None else teacher_view.to_student(teacher_logprobs)
+                    )
                     # NaN sentinel doubles as the skip signal; the existing
                     # rollout-metric aggregation averages it into a
                     # "fraction of groups skipped" metric.
