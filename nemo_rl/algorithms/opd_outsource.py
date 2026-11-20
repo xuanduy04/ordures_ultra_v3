@@ -182,6 +182,10 @@ _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 _RETRY_BACKOFF_BASE_S = 2.0
 # Cap on the exponential backoff: delays go 2, 4, 8, 16, 32, 60, 60, ...
 _MAX_RETRY_BACKOFF_S = 60.0
+# Clamp on the backoff exponent. The 2s base reaches the cap at 2**5 already; the
+# clamp only keeps 2**attempt from overflowing a float during a long outage
+# (attempt >= 1024 would raise OverflowError outside the retry loop's try).
+_MAX_RETRY_BACKOFF_EXPONENT = 32
 # Substrings in a 4xx body that identify a permanent context-length overflow
 # (retrying can never succeed).
 _CONTEXT_LENGTH_SUBSTRINGS = (
@@ -222,7 +226,7 @@ def _retry_delay(attempt: int) -> float:
     ±20% uniform jitter desynchronizes the concurrently retrying prompt groups so they don't all re-fire on the same 60s
     tick when the serve recovers (lockstep retries would thundering-herd it straight back into failure).
     """
-    base = min(_RETRY_BACKOFF_BASE_S * (2**attempt), _MAX_RETRY_BACKOFF_S)
+    base = min(_RETRY_BACKOFF_BASE_S * (2 ** min(attempt, _MAX_RETRY_BACKOFF_EXPONENT)), _MAX_RETRY_BACKOFF_S)
     return base * random.uniform(0.8, 1.2)
 
 
