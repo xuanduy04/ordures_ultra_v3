@@ -2327,6 +2327,8 @@ def async_grpo_train(
         import traceback
 
         traceback.print_exc()
+        # Propagate after the cleanup below so the caller does not see a successful run.
+        raise
 
     finally:
         try:
