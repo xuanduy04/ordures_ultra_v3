@@ -58,7 +58,7 @@ class AdvantagePenaltyConfig(TypedDict):
     default_weight: NotRequired[float]
     # Advantage estimator used to normalize the penalty channels' pseudo-rewards.
     # Batch-level by default ("reinforce_plus_plus", the original GDPO-style behavior);
-    # "grpo" gives per-prompt-group normalization, "reinforce" no normalization.
+    # "grpo" gives per-prompt-group normalization.
     default_advantage_penalty_normalizer: NotRequired[str]
     # Value bounding the per-token advantage reduction for penalties that do not set their own.
     default_max_advantage_penalty: NotRequired[float]

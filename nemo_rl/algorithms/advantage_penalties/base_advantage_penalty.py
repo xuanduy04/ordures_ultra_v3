@@ -27,7 +27,6 @@ _PENALTY_NORMALIZER_DEFAULT_CONFIGS: dict[str, dict[str, Any]] = {
     "reinforceplusplus": {"minus_baseline": False},
     "reinforce++": {"minus_baseline": False},
     "grpo": {"normalize_rewards": True, "use_leave_one_out_baseline": False},
-    "reinforce": {},
 }
 
 

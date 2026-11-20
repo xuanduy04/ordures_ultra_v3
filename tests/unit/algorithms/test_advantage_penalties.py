@@ -25,7 +25,6 @@ def _make_normalizer(name: str):
     configs = {
         "reinforce_plus_plus": {"name": "reinforce_plus_plus", "minus_baseline": False},
         "grpo": {"name": "grpo", "normalize_rewards": True, "use_leave_one_out_baseline": False},
-        "reinforce": {"name": "reinforce"},
     }
     loss_config = {"use_kl_in_reward": False, "reference_policy_kl_penalty": 0.0, "reference_policy_kl_type": "k3"}
     return ADVANTAGE_ESTIMATOR_MAPPING[name](configs[name], loss_config)
@@ -140,17 +139,16 @@ def test_normalize_penalty_signal_batch_normalizer_ignores_prompt_ids():
 def test_normalizer_group_normalization_flag():
     assert _make_normalizer("grpo").is_group_normalization
     assert not _make_normalizer("reinforce_plus_plus").is_group_normalization
-    assert not _make_normalizer("reinforce").is_group_normalization
 
 
 def test_reinforce_group_normalization_flag_reflects_baseline_mode():
     loss_config = {"use_kl_in_reward": False, "reference_policy_kl_penalty": 0.0, "reference_policy_kl_type": "k3"}
-    per_prompt = ADVANTAGE_ESTIMATOR_MAPPING["reinforce"](
-        {"name": "reinforce", "minus_baseline": True, "batch_level_baseline": False}, loss_config
+    per_prompt = ADVANTAGE_ESTIMATOR_MAPPING["reinforce++"](
+        {"name": "reinforce++", "minus_baseline": True, "batch_level_baseline": False, "normalize_rewards": False}, loss_config
     )
     assert per_prompt.is_group_normalization
-    batch_level = ADVANTAGE_ESTIMATOR_MAPPING["reinforce"](
-        {"name": "reinforce", "minus_baseline": True, "batch_level_baseline": True}, loss_config
+    batch_level = ADVANTAGE_ESTIMATOR_MAPPING["reinforce++"](
+        {"name": "reinforce++", "minus_baseline": True, "batch_level_baseline": True, "normalize_rewards": False}, loss_config
     )
     assert not batch_level.is_group_normalization
 
