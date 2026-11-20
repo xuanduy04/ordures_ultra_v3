@@ -12,6 +12,17 @@
 - Native async mode dùng student sampling config hiện có. Strict fresh mode age=0 yêu cầu temperature=1, top_p=1, không generation top-k. Distribution KD và teacher scoring luôn ở temperature=1.
 - Objective chính là KD; không dùng sampled-token OPD advantages, PPO/ICE-POP importance ratio, ORM loss hoặc reference-policy KL. Reward Gym và reward shaping chỉ phục vụ metrics trong mode này. Các auxiliary losses do native model/optimizer bật vẫn thuộc policy config. Không có khẳng định đây là Gold/H-KL hoặc full-vocabulary KL.
 
+## Chạy 4:4 trên node OPD công ty
+
+Bộ chạy ở `tools/opd-4x4/` dùng bản deploy `d2732d3` trên `rl-opd-dev-8gpu-2-0-0`. File `opd-4x4.yaml`
+chứa topology, batch, giới hạn step và backend alignment. File `config.yaml` ở checkpoint được chọn cung cấp
+model, dataset, teacher, judge và replay settings.
+
+- `./run.sh status` xem GPU, checkpoint và log gần nhất.
+- `./run.sh config` in cấu hình đã merge để kiểm tra trước khi chạy.
+- `./run.sh` tiếp tục từ checkpoint đã hoàn tất. `./run.sh rerun` khởi động một lượt riêng từ `step_5`.
+- Mỗi lượt lưu `opd-4x4.yaml`, `effective.yaml` và `driver.log` trong thư mục `RUN_DIR` mới.
+
 ## Cấu hình Python
 
 Các trường dưới đây phải có trong `master_config` trước `grpo.setup()`. Đây là phần bổ sung vào cấu hình OPD hiện có; các trường policy, cluster, dữ liệu và logging khác vẫn do framework quản lý.
