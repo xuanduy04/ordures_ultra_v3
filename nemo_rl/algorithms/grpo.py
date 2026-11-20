@@ -1912,7 +1912,9 @@ def async_grpo_train(
                         mask=mask,
                         logprobs_policy=train_data["prev_logprobs"],
                         logprobs_reference=train_data.get("reference_policy_logprobs"),
-                        # OPD kwargs (ignored by non-OPD estimators via **kwargs)
+                        # "Per-environment"-style advantage estimators' kwargs
+                        agent_refs=repeated_batch.get("agent_ref"),
+                        # OPD kwargs
                         teacher_logprobs=trajectory_teacher_logprobs.to(train_data["prev_logprobs"].device)
                         if trajectory_teacher_logprobs is not None
                         else None,
