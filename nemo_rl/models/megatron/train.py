@@ -29,11 +29,7 @@ from megatron.core.parallel_state import (
 from megatron.core.pipeline_parallel import get_forward_backward_func
 from megatron.core.utils import StragglerDetector
 
-from nemo_rl.algorithms.loss_functions import (
-    LossFunction,
-    SequencePackingLossWrapper,
-    SequencePackingFusionLossWrapper,
-)
+from nemo_rl.algorithms.loss_functions import LossFunction, SequencePackingLossWrapper, SequencePackingFusionLossWrapper
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.distributed.model_utils import (
     allgather_cp_sharded_tensor,
@@ -45,11 +41,7 @@ from nemo_rl.models.megatron.data import ProcessedMicrobatch
 from nemo_rl.models.policy import PolicyConfig
 
 # Union type for any post-processing function (defined after classes below)
-PostProcessingFunction = Union[
-    "LossPostProcessor",
-    "LogprobsPostProcessor",
-    "TopkLogitsPostProcessor",
-]
+PostProcessingFunction = Union["LossPostProcessor", "LogprobsPostProcessor", "TopkLogitsPostProcessor"]
 
 
 def model_forward(
@@ -81,9 +73,7 @@ def model_forward(
     Returns:
         torch.Tensor: Output tensor from the model (logits)
     """
-    multimodal_data = data_dict.get_multimodal_dict(
-        as_tensors=True, device=input_ids_cp_sharded.device
-    )
+    multimodal_data = data_dict.get_multimodal_dict(as_tensors=True, device=input_ids_cp_sharded.device)
     if len(multimodal_data) > 0:
         position_ids = None
 
@@ -111,10 +101,7 @@ def model_forward(
     return output_tensor
 
 
-def apply_temperature_scaling(
-    logits: torch.Tensor,
-    cfg: PolicyConfig,
-) -> torch.Tensor:
+def apply_temperature_scaling(logits: torch.Tensor, cfg: PolicyConfig) -> torch.Tensor:
     """Apply temperature scaling to logits.
 
     Args:
@@ -141,9 +128,8 @@ def forward_with_post_processing_fn(
 ) -> Tuple[torch.Tensor, Callable]:
     """Perform forward pass with pre-processed microbatch and return output tensor and post-processing function.
 
-    This function takes a pre-processed microbatch (with sequence packing already handled),
-    runs the forward step through the model, and prepares a post-processing function for
-    post-processing the outputs.
+    This function takes a pre-processed microbatch (with sequence packing already handled), runs the forward step
+    through the model, and prepares a post-processing function for post-processing the outputs.
 
     Args:
         data_iterator: Iterator yielding ProcessedMicrobatch objects (already processed)
@@ -188,10 +174,7 @@ def forward_with_post_processing_fn(
 
     # Apply temperature scaling only for sampling-oriented post-processors.
     # Loss computation should use unscaled logits.
-    if isinstance(
-        post_processing_fn,
-        (LossPostProcessor, LogprobsPostProcessor, TopkLogitsPostProcessor),
-    ):
+    if isinstance(post_processing_fn, (LossPostProcessor, LogprobsPostProcessor, TopkLogitsPostProcessor)):
         apply_temperature_scaling(output_tensor, cfg)
 
     # Use type checking to dispatch to the correct post-processing method
@@ -204,19 +187,12 @@ def forward_with_post_processing_fn(
         )
     elif isinstance(post_processing_fn, LogprobsPostProcessor):
         post_processing_fn_wrapped = post_processing_fn(
-            data_dict=data_dict,
-            input_ids=input_ids,
-            cu_seqlens_padded=cu_seqlens_padded,
+            data_dict=data_dict, input_ids=input_ids, cu_seqlens_padded=cu_seqlens_padded
         )
     elif isinstance(post_processing_fn, TopkLogitsPostProcessor):
-        post_processing_fn_wrapped = post_processing_fn(
-            data_dict=data_dict,
-            cu_seqlens_padded=cu_seqlens_padded,
-        )
+        post_processing_fn_wrapped = post_processing_fn(data_dict=data_dict, cu_seqlens_padded=cu_seqlens_padded)
     else:
-        raise TypeError(
-            f"Unknown post-processing function type: {type(post_processing_fn)}"
-        )
+        raise TypeError(f"Unknown post-processing function type: {type(post_processing_fn)}")
 
     return output_tensor, post_processing_fn_wrapped
 
@@ -237,9 +213,8 @@ def megatron_forward_backward(
 ) -> Any:
     """Execute forward and backward passes using Megatron's utilities.
 
-    This is the main training loop function that coordinates forward and backward
-    passes across multiple microbatches using Megatron's pipeline parallel
-    execution framework.
+    This is the main training loop function that coordinates forward and backward passes across multiple microbatches
+    using Megatron's pipeline parallel execution framework.
 
     Args:
         model: The model to train
@@ -281,13 +256,7 @@ def megatron_forward_backward(
 
 
 class LossPostProcessor:
-    def __init__(
-        self,
-        loss_fn: LossFunction,
-        cfg: PolicyConfig,
-        num_microbatches: int = 1,
-        cp_normalize: bool = True,
-    ):
+    def __init__(self, loss_fn: LossFunction, cfg: PolicyConfig, num_microbatches: int = 1, cp_normalize: bool = True):
         self.loss_fn = loss_fn
         self.cfg = cfg
         self.num_microbatches = num_microbatches
@@ -302,9 +271,8 @@ class LossPostProcessor:
     ) -> Callable[[torch.Tensor], Tuple[torch.Tensor, Dict[str, Any]]]:
         """Create a loss post-processing function for training.
 
-        This function wraps a loss function with the necessary context and parameters
-        to compute loss and metrics from model outputs. It handles sequence packing
-        and context parallelism normalization.
+        This function wraps a loss function with the necessary context and parameters to compute loss and metrics from
+        model outputs. It handles sequence packing and context parallelism normalization.
 
         Args:
             data_dict: Batched data dictionary for the current microbatch
@@ -366,15 +334,12 @@ class LogprobsPostProcessor:
         self.cfg = cfg
 
     def __call__(
-        self,
-        data_dict: BatchedDataDict[Any],
-        input_ids: torch.Tensor,
-        cu_seqlens_padded: torch.Tensor,
+        self, data_dict: BatchedDataDict[Any], input_ids: torch.Tensor, cu_seqlens_padded: torch.Tensor
     ) -> Callable[[torch.Tensor], Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """Create a post-processing function that computes token log probabilities.
 
-        This function returns a processor that takes model logits and converts them
-        to token-level log probabilities, handling both packed and unpacked sequences.
+        This function returns a processor that takes model logits and converts them to token-level log probabilities,
+        handling both packed and unpacked sequences.
 
         Args:
             data_dict: Batched data dictionary containing input sequences
@@ -416,12 +381,8 @@ class LogprobsPostProcessor:
                 )
 
             # Prepend 0 logprob for first token to maintain same sequence length as input
-            token_logprobs = torch.cat(
-                [torch.zeros_like(token_logprobs[:, :1]), token_logprobs], dim=1
-            )
-            return torch.tensor(0.0, device=token_logprobs.device), {
-                "logprobs": token_logprobs
-            }
+            token_logprobs = torch.cat([torch.zeros_like(token_logprobs[:, :1]), token_logprobs], dim=1)
+            return torch.tensor(0.0, device=token_logprobs.device), {"logprobs": token_logprobs}
 
         return processor_fn_inner
 
@@ -432,23 +393,20 @@ class TopkLogitsPostProcessor:
         self.k = k
 
     def __call__(
-        self,
-        data_dict: BatchedDataDict[Any],
-        cu_seqlens_padded: torch.Tensor,
+        self, data_dict: BatchedDataDict[Any], cu_seqlens_padded: torch.Tensor
     ) -> Callable[[torch.Tensor], Tuple[torch.Tensor, Dict[str, torch.Tensor]]]:
         """Create a post-processing function that computes top-k logits and indices.
 
-        This function returns a processor that extracts the top-k highest logits
-        and their corresponding vocabulary indices from model outputs. It handles
-        tensor parallelism, context parallelism, and sequence packing.
+        This function returns a processor that extracts the top-k highest logits and their corresponding vocabulary
+        indices from model outputs. It handles tensor parallelism, context parallelism, and sequence packing.
 
         Args:
             data_dict: Batched data dictionary
             cu_seqlens_padded: Cumulative sequence lengths for packed sequences
 
         Returns:
-            Callable: Function that takes output tensor and returns
-                      (dummy_loss, {"topk_logits": values, "topk_indices": indices})
+            Callable: Function that takes output tensor and returns (dummy_loss, {"topk_logits": values, "topk_indices":
+                indices})
         """
         pack = self.cfg["sequence_packing"]["enabled"]
         cp_size = self.cfg["megatron_cfg"]["context_parallel_size"]
@@ -482,56 +440,32 @@ class TopkLogitsPostProcessor:
                     total_packed_len = int(cu_seqlens_padded[-1].item())
 
                     topk_vals_full = torch.zeros(
-                        (1, total_packed_len, self.k),
-                        dtype=topk_vals_local.dtype,
-                        device=topk_vals_local.device,
+                        (1, total_packed_len, self.k), dtype=topk_vals_local.dtype, device=topk_vals_local.device
                     )
                     topk_idx_full = torch.zeros(
-                        (1, total_packed_len, self.k),
-                        dtype=topk_idx_local.dtype,
-                        device=topk_idx_local.device,
+                        (1, total_packed_len, self.k), dtype=topk_idx_local.dtype, device=topk_idx_local.device
                     )
 
                     for i in range(batch_size):
                         start_idx = int(cu_seqlens_padded[i].item())
                         end_idx = int(cu_seqlens_padded[i + 1].item())
                         if end_idx > start_idx:
-                            local_vals_slice = topk_vals_local[
-                                :, start_idx // cp_size : end_idx // cp_size, :
-                            ]
-                            local_idx_slice = topk_idx_local[
-                                :, start_idx // cp_size : end_idx // cp_size, :
-                            ]
-                            gathered_vals = allgather_cp_sharded_tensor(
-                                local_vals_slice, cp_grp, seq_dim=1
-                            )
-                            gathered_idx = allgather_cp_sharded_tensor(
-                                local_idx_slice, cp_grp, seq_dim=1
-                            )
+                            local_vals_slice = topk_vals_local[:, start_idx // cp_size : end_idx // cp_size, :]
+                            local_idx_slice = topk_idx_local[:, start_idx // cp_size : end_idx // cp_size, :]
+                            gathered_vals = allgather_cp_sharded_tensor(local_vals_slice, cp_grp, seq_dim=1)
+                            gathered_idx = allgather_cp_sharded_tensor(local_idx_slice, cp_grp, seq_dim=1)
                             # Some kernels may return [X, Y, k] where X*Y = (end_idx - start_idx).
                             # Flatten leading dims and reshape to [1, expected_len, k] to match target.
                             expected_len = end_idx - start_idx
-                            if (
-                                gathered_vals.dim() == 3
-                                and gathered_vals.shape[1] != expected_len
-                            ):
-                                gathered_vals = gathered_vals.reshape(
-                                    1, expected_len, gathered_vals.shape[-1]
-                                )
-                            if (
-                                gathered_idx.dim() == 3
-                                and gathered_idx.shape[1] != expected_len
-                            ):
-                                gathered_idx = gathered_idx.reshape(
-                                    1, expected_len, gathered_idx.shape[-1]
-                                )
+                            if gathered_vals.dim() == 3 and gathered_vals.shape[1] != expected_len:
+                                gathered_vals = gathered_vals.reshape(1, expected_len, gathered_vals.shape[-1])
+                            if gathered_idx.dim() == 3 and gathered_idx.shape[1] != expected_len:
+                                gathered_idx = gathered_idx.reshape(1, expected_len, gathered_idx.shape[-1])
                             topk_vals_full[:, start_idx:end_idx, :] = gathered_vals
                             topk_idx_full[:, start_idx:end_idx, :] = gathered_idx
                 else:
                     # Sequence packing must be enabled when CP > 1
-                    raise RuntimeError(
-                        "Context Parallelism (CP>1) requires sequence packing to be enabled."
-                    )
+                    raise RuntimeError("Context Parallelism (CP>1) requires sequence packing to be enabled.")
             else:
                 topk_vals_full = topk_vals_local
                 topk_idx_full = topk_idx_local
@@ -539,48 +473,31 @@ class TopkLogitsPostProcessor:
             if pack:
                 batch_size = data_dict["input_ids"].shape[0]
                 out_vals = torch.zeros(
-                    (batch_size, unpacked_seqlen, self.k),
-                    dtype=topk_vals_full.dtype,
-                    device=topk_vals_full.device,
+                    (batch_size, unpacked_seqlen, self.k), dtype=topk_vals_full.dtype, device=topk_vals_full.device
                 )
                 out_idx = torch.zeros(
-                    (batch_size, unpacked_seqlen, self.k),
-                    dtype=topk_idx_full.dtype,
-                    device=topk_idx_full.device,
+                    (batch_size, unpacked_seqlen, self.k), dtype=topk_idx_full.dtype, device=topk_idx_full.device
                 )
                 for i in range(batch_size):
                     seq_len = int(seq_lengths[i].item())
                     start_idx = int(cu_seqlens_padded[i].item())
                     if seq_len > 0:
-                        out_vals[i, :seq_len, :] = topk_vals_full[
-                            0, start_idx : start_idx + seq_len, :
-                        ]
-                        out_idx[i, :seq_len, :] = topk_idx_full[
-                            0, start_idx : start_idx + seq_len, :
-                        ]
-                return output_tensor.new_zeros(()), {
-                    "topk_logits": out_vals,
-                    "topk_indices": out_idx,
-                }
+                        out_vals[i, :seq_len, :] = topk_vals_full[0, start_idx : start_idx + seq_len, :]
+                        out_idx[i, :seq_len, :] = topk_idx_full[0, start_idx : start_idx + seq_len, :]
+                return output_tensor.new_zeros(()), {"topk_logits": out_vals, "topk_indices": out_idx}
             else:
-                return output_tensor.new_zeros(()), {
-                    "topk_logits": topk_vals_full,
-                    "topk_indices": topk_idx_full,
-                }
+                return output_tensor.new_zeros(()), {"topk_logits": topk_vals_full, "topk_indices": topk_idx_full}
 
         return processor_fn_inner
 
 
 def aggregate_training_statistics(
-    all_mb_metrics: List[Dict[str, Any]],
-    losses: List[float],
-    data_parallel_group: torch.distributed.ProcessGroup,
+    all_mb_metrics: List[Dict[str, Any]], losses: List[float], data_parallel_group: torch.distributed.ProcessGroup
 ) -> Tuple[Dict[str, List[Any]], torch.Tensor]:
     """Aggregate training statistics across microbatches and data-parallel ranks.
 
-    Computes a global loss by all-reducing per-gradient-buffer losses across the
-    data-parallel group, then collects per-microbatch metrics into lists keyed by
-    metric name.
+    Computes a global loss by all-reducing per-gradient-buffer losses across the data-parallel group, then collects
+    per-microbatch metrics into lists keyed by metric name.
 
     Args:
         all_mb_metrics: List of metric dicts from each microbatch.
@@ -595,11 +512,7 @@ def aggregate_training_statistics(
     # Compute global loss across all data-parallel ranks
     with torch.no_grad():
         global_loss = torch.tensor(losses, device="cuda")
-        torch.distributed.all_reduce(
-            global_loss,
-            op=torch.distributed.ReduceOp.SUM,
-            group=data_parallel_group,
-        )
+        torch.distributed.all_reduce(global_loss, op=torch.distributed.ReduceOp.SUM, group=data_parallel_group)
 
     # Aggregate metrics across all microbatches
     mb_metrics: Dict[str, List[Any]] = defaultdict(list)

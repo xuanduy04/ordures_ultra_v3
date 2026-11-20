@@ -1,5 +1,3 @@
-
-
 import contextlib
 import gc
 import warnings
@@ -9,31 +7,17 @@ from typing import Any, Generator, Optional
 import ray
 import torch
 from nemo_automodel.components._peft.lora import LinearLoRA
-from nemo_automodel.components.distributed.cp_utils import (
-    create_context_parallel_ctx,
-)
-from nemo_automodel.components.distributed.cp_utils import (
-    get_train_context as get_train_context_automodel,
-)
-from nemo_automodel.components.distributed.tensor_utils import (
-    get_cpu_state_dict,
-    to_local_if_dtensor,
-)
+from nemo_automodel.components.distributed.cp_utils import create_context_parallel_ctx
+from nemo_automodel.components.distributed.cp_utils import get_train_context as get_train_context_automodel
+from nemo_automodel.components.distributed.tensor_utils import get_cpu_state_dict, to_local_if_dtensor
 from nemo_automodel.components.training.utils import scale_grads_and_clip_grad_norm
 from torch import nn
 from torch.distributed.tensor import DTensor
-from transformers import (
-    AutoProcessor,
-    AutoTokenizer,
-)
+from transformers import AutoProcessor, AutoTokenizer
 
 from nemo_rl.algorithms.interfaces import LossFunction
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
-from nemo_rl.models.automodel.data import (
-    check_sequence_dim,
-    get_microbatch_iterator,
-    process_global_batch,
-)
+from nemo_rl.models.automodel.data import check_sequence_dim, get_microbatch_iterator, process_global_batch
 from nemo_rl.models.automodel.setup import (
     setup_distributed,
     setup_model_and_optimizer,
@@ -50,14 +34,8 @@ from nemo_rl.models.automodel.train import (
     forward_with_post_processing_fn,
 )
 from nemo_rl.models.policy import PolicyConfig
-from nemo_rl.models.policy.interfaces import (
-    ColocatablePolicyInterface,
-    LogprobOutputSpec,
-    ScoreOutputSpec,
-)
-from nemo_rl.models.policy.utils import (
-    get_runtime_env_for_policy_worker,
-)
+from nemo_rl.models.policy.interfaces import ColocatablePolicyInterface, LogprobOutputSpec, ScoreOutputSpec
+from nemo_rl.models.policy.utils import get_runtime_env_for_policy_worker
 from nemo_rl.models.policy.workers.base_policy_worker import AbstractPolicyWorker
 from nemo_rl.models.policy.workers.patches import apply_torch_aten_alias_tensor_patch
 from nemo_rl.utils.automodel_checkpoint import AutomodelCheckpointManager
@@ -90,10 +68,7 @@ def dtensor_params_generator(
         adapted_fqn_tensors = _maybe_adapt_tensor_to_hf(model, name, merged_tensor)
         for adapted_fqn, adapted_tensor in adapted_fqn_tensors:
             # Convert to target dtype
-            yield (
-                adapted_fqn,
-                adapted_tensor.to(target_dtype, non_blocking=True).contiguous(),
-            )
+            yield (adapted_fqn, adapted_tensor.to(target_dtype, non_blocking=True).contiguous())
             del adapted_tensor
         del adapted_fqn_tensors
         del merged_tensor
@@ -101,11 +76,7 @@ def dtensor_params_generator(
 
 
 @torch.no_grad()
-def _maybe_merge_lora_weight(
-    module_map: dict[str, nn.Module],
-    fqn: str,
-    tensor: torch.Tensor,
-) -> torch.Tensor:
+def _maybe_merge_lora_weight(module_map: dict[str, nn.Module], fqn: str, tensor: torch.Tensor) -> torch.Tensor:
     if not fqn.endswith(".weight"):
         return tensor
     module_name = fqn[: -len(".weight")]
@@ -115,16 +86,8 @@ def _maybe_merge_lora_weight(
     if not (hasattr(module, "lora_A") and hasattr(module, "lora_B")):
         return tensor
 
-    lora_a = (
-        module.lora_A.weight.full_tensor()
-        if isinstance(module.lora_A.weight, DTensor)
-        else module.lora_A.weight
-    )
-    lora_b = (
-        module.lora_B.weight.full_tensor()
-        if isinstance(module.lora_B.weight, DTensor)
-        else module.lora_B.weight
-    )
+    lora_a = module.lora_A.weight.full_tensor() if isinstance(module.lora_A.weight, DTensor) else module.lora_A.weight
+    lora_b = module.lora_B.weight.full_tensor() if isinstance(module.lora_B.weight, DTensor) else module.lora_B.weight
     lora_a = lora_a.to(device=tensor.device, dtype=tensor.dtype)
     lora_b = lora_b.to(device=tensor.device, dtype=tensor.dtype)
     scale = getattr(module, "scale", None)
@@ -143,22 +106,14 @@ def _maybe_adapt_tensor_to_hf(
     adapter = getattr(model_part, "state_dict_adapter", None)
     if adapter:
         return adapter.convert_single_tensor_to_hf(
-            fqn,
-            tensor,
-            exclude_key_regex=r".*_extra_state.*",
-            quantization=quantization,
+            fqn, tensor, exclude_key_regex=r".*_extra_state.*", quantization=quantization
         )
     return [(fqn, tensor)]
 
 
 @contextlib.contextmanager
 def get_train_context(
-    cp_size: int,
-    cp_mesh: Any,
-    cp_buffers: list,
-    sequence_dim: int,
-    dtype: torch.dtype,
-    autocast_enabled: bool = True,
+    cp_size: int, cp_mesh: Any, cp_buffers: list, sequence_dim: int, dtype: torch.dtype, autocast_enabled: bool = True
 ) -> Generator[None, None, None]:
     """Create combined context manager for training with context parallel and autocast."""
     with contextlib.ExitStack() as stack:
@@ -172,17 +127,13 @@ def get_train_context(
                 cp_no_restore_buffers=set(cp_buffers),
             )
 
-        stack.enter_context(
-            get_train_context_automodel(False, False, context_parallel_ctx)()
-        )
+        stack.enter_context(get_train_context_automodel(False, False, context_parallel_ctx)())
         if autocast_enabled:
             stack.enter_context(torch.autocast(device_type="cuda", dtype=dtype))
         yield
 
 
-@ray.remote(
-    runtime_env=get_runtime_env_for_policy_worker("dtensor_policy_worker_v2")
-)  # pragma: no cover
+@ray.remote(runtime_env=get_runtime_env_for_policy_worker("dtensor_policy_worker_v2"))  # pragma: no cover
 class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
     def __repr__(self) -> str:
         """Customizes the actor's prefix in the Ray logs.
@@ -214,9 +165,7 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
         self.tokenizer = tokenizer
         self.processor = processor
         self.is_vlm = processor is not None
-        self.lora_enabled = (
-            config["dtensor_cfg"].get("lora_cfg", {}).get("enabled", False)
-        )
+        self.lora_enabled = config["dtensor_cfg"].get("lora_cfg", {}).get("enabled", False)
 
         print(f"Initializing DTensorPolicyWorkerV2 with is_vlm={self.is_vlm}")
 
@@ -231,10 +180,7 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
         )
 
         # Set up distributed environment (returns FSDP2Manager)
-        distributed_manager = setup_distributed(
-            config=config,
-            runtime_config=runtime_config,
-        )
+        distributed_manager = setup_distributed(config=config, runtime_config=runtime_config)
         # Set instance attributes from distributed manager (tuple unpacking for mesh attributes)
         self.rank = torch.distributed.get_rank()
         self.timer = Timer(context={"worker": "dtensor_policy_v2", "rank": self.rank})
@@ -252,11 +198,9 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
         self._init_checkpoint_manager(
             config_updates={
                 "model_repo_id": config["model_name"],
-                "dequantize_base_checkpoint": config.get(
-                    "dequantize_base_checkpoint", False
-                ),
+                "dequantize_base_checkpoint": config.get("dequantize_base_checkpoint", False),
                 "is_peft": self.lora_enabled,
-            },
+            }
         )
 
         # Set up model and optimizer
@@ -326,9 +270,7 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
         local_gbs = gbs // self.dp_size
         total_dataset_size = torch.tensor(data.size, device="cuda")
         torch.distributed.all_reduce(
-            total_dataset_size,
-            op=torch.distributed.ReduceOp.SUM,
-            group=self.dp_mesh.get_group(),
+            total_dataset_size, op=torch.distributed.ReduceOp.SUM, group=self.dp_mesh.get_group()
         )
         num_global_batches = int(total_dataset_size.item()) // gbs
 
@@ -367,12 +309,10 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
             )
 
         # Setup cache clearing callback if configured
-        empty_cache_steps = self.cfg.get("dtensor_cfg", {}).get(
-            "clear_cache_every_n_steps"
-        )
+        empty_cache_steps = self.cfg.get("dtensor_cfg", {}).get("clear_cache_every_n_steps")
         if empty_cache_steps:
             warnings.warn(
-                f"Emptying cache every {empty_cache_steps} microbatches; doing so unnecessarily would incur a large performance overhead.",
+                f"Emptying cache every {empty_cache_steps} microbatches; doing so unnecessarily would incur a large performance overhead."
             )
 
         def on_microbatch_start(mb_idx):
@@ -388,11 +328,7 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
             for gb_idx in range(num_global_batches):
                 # Process global batch and compute normalization factors
                 gb_result = process_global_batch(
-                    data,
-                    loss_fn,
-                    self.dp_mesh.get_group(),
-                    batch_idx=gb_idx,
-                    batch_size=local_gbs,
+                    data, loss_fn, self.dp_mesh.get_group(), batch_idx=gb_idx, batch_size=local_gbs
                 )
                 batch = gb_result["batch"]
                 global_valid_seqs = gb_result["global_valid_seqs"]
@@ -402,12 +338,7 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
 
                 # Get microbatch iterator based on batching strategy
                 processed_iterator, iterator_len = get_microbatch_iterator(
-                    batch,
-                    self.cfg,
-                    mbs,
-                    self.dp_mesh,
-                    tokenizer=self.tokenizer,
-                    cp_size=self.cp_size,
+                    batch, self.cfg, mbs, self.dp_mesh, tokenizer=self.tokenizer, cp_size=self.cp_size
                 )
 
                 # Use automodel_forward_backward for the training loop
@@ -454,17 +385,14 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
                         device_mesh=self.device_mesh,
                         moe_mesh=self.moe_mesh,
                         ep_axis_name="ep"
-                        if self.moe_mesh is not None
-                        and "ep" in self.moe_mesh.mesh_dim_names
+                        if self.moe_mesh is not None and "ep" in self.moe_mesh.mesh_dim_names
                         else None,
                         pp_axis_name=None,
                         foreach=True,
                         num_label_tokens=1,
                         dp_group_size=self.dp_size * self.cp_size,
                     )
-                    grad_norm = torch.tensor(
-                        grad_norm, device="cpu", dtype=torch.float32
-                    )
+                    grad_norm = torch.tensor(grad_norm, device="cpu", dtype=torch.float32)
 
                     # Update parameters
                     self.optimizer.step()
@@ -500,20 +428,16 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
 
         Uses the configured logprob_batch_size to do microbatching.
 
-        Input data is assumed to be right-padded. The method internally converts to
-        left-padded format for computation, and returns outputs in right-padded format.
+        Input data is assumed to be right-padded. The method internally converts to left-padded format for computation,
+        and returns outputs in right-padded format.
 
         Returns:
-          a BatchedDataDict with key "logprobs" and shape [batch_size, sequence_length].
-          We use the convention that the logprob of the first token is 0 so that the sequence length is maintained.
-          The logprob of input token i is specified at position i in the output logprobs tensor.
+            a BatchedDataDict with key "logprobs" and shape [batch_size, sequence_length]. We use the convention that
+            the logprob of the first token is 0 so that the sequence length is maintained. The logprob of input token i
+            is specified at position i in the output logprobs tensor.
         """
         self.timer.start("get_logprobs")
-        logprob_batch_size = (
-            micro_batch_size
-            if micro_batch_size is not None
-            else self.cfg["logprob_batch_size"]
-        )
+        logprob_batch_size = micro_batch_size if micro_batch_size is not None else self.cfg["logprob_batch_size"]
 
         # Validate sequence dimension
         sequence_dim, seq_dim_size = check_sequence_dim(data)
@@ -535,12 +459,7 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
             data.to("cuda")
             # Get microbatch iterator based on batching strategy
             processed_iterator, iterator_len = get_microbatch_iterator(
-                data,
-                self.cfg,
-                logprob_batch_size,
-                self.dp_mesh,
-                tokenizer=self.tokenizer,
-                cp_size=self.cp_size,
+                data, self.cfg, logprob_batch_size, self.dp_mesh, tokenizer=self.tokenizer, cp_size=self.cp_size
             )
 
             for batch_idx, processed_mb in enumerate(processed_iterator):
@@ -578,9 +497,7 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
         for lp in all_log_probs:
             padding_needed = seq_dim_size - lp.shape[1]
             if padding_needed > 0:
-                lp = torch.nn.functional.pad(
-                    lp, (0, padding_needed), mode="constant", value=0.0
-                )
+                lp = torch.nn.functional.pad(lp, (0, padding_needed), mode="constant", value=0.0)
             all_log_probs_padded.append(lp)
         return_data["logprobs"] = torch.cat(all_log_probs_padded, dim=0).cpu()
 
@@ -604,12 +521,7 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
             data.to("cuda")
             # Get microbatch iterator based on batching strategy
             processed_iterator, iterator_len = get_microbatch_iterator(
-                data,
-                self.cfg,
-                global_batch_size,
-                self.dp_mesh,
-                tokenizer=self.tokenizer,
-                cp_size=self.cp_size,
+                data, self.cfg, global_batch_size, self.dp_mesh, tokenizer=self.tokenizer, cp_size=self.cp_size
             )
 
             all_rm_scores = []
@@ -643,19 +555,12 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
 
         all_rm_scores = torch.cat(all_rm_scores, dim=0)
         all_rm_scores = all_rm_scores.squeeze(-1).cpu()
-        return_data = BatchedDataDict[ScoreOutputSpec](
-            {
-                "scores": all_rm_scores,
-            }
-        )
+        return_data = BatchedDataDict[ScoreOutputSpec]({"scores": all_rm_scores})
         return return_data
 
     @wrap_with_nvtx_name("dtensor_policy_worker_v2/get_topk_logits")
     def get_topk_logits(
-        self,
-        data: BatchedDataDict[Any],
-        k: int,
-        micro_batch_size: Optional[int] = None,
+        self, data: BatchedDataDict[Any], k: int, micro_batch_size: Optional[int] = None
     ) -> BatchedDataDict[Any]:
         """Return per-position top-k logits and corresponding global indices.
 
@@ -668,11 +573,7 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
         - Otherwise, computes local top-k on full-vocab tensor.
         """
         self.timer.start("get_topk_logits")
-        topk_batch_size = (
-            micro_batch_size
-            if micro_batch_size is not None
-            else self.cfg["logprob_batch_size"]
-        )
+        topk_batch_size = micro_batch_size if micro_batch_size is not None else self.cfg["logprob_batch_size"]
 
         # Validate sequence dimension
         sequence_dim, seq_dim_size = check_sequence_dim(data)
@@ -696,12 +597,7 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
             data.to("cuda")
             # Get microbatch iterator based on batching strategy
             processed_iterator, iterator_len = get_microbatch_iterator(
-                data,
-                self.cfg,
-                topk_batch_size,
-                self.dp_mesh,
-                tokenizer=self.tokenizer,
-                cp_size=self.cp_size,
+                data, self.cfg, topk_batch_size, self.dp_mesh, tokenizer=self.tokenizer, cp_size=self.cp_size
             )
 
             for batch_idx, processed_mb in enumerate(processed_iterator):
@@ -744,24 +640,16 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
             pad_needed = target_seq_len - vals.shape[1]
             if pad_needed > 0:
                 # pad along sequence dimension (second dim): (last_dim_pad_left, last_dim_pad_right, seq_pad_left, seq_pad_right, batch_pad_left, batch_pad_right)
-                vals = torch.nn.functional.pad(
-                    vals, (0, 0, 0, pad_needed, 0, 0), mode="constant", value=0.0
-                )
-                idx = torch.nn.functional.pad(
-                    idx, (0, 0, 0, pad_needed, 0, 0), mode="constant", value=0
-                )
+                vals = torch.nn.functional.pad(vals, (0, 0, 0, pad_needed, 0, 0), mode="constant", value=0.0)
+                idx = torch.nn.functional.pad(idx, (0, 0, 0, pad_needed, 0, 0), mode="constant", value=0)
             all_topk_vals_padded.append(vals)
             all_topk_idx_padded.append(idx)
 
         ret["topk_logits"] = (
-            torch.cat(all_topk_vals_padded, dim=0)
-            if len(all_topk_vals_padded) > 1
-            else all_topk_vals_padded[0]
+            torch.cat(all_topk_vals_padded, dim=0) if len(all_topk_vals_padded) > 1 else all_topk_vals_padded[0]
         ).cpu()
         ret["topk_indices"] = (
-            torch.cat(all_topk_idx_padded, dim=0)
-            if len(all_topk_idx_padded) > 1
-            else all_topk_idx_padded[0]
+            torch.cat(all_topk_idx_padded, dim=0) if len(all_topk_idx_padded) > 1 else all_topk_idx_padded[0]
         ).cpu()
         self.timer.stop("get_topk_logits")
         return ret
@@ -770,16 +658,14 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
     def use_reference_model(self) -> Generator[None, None, None]:
         """Context manager that temporarily swaps the reference model and active model.
 
-        On entry: Moves model to CPU, moves reference_model to CUDA. Swaps the references
-        On exit: Restores original references and re-flips cuda/cpu
+        On entry: Moves model to CPU, moves reference_model to CUDA. Swaps the references On exit: Restores original
+        references and re-flips cuda/cpu
         """
         self.timer.start("use_reference_model")
         with torch.no_grad():
             try:
                 # Save train model state_dict
-                curr_state_dict = get_cpu_state_dict(
-                    self.model.state_dict().items(), pin_memory=True
-                )
+                curr_state_dict = get_cpu_state_dict(self.model.state_dict().items(), pin_memory=True)
 
                 # Swap reference model state_dict to self.model
                 for k, v in self.model.state_dict().items():
@@ -824,13 +710,9 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
         for name, tensor in self.model.state_dict().items():
             if name.endswith(".lora_A.weight") or name.endswith(".lora_B.weight"):
                 continue
-            full_tensor = (
-                tensor.full_tensor() if isinstance(tensor, DTensor) else tensor
-            )
+            full_tensor = tensor.full_tensor() if isinstance(tensor, DTensor) else tensor
             # all tensor will be casted to self.dtype in stream_weights_via_ipc_zmq/broadcast_weights_for_collective
-            adapted_fqn_tensors = _maybe_adapt_tensor_to_hf(
-                self.model, name, full_tensor
-            )
+            adapted_fqn_tensors = _maybe_adapt_tensor_to_hf(self.model, name, full_tensor)
             for adapted_fqn, adapted_tensor in adapted_fqn_tensors:
                 state_dict_info[adapted_fqn] = (adapted_tensor.shape, self.dtype)
 
@@ -846,16 +728,12 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
         include_q: bool = False,
     ) -> dict[str, Any]:
         """Placeholder for FP8 Q/K/V scale calibration, not implemented for DTensorPolicyWorkerV2."""
-        raise NotImplementedError(
-            "calibrate_qkv_fp8_scales is not implemented for DTensorPolicyWorkerV2"
-        )
+        raise NotImplementedError("calibrate_qkv_fp8_scales is not implemented for DTensorPolicyWorkerV2")
 
     @torch.no_grad()
     @wrap_with_nvtx_name("dtensor_policy_worker_v2/stream_weights_via_ipc_zmq")
     def stream_weights_via_ipc_zmq(
-        self,
-        buffer_size_bytes: int = 0,
-        kv_scales: Optional[dict[str, float]] = None,
+        self, buffer_size_bytes: int = 0, kv_scales: Optional[dict[str, float]] = None
     ) -> None:
         """Stream model weights to peer process via ZMQ IPC socket."""
         if kv_scales is not None:
@@ -880,9 +758,7 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
         )
 
     @torch.no_grad()
-    def broadcast_weights_for_collective(
-        self, kv_scales: Optional[dict[str, float]] = None
-    ) -> None:
+    def broadcast_weights_for_collective(self, kv_scales: Optional[dict[str, float]] = None) -> None:
         """Broadcast the weights for collective communication."""
         if kv_scales is not None:
             raise NotImplementedError(
@@ -978,9 +854,7 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
         # Print memory stats after offloading
         allocated = torch.cuda.memory_allocated() / (1024**3)  # Convert to GB
         reserved = torch.cuda.memory_reserved() / (1024**3)  # Convert to GB
-        print(
-            f"GPU Memory after optimizer offload: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved"
-        )
+        print(f"GPU Memory after optimizer offload: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
         self.timer.stop("offload_after_refit")
 
     def move_optimizer_to_device(self, device: str | torch.device) -> None:
@@ -993,9 +867,7 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
         model = self.move_buffer_to_device(model, device)
         return model.to(device)
 
-    def move_buffer_to_device(
-        self, model: nn.Module, device: str | torch.device
-    ) -> nn.Module:
+    def move_buffer_to_device(self, model: nn.Module, device: str | torch.device) -> nn.Module:
         # FSDP modules do not move buffers to the device automatically
         for v in model.buffers():
             torch.utils.swap_tensors(v, v.to(device))
@@ -1040,11 +912,7 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
         )
         self.timer.stop("save_checkpoint")
 
-    def load_checkpoint(
-        self,
-        weights_path: str,
-        optimizer_path: Optional[str] = None,
-    ) -> None:
+    def load_checkpoint(self, weights_path: str, optimizer_path: Optional[str] = None) -> None:
         """Load a checkpoint into the model using Automodel Checkpointer."""
         self.checkpoint_manager.load_checkpoint(
             model=self.model,
@@ -1055,14 +923,12 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
         )
 
     def _init_checkpoint_manager(
-        self,
-        config_updates: Optional[dict[str, Any]] = None,
-        checkpoint_root: Optional[str] = None,
+        self, config_updates: Optional[dict[str, Any]] = None, checkpoint_root: Optional[str] = None
     ) -> None:
         """Initialize the AutomodelCheckpointManager for this worker.
 
-        This creates the checkpoint manager bound to this worker's device meshes
-        and initializes its underlying checkpointer.
+        This creates the checkpoint manager bound to this worker's device meshes and initializes its underlying
+        checkpointer.
 
         Args:
             config_updates: Dict of CheckpointingConfig fields to set during initialization.
@@ -1075,7 +941,4 @@ class DTensorPolicyWorkerV2(AbstractPolicyWorker, ColocatablePolicyInterface):
                 model_state_dict_keys=getattr(self, "model_state_dict_keys", None),
                 moe_mesh=self.moe_mesh,
             )
-            self.checkpoint_manager.init_checkpointer(
-                config_updates=config_updates,
-                checkpoint_root=checkpoint_root,
-            )
+            self.checkpoint_manager.init_checkpointer(config_updates=config_updates, checkpoint_root=checkpoint_root)

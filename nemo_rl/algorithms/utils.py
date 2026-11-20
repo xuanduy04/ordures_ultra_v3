@@ -7,11 +7,7 @@ from typing import Any, Optional
 
 import numpy as np
 import torch
-from transformers import (
-    AutoProcessor,
-    AutoTokenizer,
-    PreTrainedTokenizerBase,
-)
+from transformers import AutoProcessor, AutoTokenizer, PreTrainedTokenizerBase
 
 from nemo_rl.utils.fastokens import maybe_patch_fastokens
 
@@ -35,10 +31,10 @@ def calculate_kl(
         logprobs: torch.Tensor (b, s)
         logprobs_reference: torch.Tensor (b, s)
         kl_type: Type of KL approximation to use. Valid values: "k1", "k2", "k3".
-        input_clamp_value: Optional clamping value for logr to prevent numerical instability.
-                           If None, no clamping is applied.
-        output_clamp_value: Optional clamping value for kl to prevent numerical instability.
-                           If None, no clamping is applied.
+        input_clamp_value: Optional clamping value for logr to prevent numerical instability. If None, no clamping is
+            applied.
+        output_clamp_value: Optional clamping value for kl to prevent numerical instability. If None, no clamping is
+            applied.
 
     Returns:
         torch.Tensor: Per-token KL penalty values (b, s)
@@ -66,24 +62,20 @@ def calculate_kl(
 
 
 def calculate_baseline_and_std_per_prompt(
-    prompts: torch.Tensor,
-    rewards: torch.Tensor,
-    valid_mask: torch.Tensor,
-    leave_one_out_baseline: bool = True,
+    prompts: torch.Tensor, rewards: torch.Tensor, valid_mask: torch.Tensor, leave_one_out_baseline: bool = True
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Function to compute a baseline for each (prompt, response) pair in the batch.
 
-    The same baseline is calculated for each prompt. Samples set to 0 in 'valid_mask'
-    are not included in the baseline calculation.
+    The same baseline is calculated for each prompt. Samples set to 0 in 'valid_mask' are not included in the baseline
+    calculation.
 
-    prompts:    tensor (b, s)     Tensor of prompts the model used. May be on any device
-    rewards:    tensor (b,)       Float-valued rewards. May be on any device
-    valid_mask: tensor (b,)       Vector of 0/1, where 0 is to ignore and 1 is to keep
-    leave_one_out_baseline: bool  Compute an unbiased baseline by leaving out the sample that
+    prompts:    tensor (b, s)     Tensor of prompts the model used. May be on any device rewards:    tensor (b,)
+    Float-valued rewards. May be on any device valid_mask: tensor (b,)       Vector of 0/1, where 0 is to ignore and 1
+    is to keep leave_one_out_baseline: bool  Compute an unbiased baseline by leaving out the sample that
                                   the baseline is for (from RLOO https://arxiv.org/abs/2402.14740)
 
     Returns:
-    tensor (b,), tensor (b,) of baselines and std on the same device as 'rewards'
+        tensor (b,), tensor (b,) of baselines and std on the same device as 'rewards'
     """
     unique_prompts = torch.unique(prompts, dim=0)
 
@@ -98,46 +90,31 @@ def calculate_baseline_and_std_per_prompt(
 
     for i in range(len(unique_prompts)):
         is_matching_prompt = (prompts == unique_prompts[i]).all(1)
-        prompt_idx = torch.arange(len(prompts), device=reward_device)[
-            is_matching_prompt
-        ]
+        prompt_idx = torch.arange(len(prompts), device=reward_device)[is_matching_prompt]
 
         if leave_one_out_baseline:
             baseline_mask_matrix = (1 - torch.eye(len(prompt_idx))).to(reward_device)
         else:
-            baseline_mask_matrix = torch.ones((len(prompt_idx), len(prompt_idx))).to(
-                reward_device
-            )
+            baseline_mask_matrix = torch.ones((len(prompt_idx), len(prompt_idx))).to(reward_device)
 
         if valid_mask[prompt_idx].sum() <= 1:
             # Ignore sample: there are no valid responses, so set baseline equal to reward
             # to ignore it in the loss computation
             baseline[prompt_idx] = rewards[prompt_idx]
         else:
-            num_valid = valid_mask[prompt_idx].float().sum() - int(
-                leave_one_out_baseline
-            )
+            num_valid = valid_mask[prompt_idx].float().sum() - int(leave_one_out_baseline)
             prompt_baseline = (
-                torch.matmul(
-                    baseline_mask_matrix, rewards[prompt_idx] * valid_mask[prompt_idx]
-                )
-                / num_valid
+                torch.matmul(baseline_mask_matrix, rewards[prompt_idx] * valid_mask[prompt_idx]) / num_valid
             )
             prompt_baseline_square = (
-                torch.matmul(
-                    baseline_mask_matrix,
-                    torch.pow(rewards[prompt_idx], 2) * valid_mask[prompt_idx],
-                )
+                torch.matmul(baseline_mask_matrix, torch.pow(rewards[prompt_idx], 2) * valid_mask[prompt_idx])
                 / num_valid
             )
 
             baseline[prompt_idx] = prompt_baseline
             sq_baseline[prompt_idx] = prompt_baseline_square
             std[prompt_idx] = (
-                (
-                    (prompt_baseline_square - prompt_baseline.square())
-                    * (num_valid / (num_valid - 1))
-                )
+                ((prompt_baseline_square - prompt_baseline.square()) * (num_valid / (num_valid - 1)))
                 .sqrt()
                 .nan_to_num(0)
             )
@@ -146,23 +123,20 @@ def calculate_baseline_and_std_per_prompt(
 
 
 def calculate_batch_level_baseline(
-    rewards: torch.Tensor,
-    valid_mask: torch.Tensor,
-    leave_one_out_baseline: bool = True,
+    rewards: torch.Tensor, valid_mask: torch.Tensor, leave_one_out_baseline: bool = True
 ) -> torch.Tensor:
     """Function to compute a single baseline for the whole batch.
 
-    Unlike calculate_baseline_and_std_per_prompt, this function ignores prompt
-    identity and pools every valid (prompt, response) pair in the batch. This is
-    useful for single-rollout settings where a per-prompt baseline is undefined.
+    Unlike calculate_baseline_and_std_per_prompt, this function ignores prompt identity and pools every valid (prompt,
+    response) pair in the batch. This is useful for single-rollout settings where a per-prompt baseline is undefined.
 
-    rewards:    tensor (b,)       Float-valued rewards. May be on any device
-    valid_mask: tensor (b,)       Vector of 0/1, where 0 is to ignore and 1 is to keep
-    leave_one_out_baseline: bool  Compute an unbiased baseline by leaving out the sample that the
+    rewards:    tensor (b,)       Float-valued rewards. May be on any device valid_mask: tensor (b,)       Vector of
+    0/1, where 0 is to ignore and 1 is to keep leave_one_out_baseline: bool  Compute an unbiased baseline by leaving out
+    the sample that the
                                   baseline is for (like RLOO https://arxiv.org/abs/2402.14740)
 
     Returns:
-    tensor (b,) of baselines on the same device as 'rewards'
+        tensor (b,) of baselines on the same device as 'rewards'
     """
     valid_mask = valid_mask.to(dtype=rewards.dtype)
     valid_rewards = rewards * valid_mask
@@ -200,9 +174,7 @@ def masked_mean(
 ):
     """Computes the mean of a microbatch, using a global statistic as the normalization factor."""
     normalization_factor = (
-        torch.sum(mask, dim=dim)
-        if global_normalization_factor is None
-        else global_normalization_factor
+        torch.sum(mask, dim=dim) if global_normalization_factor is None else global_normalization_factor
     )
     return torch.sum(values * mask, dim=dim) / (normalization_factor + 1e-8)
 
@@ -215,17 +187,14 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def get_tokenizer(
-    tokenizer_config: TokenizerConfig, get_processor: bool = False
-) -> PreTrainedTokenizerBase:
+def get_tokenizer(tokenizer_config: TokenizerConfig, get_processor: bool = False) -> PreTrainedTokenizerBase:
     """Get the tokenizer and set pad token to eos token if it is not already set.
 
-    This function initializes a tokenizer from the Hugging Face transformers library
-    and configures it with appropriate chat templates and padding tokens.
+    This function initializes a tokenizer from the Hugging Face transformers library and configures it with appropriate
+    chat templates and padding tokens.
 
     Args:
-        tokenizer_config: A dictionary containing tokenizer configuration.
-            Required keys:
+        tokenizer_config: A dictionary containing tokenizer configuration. Required keys:
                 - name: The name or path of the pretrained tokenizer
             Optional keys:
                 - chat_template: The chat template to use. Can be:
@@ -294,14 +263,10 @@ def get_tokenizer(
     processor = None
 
     if get_processor:
-        processor = AutoProcessor.from_pretrained(
-            tokenizer_config["name"], trust_remote_code=True, use_fast=True
-        )
+        processor = AutoProcessor.from_pretrained(tokenizer_config["name"], trust_remote_code=True, use_fast=True)
         tokenizer = processor.tokenizer
     else:
-        tokenizer = AutoTokenizer.from_pretrained(
-            tokenizer_config["name"], trust_remote_code=True
-        )
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_config["name"], trust_remote_code=True)
 
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -324,13 +289,8 @@ def get_tokenizer(
     else:
         print("No chat template provided, using tokenizer's default")
 
-    if (
-        "chat_template_kwargs" in tokenizer_config
-        and tokenizer_config["chat_template_kwargs"] is not None
-    ):
-        assert isinstance(tokenizer_config["chat_template_kwargs"], dict), (
-            "chat_template_kwargs should be a dictionary"
-        )
+    if "chat_template_kwargs" in tokenizer_config and tokenizer_config["chat_template_kwargs"] is not None:
+        assert isinstance(tokenizer_config["chat_template_kwargs"], dict), "chat_template_kwargs should be a dictionary"
         tokenizer.apply_chat_template = partial(
             tokenizer.apply_chat_template, **tokenizer_config["chat_template_kwargs"]
         )
@@ -366,35 +326,19 @@ def maybe_pad_last_batch(batch: dict, dp_size: int, mbs: int) -> dict:
     if min_padding > 0:
         print(f"Padding last validation batch with {min_padding} padding samples")
         # Pad input_ids
-        batch["input_ids"] = torch.cat(
-            [
-                batch["input_ids"],
-                batch["input_ids"][-1].unsqueeze(0).repeat(min_padding, 1),
-            ]
-        )
+        batch["input_ids"] = torch.cat([batch["input_ids"], batch["input_ids"][-1].unsqueeze(0).repeat(min_padding, 1)])
         # Pad input_lengths
         batch["input_lengths"] = torch.cat(
-            [
-                batch["input_lengths"],
-                batch["input_lengths"][-1].unsqueeze(0).repeat(min_padding),
-            ]
+            [batch["input_lengths"], batch["input_lengths"][-1].unsqueeze(0).repeat(min_padding)]
         )
         if "token_mask" in batch:
             # Pad token_mask
             batch["token_mask"] = torch.cat(
-                [
-                    batch["token_mask"],
-                    batch["token_mask"][-1].unsqueeze(0).repeat(min_padding, 1),
-                ]
+                [batch["token_mask"], batch["token_mask"][-1].unsqueeze(0).repeat(min_padding, 1)]
             )
         # Pad sample_mask
         batch["sample_mask"] = torch.cat(
-            [
-                batch["sample_mask"],
-                torch.zeros_like(batch["sample_mask"][-1])
-                .unsqueeze(0)
-                .repeat(min_padding),
-            ]
+            [batch["sample_mask"], torch.zeros_like(batch["sample_mask"][-1]).unsqueeze(0).repeat(min_padding)]
         )
 
         if "reference_policy_logprobs" in batch:
@@ -402,19 +346,14 @@ def maybe_pad_last_batch(batch: dict, dp_size: int, mbs: int) -> dict:
             batch["reference_policy_logprobs"] = torch.cat(
                 [
                     batch["reference_policy_logprobs"],
-                    batch["reference_policy_logprobs"][-1]
-                    .unsqueeze(0)
-                    .repeat(min_padding, 1),
+                    batch["reference_policy_logprobs"][-1].unsqueeze(0).repeat(min_padding, 1),
                 ]
             )
     return batch
 
 
 def print_performance_metrics(
-    train_results: dict[str, float],
-    metrics: dict[str, Any],
-    timing_metrics: dict[str, float],
-    master_config: dict,
+    train_results: dict[str, float], metrics: dict[str, Any], timing_metrics: dict[str, float], master_config: dict
 ) -> dict[str, float]:
     """Print performance metrics for GRPO."""
 
@@ -422,12 +361,8 @@ def print_performance_metrics(
     # Generate Token Imbalance Visualization
     # =====================================================
     def visualize_per_worker_load(per_worker_token_counts: dict[int, int]) -> float:
-        per_worker_token_counts_list = [
-            v for k, v in sorted(per_worker_token_counts.items())
-        ]
-        per_worker_load_ratio = [
-            v / max(per_worker_token_counts_list) for v in per_worker_token_counts_list
-        ]
+        per_worker_token_counts_list = [v for k, v in sorted(per_worker_token_counts.items())]
+        per_worker_load_ratio = [v / max(per_worker_token_counts_list) for v in per_worker_token_counts_list]
         max_rows_to_print = 1000
         bar_length = 20
         print("  • Visualizing Token Imbalance per Generation Worker:")
@@ -438,9 +373,7 @@ def print_performance_metrics(
                 f"{'□' * (bar_length - int(per_worker_load_ratio[i] * bar_length))}"
                 f" Count: {per_worker_token_counts_list[i] / 1000:.1f}K"
             )
-        estimated_idle_ratio = 1 - sum(per_worker_load_ratio) / len(
-            per_worker_load_ratio
-        )
+        estimated_idle_ratio = 1 - sum(per_worker_load_ratio) / len(per_worker_load_ratio)
         print(f"  • Average Token Imbalance: {100 * estimated_idle_ratio:.2f}%")
         return estimated_idle_ratio
 
@@ -453,9 +386,7 @@ def print_performance_metrics(
             per_worker_token_counts = {}
             for trajectory_metrics in metrics["per_worker_token_counts"]:
                 for worker_idx, token_count in trajectory_metrics.items():
-                    per_worker_token_counts[worker_idx] = (
-                        per_worker_token_counts.get(worker_idx, 0) + token_count
-                    )
+                    per_worker_token_counts[worker_idx] = per_worker_token_counts.get(worker_idx, 0) + token_count
         elif isinstance(metrics["per_worker_token_counts"], dict):
             per_worker_token_counts = metrics["per_worker_token_counts"]
         else:
@@ -466,9 +397,7 @@ def print_performance_metrics(
             performance_metrics["average_token_imbalance"] = average_token_imbalance
 
     if "mean_total_tokens_per_sample" in metrics:
-        print(
-            f"  • Mean Total Tokens per Sample: {metrics['mean_total_tokens_per_sample']:.2f}"
-        )
+        print(f"  • Mean Total Tokens per Sample: {metrics['mean_total_tokens_per_sample']:.2f}")
 
     # =====================================================
     # vLLM Logger Metrics (inflight batch sizes, num pending samples, etc.)
@@ -479,9 +408,7 @@ def print_performance_metrics(
         x_new = np.linspace(0, 1, new_size)
         return np.interp(x_new, x_old, data)
 
-    def get_min_idle_time(
-        metric_dict: dict[int, list[int]], timeline_interval: float
-    ) -> float:
+    def get_min_idle_time(metric_dict: dict[int, list[int]], timeline_interval: float) -> float:
         min_idle_time = float("inf")
         for _, metric_values in metric_dict.items():
             count_zeros = lambda x: sum(v == 0 for v in x)
@@ -490,9 +417,7 @@ def print_performance_metrics(
         return min_idle_time
 
     def visualize_per_worker_timeline(
-        metric_dict: dict[int, list[int]],
-        metric_name: str,
-        timeline_interval: float | None,
+        metric_dict: dict[int, list[int]], metric_name: str, timeline_interval: float | None
     ) -> None:
         dp_ranks = list(metric_dict.keys())
         max_rows_to_print = 1000
@@ -506,9 +431,7 @@ def print_performance_metrics(
         print(f"  - {metric_name}:")
         print(f"    - Max value: {max_value}")
         if timeline_interval is not None:
-            print(
-                f"    - Min idle time: {get_min_idle_time(metric_dict, timeline_interval)} s"
-            )
+            print(f"    - Min idle time: {get_min_idle_time(metric_dict, timeline_interval)} s")
         print(
             f"    - Timeline (0: {zero_marker}, {', '.join(f'{1.0 if k == 0 else k * (max_value / len(marker))}-{(k + 1) * (max_value / len(marker))}: {marker[k]}' for k in marker.keys())}):"
         )
@@ -522,18 +445,12 @@ def print_performance_metrics(
                 idle = count_zeros(metric_values) * timeline_interval
                 active = length * timeline_interval - idle
             if length > max_timeline_length:
-                resized_metric_values = resize_timeline(
-                    metric_values, max_timeline_length
-                )
+                resized_metric_values = resize_timeline(metric_values, max_timeline_length)
             else:
                 resized_metric_values = metric_values
 
             for i, value in enumerate(resized_metric_values):
-                m = (
-                    zero_marker
-                    if value == 0
-                    else marker[min(int(value // bin_width), len(marker) - 1)]
-                )
+                m = zero_marker if value == 0 else marker[min(int(value // bin_width), len(marker) - 1)]
                 timeline.append(m)
             if timeline_interval is not None:
                 print(
@@ -542,53 +459,36 @@ def print_performance_metrics(
             else:
                 print(f"    - Generation Worker {dp_idx:3.0f}: {''.join(timeline)}")
 
-    is_vllm_metrics_logger_enabled = master_config["policy"]["generation"].get(
-        "vllm_cfg", {}
-    ).get("enable_vllm_metrics_logger", False) and master_config["policy"][
-        "generation"
-    ].get("vllm_cfg", {}).get("async_engine", False)
+    is_vllm_metrics_logger_enabled = master_config["policy"]["generation"].get("vllm_cfg", {}).get(
+        "enable_vllm_metrics_logger", False
+    ) and master_config["policy"]["generation"].get("vllm_cfg", {}).get("async_engine", False)
     generation_logger_metrics = metrics.get("generation_logger_metrics", {})
     if is_vllm_metrics_logger_enabled and generation_logger_metrics:
         vllm_logger_metrics = generation_logger_metrics
         # vllm_logger_metrics: dict[str (metric_name), dict[int (dp_idx), list[int] (metric_values)]]
         # metric_name: "inflight_batch_sizes" or "num_pending_samples"
 
-        assert "inflight_batch_sizes" in vllm_logger_metrics, (
-            "inflight_batch_sizes not found in vllm_logger_metrics"
-        )
-        assert "num_pending_samples" in vllm_logger_metrics, (
-            "num_pending_samples not found in vllm_logger_metrics"
-        )
+        assert "inflight_batch_sizes" in vllm_logger_metrics, "inflight_batch_sizes not found in vllm_logger_metrics"
+        assert "num_pending_samples" in vllm_logger_metrics, "num_pending_samples not found in vllm_logger_metrics"
         assert isinstance(vllm_logger_metrics["inflight_batch_sizes"], dict), (
             "inflight_batch_sizes must be a dictionary"
         )
-        assert isinstance(vllm_logger_metrics["num_pending_samples"], dict), (
-            "num_pending_samples must be a dictionary"
-        )
+        assert isinstance(vllm_logger_metrics["num_pending_samples"], dict), "num_pending_samples must be a dictionary"
 
-        vllm_metrics_logger_interval = master_config["policy"]["generation"][
-            "vllm_cfg"
-        ]["vllm_metrics_logger_interval"]
+        vllm_metrics_logger_interval = master_config["policy"]["generation"]["vllm_cfg"]["vllm_metrics_logger_interval"]
         print("  • vLLM Logger Metrics:")
         # Visualize the inflight batch sizes timeline
         if len(vllm_logger_metrics["inflight_batch_sizes"].values()) > 0:
             visualize_per_worker_timeline(
-                vllm_logger_metrics["inflight_batch_sizes"],
-                "Inflight Batch Sizes",
-                vllm_metrics_logger_interval,
+                vllm_logger_metrics["inflight_batch_sizes"], "Inflight Batch Sizes", vllm_metrics_logger_interval
             )
         if len(vllm_logger_metrics["num_pending_samples"].values()) > 0:
             max_num_pending_samples = max(
-                (max(v) if v else 0)
-                for v in vllm_logger_metrics["num_pending_samples"].values()
+                (max(v) if v else 0) for v in vllm_logger_metrics["num_pending_samples"].values()
             )
             # If there is at least one pending sample, visualize the timeline
             if max_num_pending_samples > 0:
-                visualize_per_worker_timeline(
-                    vllm_logger_metrics["num_pending_samples"],
-                    "Num Pending Samples",
-                    None,
-                )
+                visualize_per_worker_timeline(vllm_logger_metrics["num_pending_samples"], "Num Pending Samples", None)
 
     # =====================================================
     # Throughputs
@@ -613,97 +513,57 @@ def print_performance_metrics(
     colocated_inference = master_config["policy"]["generation"]["colocated"]["enabled"]
 
     # Idle Time from Training Worker (Async GRPO only)
-    if (
-        "async_grpo" in master_config and master_config["async_grpo"]["enabled"]
-    ) and not colocated_inference:
+    if ("async_grpo" in master_config and master_config["async_grpo"]["enabled"]) and not colocated_inference:
         # async grpo
         exposed_generation_time = timing_metrics["exposed_generation"]
         training_worker_idle_time_ratio = (
             0
             if exposed_generation_time > 0.1
             else exposed_generation_time
-            / (
-                policy_training_time
-                + policy_and_reference_logprobs_time
-                + exposed_generation_time
-                + refit_time
-            )
+            / (policy_training_time + policy_and_reference_logprobs_time + exposed_generation_time + refit_time)
         )
-        print(
-            f"  • Training Worker Idle Time Ratio: {100 * training_worker_idle_time_ratio:.2f}%"
-        )
-        performance_metrics["training_worker_idle_time_ratio"] = (
-            training_worker_idle_time_ratio
-        )
+        print(f"  • Training Worker Idle Time Ratio: {100 * training_worker_idle_time_ratio:.2f}%")
+        performance_metrics["training_worker_idle_time_ratio"] = training_worker_idle_time_ratio
 
     number_of_samples_per_step = (
-        master_config["grpo"]["num_prompts_per_step"]
-        * master_config["grpo"]["num_generations_per_prompt"]
+        master_config["grpo"]["num_prompts_per_step"] * master_config["grpo"]["num_generations_per_prompt"]
     )
 
     if colocated_inference:
         training_num_gpus = total_num_gpus
         generation_num_gpus = total_num_gpus
     else:
-        generation_num_nodes = (
-            master_config["policy"]["generation"]["colocated"]["resources"]["num_nodes"]
-            or 1
-        )
+        generation_num_nodes = master_config["policy"]["generation"]["colocated"]["resources"]["num_nodes"] or 1
         generation_num_gpus = (
-            master_config["policy"]["generation"]["colocated"]["resources"][
-                "gpus_per_node"
-            ]
-            * generation_num_nodes
+            master_config["policy"]["generation"]["colocated"]["resources"]["gpus_per_node"] * generation_num_nodes
         )
         training_num_gpus = total_num_gpus - generation_num_gpus
 
-    e2e_samples_per_sec_per_gpu = (
-        number_of_samples_per_step / total_time / total_num_gpus
-    )
+    e2e_samples_per_sec_per_gpu = number_of_samples_per_step / total_time / total_num_gpus
 
-    e2e_tokens_per_sec_per_gpu = (
-        metrics["total_num_tokens"] / total_time / total_num_gpus
-    )
-    policy_training_tokens_per_sec_per_gpu = (
-        metrics["total_num_tokens"] / policy_training_time / training_num_gpus
-    )
+    e2e_tokens_per_sec_per_gpu = metrics["total_num_tokens"] / total_time / total_num_gpus
+    policy_training_tokens_per_sec_per_gpu = metrics["total_num_tokens"] / policy_training_time / training_num_gpus
     policy_and_reference_logprobs_tokens_per_sec_per_gpu = (
-        metrics["total_num_tokens"]
-        / policy_and_reference_logprobs_time
-        / training_num_gpus
+        metrics["total_num_tokens"] / policy_and_reference_logprobs_time / training_num_gpus
     )
     training_worker_group_tokens_per_sec_per_gpu = (
-        metrics["total_num_tokens"]
-        / (policy_training_time + policy_and_reference_logprobs_time)
-        / training_num_gpus
+        metrics["total_num_tokens"] / (policy_training_time + policy_and_reference_logprobs_time) / training_num_gpus
     )
-    generation_tokens_per_sec_per_gpu = (
-        metrics["total_num_tokens"] / generation_time / generation_num_gpus
-    )
+    generation_tokens_per_sec_per_gpu = metrics["total_num_tokens"] / generation_time / generation_num_gpus
 
     print("  • Throughputs (per GPU):")
     print(f"    - E2E (Samples/sec/gpu): {e2e_samples_per_sec_per_gpu:.2f}")
     print(f"    - E2E (Tokens/sec/gpu): {e2e_tokens_per_sec_per_gpu:.2f}")
-    print(
-        f"    - Policy Training (Tokens/sec/gpu): {policy_training_tokens_per_sec_per_gpu:.2f}"
-    )
+    print(f"    - Policy Training (Tokens/sec/gpu): {policy_training_tokens_per_sec_per_gpu:.2f}")
     print(
         f"    - Policy and Reference Logprobs (Tokens/sec/gpu): {policy_and_reference_logprobs_tokens_per_sec_per_gpu:.2f}"
     )
-    print(
-        f"    - Training Worker Group (Tokens/sec/gpu): {training_worker_group_tokens_per_sec_per_gpu:.2f}"
-    )
-    print(
-        f"    - Generation Worker Group (Tokens/sec/gpu): {generation_tokens_per_sec_per_gpu:.2f}"
-    )
+    print(f"    - Training Worker Group (Tokens/sec/gpu): {training_worker_group_tokens_per_sec_per_gpu:.2f}")
+    print(f"    - Generation Worker Group (Tokens/sec/gpu): {generation_tokens_per_sec_per_gpu:.2f}")
 
     print("  • Throughputs (per Group):")
-    print(
-        f"    - E2E (Samples/sec): {(e2e_samples_per_sec_per_gpu * total_num_gpus):.2f}"
-    )
-    print(
-        f"    - E2E (Tokens/sec): {(e2e_tokens_per_sec_per_gpu * total_num_gpus):.2f}"
-    )
+    print(f"    - E2E (Samples/sec): {(e2e_samples_per_sec_per_gpu * total_num_gpus):.2f}")
+    print(f"    - E2E (Tokens/sec): {(e2e_tokens_per_sec_per_gpu * total_num_gpus):.2f}")
     print(
         f"    - Training Worker Group (Tokens/sec): {(training_worker_group_tokens_per_sec_per_gpu * training_num_gpus):.2f}"
     )
@@ -716,9 +576,7 @@ def print_performance_metrics(
     # =====================================================
 
     if "total_flops" in train_results:
-        total_tflops = (
-            train_results["total_flops"] / timing_metrics["policy_training"] / 1e12
-        )
+        total_tflops = train_results["total_flops"] / timing_metrics["policy_training"] / 1e12
         num_ranks = train_results["num_ranks"]
         print(
             f"  • Training FLOPS: {total_tflops:.2f} TFLOPS ({total_tflops / num_ranks:.2f} TFLOPS per rank)",
@@ -731,9 +589,7 @@ def print_performance_metrics(
                 f"  • Training Model Floating Point Utilization: {100 * total_tflops / theoretical_tflops:.2f}%",
                 flush=True,
             )
-            performance_metrics["train_fp_utilization"] = (
-                total_tflops / theoretical_tflops
-            )
+            performance_metrics["train_fp_utilization"] = total_tflops / theoretical_tflops
 
     # =====================================================
     # Clean up metrics
@@ -758,10 +614,8 @@ def print_performance_metrics(
             "policy_and_reference_logprobs_tokens_per_sec_per_gpu": policy_and_reference_logprobs_tokens_per_sec_per_gpu,
             "training_worker_group_tokens_per_sec_per_gpu": training_worker_group_tokens_per_sec_per_gpu,
             "generation_tokens_per_sec_per_gpu": generation_tokens_per_sec_per_gpu,
-            "training_worker_group_tokens_per_sec": training_worker_group_tokens_per_sec_per_gpu
-            * training_num_gpus,
-            "generation_tokens_per_sec": generation_tokens_per_sec_per_gpu
-            * generation_num_gpus,
+            "training_worker_group_tokens_per_sec": training_worker_group_tokens_per_sec_per_gpu * training_num_gpus,
+            "generation_tokens_per_sec": generation_tokens_per_sec_per_gpu * generation_num_gpus,
         }
     )
 
@@ -769,10 +623,7 @@ def print_performance_metrics(
 
 
 def log_generation_metrics_to_wandb(
-    generation_logger_metrics: dict[str, dict[int, list[Any]]],
-    step: int,
-    timeline_interval: float,
-    logger: Logger,
+    generation_logger_metrics: dict[str, dict[int, list[Any]]], step: int, timeline_interval: float, logger: Logger
 ) -> None:
     """Log generation metrics to wandb.
 
@@ -805,9 +656,7 @@ EFFICIENCY_CATEGORIES = [
 
 
 def print_efficiency_summary(
-    efficiency_metrics: dict[str, float],
-    total_wall_time_s: float,
-    step: int,
+    efficiency_metrics: dict[str, float], total_wall_time_s: float, step: int
 ) -> dict[str, float]:
     """Print a summary table of efficiency metrics and return loggable dict.
 
@@ -817,8 +666,8 @@ def print_efficiency_summary(
         step: Current training step number.
 
     Returns:
-        Dict of metrics suitable for logging to WandB/TensorBoard, including
-        per-category seconds and percentages, total waste, and efficiency_pct.
+        Dict of metrics suitable for logging to WandB/TensorBoard, including per-category seconds and percentages, total
+        waste, and efficiency_pct.
     """
     print(f"\n📊 Efficiency Summary (Step {step}):")
     print(f"  {'Category':<35} {'Time (s)':>10} {'% of Wall':>10}")
@@ -836,14 +685,10 @@ def print_efficiency_summary(
         loggable[f"efficiency/{category}_pct"] = pct
 
     productive = total_wall_time_s - total_waste
-    efficiency_pct = (
-        (productive / total_wall_time_s * 100) if total_wall_time_s > 0 else 100.0
-    )
+    efficiency_pct = (productive / total_wall_time_s * 100) if total_wall_time_s > 0 else 100.0
 
     print(f"  {'─' * 57}")
-    waste_pct = (
-        (total_waste / total_wall_time_s * 100) if total_wall_time_s > 0 else 0.0
-    )
+    waste_pct = (total_waste / total_wall_time_s * 100) if total_wall_time_s > 0 else 0.0
     print(f"  {'Total waste':<35} {total_waste:>10.2f} {waste_pct:>9.2f}%")
     print(f"  {'Productive time':<35} {productive:>10.2f} {efficiency_pct:>9.2f}%")
     print(f"  {'Efficiency':<35} {'':>10} {efficiency_pct:>9.2f}%")

@@ -1,5 +1,3 @@
-
-
 """Data processing utilities for automodel training and inference."""
 
 import itertools
@@ -11,18 +9,15 @@ from transformers import AutoTokenizer
 
 from nemo_rl.algorithms.interfaces import LossFunction, LossType
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
-from nemo_rl.models.huggingface.common import (
-    get_flash_attention_kwargs,
-    pack_sequences,
-)
+from nemo_rl.models.huggingface.common import get_flash_attention_kwargs, pack_sequences
 
 
 @dataclass
 class ProcessedInputs:
     """Processed microbatch inputs ready for model forward pass.
 
-    This structure contains all necessary tensors and metadata for a forward pass,
-    including context parallel buffers and flash attention configuration.
+    This structure contains all necessary tensors and metadata for a forward pass, including context parallel buffers
+    and flash attention configuration.
     """
 
     # Core inputs (always present)
@@ -66,9 +61,8 @@ class ProcessedInputs:
 class ProcessedMicrobatch:
     """Container for a processed microbatch ready for model forward pass.
 
-    This dataclass holds both the original data dictionary and the processed
-    tensors needed for the automodel forward pass. It follows the same pattern
-    as nemo_rl/models/megatron/data.py ProcessedMicrobatch.
+    This dataclass holds both the original data dictionary and the processed tensors needed for the automodel forward
+    pass. It follows the same pattern as nemo_rl/models/megatron/data.py ProcessedMicrobatch.
 
     Attributes:
         data_dict: The original BatchedDataDict containing raw batch data
@@ -84,16 +78,12 @@ class ProcessedMicrobatch:
 
 
 def make_processed_microbatch_iterator(
-    raw_iterator: Iterator[BatchedDataDict[Any]],
-    tokenizer: AutoTokenizer,
-    cfg: dict[str, Any],
-    cp_size: int,
+    raw_iterator: Iterator[BatchedDataDict[Any]], tokenizer: AutoTokenizer, cfg: dict[str, Any], cp_size: int
 ) -> Iterator[ProcessedMicrobatch]:
     """Wrap a raw microbatch iterator to yield processed microbatches.
 
-    This function takes a raw iterator that yields BatchedDataDict objects and
-    wraps it to yield ProcessedMicrobatch objects that contain both the original
-    data and the processed tensors ready for model forward pass.
+    This function takes a raw iterator that yields BatchedDataDict objects and wraps it to yield ProcessedMicrobatch
+    objects that contain both the original data and the processed tensors ready for model forward pass.
 
     Args:
         raw_iterator: Iterator yielding raw BatchedDataDict microbatches
@@ -113,13 +103,7 @@ def make_processed_microbatch_iterator(
         original_seq_len = data_dict.get("input_ids").shape[1]
 
         # Process the microbatch
-        processed_inputs = process_microbatch(
-            data_dict,
-            tokenizer,
-            enable_seq_packing,
-            cfg,
-            cp_size,
-        )
+        processed_inputs = process_microbatch(data_dict, tokenizer, enable_seq_packing, cfg, cp_size)
 
         yield ProcessedMicrobatch(
             data_dict=data_dict,
@@ -168,29 +152,20 @@ def get_microbatch_iterator(
         # We add dummy batches to the end of the iterator to make the batch counts equal.
         dummy_batch_ct = int(max_batch_ct.item() - iterator_len)
         dummy_iterator = data.make_microbatch_iterator_for_packable_sequences()
-        dummy_iterator = itertools.islice(
-            itertools.cycle(dummy_iterator), dummy_batch_ct
-        )
+        dummy_iterator = itertools.islice(itertools.cycle(dummy_iterator), dummy_batch_ct)
     else:
         mb_iterator = data.make_microbatch_iterator(mbs)
         iterator_len = data.size // mbs
 
     # Wrap raw iterators to get processed microbatches
     processed_iterator = make_processed_microbatch_iterator(
-        itertools.chain(mb_iterator, dummy_iterator),
-        tokenizer,
-        cfg,
-        cp_size,
+        itertools.chain(mb_iterator, dummy_iterator), tokenizer, cfg, cp_size
     )
     return processed_iterator, iterator_len
 
 
 def process_microbatch(
-    mb: BatchedDataDict[Any],
-    tokenizer: AutoTokenizer,
-    enable_seq_packing: bool,
-    cfg: dict[str, Any],
-    cp_size: int,
+    mb: BatchedDataDict[Any], tokenizer: AutoTokenizer, enable_seq_packing: bool, cfg: dict[str, Any], cp_size: int
 ) -> ProcessedInputs:
     """Process a microbatch and prepare inputs for model forward.
 
@@ -210,9 +185,7 @@ def process_microbatch(
         input_ids, position_ids, _ = pack_sequences(
             input_ids=input_ids,
             input_lengths=mb["input_lengths"],
-            packed_sequence_size=[
-                len(mb["input_lengths"])
-            ],  # flash attention 2 expects flattened input
+            packed_sequence_size=[len(mb["input_lengths"])],  # flash attention 2 expects flattened input
             padding_value=tokenizer.eos_token_id,
             return_attention_mask=False,
             min_seq_len=cfg["sequence_packing"][
@@ -221,9 +194,7 @@ def process_microbatch(
         )
         seq_len = input_ids.shape[1]
         attention_mask = None
-        flash_attn_kwargs = get_flash_attention_kwargs(
-            input_lengths=mb["input_lengths"],
-        )
+        flash_attn_kwargs = get_flash_attention_kwargs(input_lengths=mb["input_lengths"])
     else:
         batch_size, seq_len = input_ids.shape
 
@@ -231,16 +202,10 @@ def process_microbatch(
         # yet our post_attention_mask (used for masking after forward) is not always all 1s.
         # This is fine because we mask with the actual attention mask later,
         # but for input it has to be all 1s.
-        attention_mask = torch.ones(
-            (batch_size, seq_len),
-            dtype=torch.bool,
-            device=input_ids.device,
-        )
+        attention_mask = torch.ones((batch_size, seq_len), dtype=torch.bool, device=input_ids.device)
         # Explicitly create position ids for the input, otherwise the sharding
         # for DTensor will be incorrect.
-        position_ids = torch.arange(seq_len, device=input_ids.device).repeat(
-            batch_size, 1
-        )
+        position_ids = torch.arange(seq_len, device=input_ids.device).repeat(batch_size, 1)
         flash_attn_kwargs = {}
 
     # Add vlm kwargs to model call
@@ -248,9 +213,7 @@ def process_microbatch(
     if len(vlm_kwargs) > 0:
         # if there are multimodal kwargs, we don't need to add position_ids (computed internally)
         position_ids = None
-        assert not enable_seq_packing, (
-            "multimodal kwargs are not supported for sequence packing"
-        )
+        assert not enable_seq_packing, "multimodal kwargs are not supported for sequence packing"
         assert not cfg["dtensor_cfg"]["sequence_parallel"], (
             "Sequence parallel is not supported with multimodal since there's an issue when you do not pass position_ids. See https://github.com/NVIDIA-NeMo/Automodel/issues/652"
         )
@@ -259,9 +222,7 @@ def process_microbatch(
     cp_buffers = []
     seq_index = None
     if cp_size > 1:
-        assert len(vlm_kwargs) == 0, (
-            f"multimodal kwargs={vlm_kwargs} are not supported for context parallel"
-        )
+        assert len(vlm_kwargs) == 0, f"multimodal kwargs={vlm_kwargs} are not supported for context parallel"
         seq_index = torch.arange(seq_len, device=input_ids.device).repeat(1, 1)
         cp_buffers = [input_ids, position_ids, seq_index]
 
@@ -310,31 +271,23 @@ def process_global_batch(
     if "token_mask" not in batch:
         local_valid_toks = local_valid_seqs * batch["input_ids"].shape[1]
     else:
-        local_valid_toks = torch.sum(
-            batch["token_mask"][:, 1:] * batch["sample_mask"].unsqueeze(-1)
-        )
+        local_valid_toks = torch.sum(batch["token_mask"][:, 1:] * batch["sample_mask"].unsqueeze(-1))
 
     to_reduce = torch.tensor([local_valid_seqs, local_valid_toks]).cuda()
     torch.distributed.all_reduce(to_reduce, group=dp_group)
     global_valid_seqs, global_valid_toks = to_reduce[0], to_reduce[1]
 
     if hasattr(loss_fn, "loss_type") and loss_fn.loss_type == LossType.TOKEN_LEVEL:
-        assert "token_mask" in batch, (
-            "token_mask must be present in the data when using token-level loss"
-        )
+        assert "token_mask" in batch, "token_mask must be present in the data when using token-level loss"
 
-    return {
-        "batch": batch,
-        "global_valid_seqs": global_valid_seqs,
-        "global_valid_toks": global_valid_toks,
-    }
+    return {"batch": batch, "global_valid_seqs": global_valid_seqs, "global_valid_toks": global_valid_toks}
 
 
 def check_sequence_dim(data: BatchedDataDict[Any]) -> Tuple[int, int]:
     """Check and validate sequence dimension across all tensors.
 
-    Verifies that dimension 1 is the sequence dimension for all tensors
-    in the data dictionary that have more than one dimension.
+    Verifies that dimension 1 is the sequence dimension for all tensors in the data dictionary that have more than one
+    dimension.
 
     Args:
         data: BatchedDataDict to validate

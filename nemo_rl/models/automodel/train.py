@@ -14,8 +14,8 @@
 
 """Training utilities for automodel (DTensor-based) policy workers.
 
-This module provides post-processor classes and forward/backward functions
-that follow the same pattern as nemo_rl/models/megatron/train.py.
+This module provides post-processor classes and forward/backward functions that follow the same pattern as
+nemo_rl/models/megatron/train.py.
 
 Key differences from megatron approach:
 - Post-processors compute results directly (no callable return pattern)
@@ -44,10 +44,7 @@ from nemo_rl.models.policy import PolicyConfig
 
 # Union type for any post-processing function
 PostProcessingFunction = Union[
-    "LossPostProcessor",
-    "LogprobsPostProcessor",
-    "TopkLogitsPostProcessor",
-    "ScorePostProcessor",
+    "LossPostProcessor", "LogprobsPostProcessor", "TopkLogitsPostProcessor", "ScorePostProcessor"
 ]
 
 
@@ -99,10 +96,7 @@ def model_forward(
     return outputs
 
 
-def extract_logits(
-    model: nn.Module,
-    outputs: Any,
-) -> torch.Tensor:
+def extract_logits(model: nn.Module, outputs: Any) -> torch.Tensor:
     """Extract logits from model outputs.
 
     Args:
@@ -121,10 +115,7 @@ def extract_logits(
         return outputs.logits
 
 
-def apply_temperature_scaling(
-    logits: torch.Tensor,
-    cfg: PolicyConfig,
-) -> torch.Tensor:
+def apply_temperature_scaling(logits: torch.Tensor, cfg: PolicyConfig) -> torch.Tensor:
     """Apply temperature scaling to logits.
 
     Args:
@@ -147,8 +138,8 @@ def redistribute_logits_for_cp(
 ) -> DTensor:
     """Redistribute logits for context parallel processing.
 
-    Handles the case where logits may be TP-sharded DTensor or regular tensor,
-    and converts them to CP+TP sharded DTensor.
+    Handles the case where logits may be TP-sharded DTensor or regular tensor, and converts them to CP+TP sharded
+    DTensor.
 
     Args:
         logits: Logits tensor (may be DTensor or regular tensor)
@@ -161,31 +152,23 @@ def redistribute_logits_for_cp(
     """
     if isinstance(logits, DTensor):
         # Must be tp sharded
-        assert (
-            logits.device_mesh.ndim == 1
-            and logits.device_mesh.mesh_dim_names[0] == "tp"
-        ), "logits must be tp sharded"
+        assert logits.device_mesh.ndim == 1 and logits.device_mesh.mesh_dim_names[0] == "tp", (
+            "logits must be tp sharded"
+        )
 
         # CP is implicitly sharded on the seq dim, so we need to redistribute to the tp dim
         logits = DTensor.from_local(
-            logits.to_local(),
-            device_mesh=device_mesh[("cp", "tp")],
-            placements=[Shard(sequence_dim), Shard(-1)],
+            logits.to_local(), device_mesh=device_mesh[("cp", "tp")], placements=[Shard(sequence_dim), Shard(-1)]
         )
     else:
         logits = DTensor.from_local(
-            logits,
-            device_mesh=device_mesh[("cp", "tp")],
-            placements=[Shard(sequence_dim), Shard(-1)],
+            logits, device_mesh=device_mesh[("cp", "tp")], placements=[Shard(sequence_dim), Shard(-1)]
         )
     return logits
 
 
 def prepare_data_for_cp(
-    mb: BatchedDataDict[Any],
-    processed_inputs: ProcessedInputs,
-    cp_mesh: Any,
-    sequence_dim: int = 1,
+    mb: BatchedDataDict[Any], processed_inputs: ProcessedInputs, cp_mesh: Any, sequence_dim: int = 1
 ) -> tuple[torch.Tensor, BatchedDataDict[Any]]:
     """Prepare data for context parallel processing.
 
@@ -201,11 +184,7 @@ def prepare_data_for_cp(
         Tuple of (seq_index_dtensor, updated_mb)
     """
     seq_index_dtensor = (
-        DTensor.from_local(
-            processed_inputs.seq_index,
-            device_mesh=cp_mesh,
-            placements=[Shard(1)],
-        )
+        DTensor.from_local(processed_inputs.seq_index, device_mesh=cp_mesh, placements=[Shard(1)])
         .full_tensor()
         .squeeze(0)
     )
@@ -216,13 +195,9 @@ def prepare_data_for_cp(
         current_tensor = mb[tensor_name]
         for buffer in processed_inputs.cp_buffers:
             if current_tensor is buffer:
-                assert type(current_tensor) == torch.Tensor, (
-                    f"tensor {tensor_name} is not a tensor"
-                )
+                assert type(current_tensor) == torch.Tensor, f"tensor {tensor_name} is not a tensor"
                 mb[tensor_name] = DTensor.from_local(
-                    current_tensor,
-                    device_mesh=cp_mesh,
-                    placements=[Shard(sequence_dim)],
+                    current_tensor, device_mesh=cp_mesh, placements=[Shard(sequence_dim)]
                 )
                 break
 
@@ -242,12 +217,11 @@ def forward_with_post_processing_fn(
 ) -> Tuple[Any, dict[str, Any], ProcessedMicrobatch]:
     """Perform forward pass with pre-processed microbatch and apply post-processing.
 
-    This function takes a pre-processed microbatch (with sequence packing already handled),
-    runs the forward step through the model, and applies the post-processing function
-    to compute the result.
+    This function takes a pre-processed microbatch (with sequence packing already handled), runs the forward step
+    through the model, and applies the post-processing function to compute the result.
 
-    Unlike the megatron approach which returns a callable, this directly computes
-    and returns the result since automodel uses PyTorch autograd.
+    Unlike the megatron approach which returns a callable, this directly computes and returns the result since automodel
+    uses PyTorch autograd.
 
     Args:
         model: The model to run forward pass on
@@ -272,10 +246,7 @@ def forward_with_post_processing_fn(
 
     # Model forward pass
     outputs = model_forward(
-        model,
-        processed_inputs,
-        is_reward_model=is_reward_model,
-        allow_flash_attn_args=allow_flash_attn_args,
+        model, processed_inputs, is_reward_model=is_reward_model, allow_flash_attn_args=allow_flash_attn_args
     )
 
     # Extract logits from model outputs
@@ -284,10 +255,7 @@ def forward_with_post_processing_fn(
 
     # Apply temperature scaling only for sampling-oriented post-processors
     # Score computations should use unscaled logits
-    if isinstance(
-        post_processing_fn,
-        (LossPostProcessor, LogprobsPostProcessor, TopkLogitsPostProcessor),
-    ):
+    if isinstance(post_processing_fn, (LossPostProcessor, LogprobsPostProcessor, TopkLogitsPostProcessor)):
         logits = apply_temperature_scaling(logits, cfg)
 
     # Apply the post-processing function directly based on type
@@ -300,9 +268,7 @@ def forward_with_post_processing_fn(
             global_valid_toks=global_valid_toks,
             sequence_dim=sequence_dim,
         )
-    elif isinstance(
-        post_processing_fn, (LogprobsPostProcessor, TopkLogitsPostProcessor)
-    ):
+    elif isinstance(post_processing_fn, (LogprobsPostProcessor, TopkLogitsPostProcessor)):
         result = post_processing_fn(
             logits=logits,
             processed_inputs=processed_inputs,
@@ -320,9 +286,7 @@ def forward_with_post_processing_fn(
         result = post_processing_fn(logits=logits)
         metrics = {"scores": result}
     else:
-        raise TypeError(
-            f"Unknown post-processing function type: {type(post_processing_fn)}"
-        )
+        raise TypeError(f"Unknown post-processing function type: {type(post_processing_fn)}")
 
     del logits
     return result, metrics, processed_mb
@@ -348,11 +312,11 @@ def automodel_forward_backward(
 ) -> list[Tuple[Any, dict[str, Any]]]:
     """Execute forward and backward passes for automodel.
 
-    This is the main training loop function that coordinates forward and backward
-    passes across multiple microbatches using PyTorch autograd.
+    This is the main training loop function that coordinates forward and backward passes across multiple microbatches
+    using PyTorch autograd.
 
-    Unlike megatron_forward_backward which uses Megatron's pipeline parallel
-    framework, this uses standard PyTorch operations.
+    Unlike megatron_forward_backward which uses Megatron's pipeline parallel framework, this uses standard PyTorch
+    operations.
 
     Args:
         model: The model to train
@@ -369,13 +333,12 @@ def automodel_forward_backward(
         dp_size: Data parallel size
         cp_size: Context parallel size
         num_global_batches: Number of global batches (for metric scaling)
-        train_context_fn: Optional callable that takes ProcessedInputs and returns
-            a context manager for the forward/backward pass. If None, no context is used.
-        num_valid_microbatches: Number of valid (non-dummy) microbatches. If provided,
-            microbatches beyond this index are treated as dummy batches (loss *= 0).
-            If None, all microbatches are considered valid.
-        on_microbatch_start: Optional callback called at the start of each microbatch
-            with the microbatch index. Useful for cache clearing, etc.
+        train_context_fn: Optional callable that takes ProcessedInputs and returns a context manager for the
+            forward/backward pass. If None, no context is used.
+        num_valid_microbatches: Number of valid (non-dummy) microbatches. If provided, microbatches beyond this index
+            are treated as dummy batches (loss *= 0). If None, all microbatches are considered valid.
+        on_microbatch_start: Optional callback called at the start of each microbatch with the microbatch index. Useful
+            for cache clearing, etc.
 
     Returns:
         List of (result, metrics) tuples from each microbatch
@@ -412,9 +375,7 @@ def automodel_forward_backward(
             )
 
             # Check if this is a dummy batch
-            is_dummy = (
-                num_valid_microbatches is not None and mb_idx >= num_valid_microbatches
-            )
+            is_dummy = num_valid_microbatches is not None and mb_idx >= num_valid_microbatches
 
             # Scale metrics for aggregation (only for loss)
             if isinstance(post_processing_fn, LossPostProcessor):
@@ -506,12 +467,8 @@ class LossPostProcessor:
         """
         # Handle CP redistribution
         if self.cp_size > 1:
-            _, mb = prepare_data_for_cp(
-                mb, processed_inputs, self.cp_mesh, sequence_dim
-            )
-            logits = redistribute_logits_for_cp(
-                logits, self.device_mesh, self.cp_mesh, sequence_dim
-            )
+            _, mb = prepare_data_for_cp(mb, processed_inputs, self.cp_mesh, sequence_dim)
+            logits = redistribute_logits_for_cp(logits, self.device_mesh, self.cp_mesh, sequence_dim)
 
         # Wrap loss function for sequence packing if needed
         if self.enable_seq_packing:
@@ -523,12 +480,7 @@ class LossPostProcessor:
         else:
             loss_fn_ = self.loss_fn
 
-        loss, loss_metrics = loss_fn_(
-            logits,
-            mb,
-            global_valid_seqs,
-            global_valid_toks,
-        )
+        loss, loss_metrics = loss_fn_(logits, mb, global_valid_seqs, global_valid_toks)
 
         return loss, loss_metrics
 
@@ -589,56 +541,37 @@ class LogprobsPostProcessor:
 
         if self.cp_size > 1:
             seq_index_tensor = (
-                DTensor.from_local(
-                    processed_inputs.seq_index,
-                    device_mesh=self.cp_mesh,
-                    placements=[Shard(1)],
-                )
+                DTensor.from_local(processed_inputs.seq_index, device_mesh=self.cp_mesh, placements=[Shard(1)])
                 .full_tensor()
                 .squeeze(0)
             )
 
             input_ids_dtensor = DTensor.from_local(
-                processed_inputs.input_ids,
-                device_mesh=self.cp_mesh,
-                placements=[Shard(sequence_dim)],
+                processed_inputs.input_ids, device_mesh=self.cp_mesh, placements=[Shard(sequence_dim)]
             )
 
-            logits = redistribute_logits_for_cp(
-                logits, self.device_mesh, self.cp_mesh, sequence_dim
-            )
+            logits = redistribute_logits_for_cp(logits, self.device_mesh, self.cp_mesh, sequence_dim)
 
             token_logprobs = get_logprobs_from_vocab_parallel_logits(
-                logits,
-                input_ids_dtensor,
-                seq_index_tensor,
-                chunk_size=self.logprob_chunk_size,
+                logits, input_ids_dtensor, seq_index_tensor, chunk_size=self.logprob_chunk_size
             )
 
             assert token_logprobs.shape[1] == seq_len - 1
         else:
             if isinstance(logits, DTensor):
                 token_logprobs = get_logprobs_from_vocab_parallel_logits(
-                    logits,
-                    processed_inputs.input_ids,
-                    chunk_size=self.logprob_chunk_size,
+                    logits, processed_inputs.input_ids, chunk_size=self.logprob_chunk_size
                 )
             else:
-                token_logprobs = self._compute_local_logprobs(
-                    logits, processed_inputs.input_ids
-                )
+                token_logprobs = self._compute_local_logprobs(logits, processed_inputs.input_ids)
 
         # Prepend 0 for first token to maintain sequence length
-        token_logprobs = torch.cat(
-            [torch.zeros_like(token_logprobs[:, :1]), token_logprobs], dim=1
-        )
+        token_logprobs = torch.cat([torch.zeros_like(token_logprobs[:, :1]), token_logprobs], dim=1)
 
         # Handle sequence packing unpacking or mask application
         if self.enable_seq_packing:
             unpacked_logprobs = torch.zeros(
-                (original_batch_size, original_seq_len),
-                dtype=token_logprobs.dtype,
-                device=token_logprobs.device,
+                (original_batch_size, original_seq_len), dtype=token_logprobs.dtype, device=token_logprobs.device
             )
             cu_seqlens = processed_inputs.flash_attn_kwargs.cu_seqlens_q
             for i in range(original_batch_size):
@@ -650,11 +583,7 @@ class LogprobsPostProcessor:
         else:
             # Apply mask to zero out padding tokens logprobs
             batch_size = processed_inputs.input_ids.shape[0]
-            post_attention_mask = torch.zeros(
-                (batch_size, seq_len),
-                dtype=torch.bool,
-                device=token_logprobs.device,
-            )
+            post_attention_mask = torch.zeros((batch_size, seq_len), dtype=torch.bool, device=token_logprobs.device)
             for i, length in enumerate(input_lengths):
                 # For right-padded sequence, set 1s at the beginning of the sequence
                 post_attention_mask[i, :length] = 1
@@ -662,11 +591,7 @@ class LogprobsPostProcessor:
 
         return token_logprobs
 
-    def _compute_local_logprobs(
-        self,
-        logits: torch.Tensor,
-        input_ids: torch.Tensor,
-    ) -> torch.Tensor:
+    def _compute_local_logprobs(self, logits: torch.Tensor, input_ids: torch.Tensor) -> torch.Tensor:
         """Compute logprobs locally without distributed processing.
 
         Args:
@@ -678,16 +603,11 @@ class LogprobsPostProcessor:
         """
         if self.logprob_chunk_size is not None:
             logits_seq_len = int(logits.shape[1])
-            num_chunks = (
-                logits_seq_len + self.logprob_chunk_size - 1
-            ) // self.logprob_chunk_size
+            num_chunks = (logits_seq_len + self.logprob_chunk_size - 1) // self.logprob_chunk_size
             chunked_log_probs = []
             for chunk_idx in range(num_chunks):
                 chunk_start = chunk_idx * self.logprob_chunk_size
-                chunk_end = min(
-                    logits_seq_len,
-                    (chunk_idx + 1) * self.logprob_chunk_size,
-                )
+                chunk_end = min(logits_seq_len, (chunk_idx + 1) * self.logprob_chunk_size)
                 chunk_logits = logits[:, chunk_start:chunk_end, :].to(torch.float32)
                 log_probs = torch.nn.functional.log_softmax(chunk_logits, dim=-1)
                 chunked_log_probs.append(log_probs)
@@ -706,9 +626,7 @@ class LogprobsPostProcessor:
         # We get logprob of token[t+1] from logits[t], prepending 0 to maintain sequence length
         next_tokens = input_ids[:, 1:]
         log_probs = log_probs[:, :-1]
-        token_logprobs = log_probs.gather(
-            dim=-1, index=next_tokens.unsqueeze(-1)
-        ).squeeze(-1)
+        token_logprobs = log_probs.gather(dim=-1, index=next_tokens.unsqueeze(-1)).squeeze(-1)
         del log_probs
 
         return token_logprobs
@@ -769,9 +687,7 @@ class TopkLogitsPostProcessor:
             Tuple of (top-k values, top-k indices) tensors
         """
         if self.cp_size > 1:
-            logits = redistribute_logits_for_cp(
-                logits, self.device_mesh, self.cp_mesh, sequence_dim
-            )
+            logits = redistribute_logits_for_cp(logits, self.device_mesh, self.cp_mesh, sequence_dim)
 
             # Deal with TP first
             local_logits = logits.to_local()  # [B, S_cp, V_tp]
@@ -823,14 +739,10 @@ class TopkLogitsPostProcessor:
             # vals: [1, packed_seq_len, k] -> [original_batch_size, original_seq_len, k]
             # idx: [1, packed_seq_len, k] -> [original_batch_size, original_seq_len, k]
             unpacked_vals = torch.zeros(
-                (original_batch_size, original_seq_len, self.k),
-                dtype=vals.dtype,
-                device=vals.device,
+                (original_batch_size, original_seq_len, self.k), dtype=vals.dtype, device=vals.device
             )
             unpacked_idx = torch.zeros(
-                (original_batch_size, original_seq_len, self.k),
-                dtype=idx.dtype,
-                device=idx.device,
+                (original_batch_size, original_seq_len, self.k), dtype=idx.dtype, device=idx.device
             )
 
             cu_seqlens = processed_inputs.flash_attn_kwargs.cu_seqlens_q
@@ -854,10 +766,7 @@ class TopkLogitsPostProcessor:
 class ScorePostProcessor:
     """Post-processor for computing reward model scores from model outputs."""
 
-    def __init__(
-        self,
-        cfg: PolicyConfig,
-    ):
+    def __init__(self, cfg: PolicyConfig):
         """Initialize ScorePostProcessor.
 
         Args:
@@ -865,10 +774,7 @@ class ScorePostProcessor:
         """
         self.cfg = cfg
 
-    def __call__(
-        self,
-        logits: torch.Tensor,
-    ) -> torch.Tensor:
+    def __call__(self, logits: torch.Tensor) -> torch.Tensor:
         """Extract scores from reward model outputs.
 
         Args:

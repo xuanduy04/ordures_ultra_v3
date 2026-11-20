@@ -21,11 +21,7 @@ from nemo_rl.distributed.batched_data_dict import (
 from nemo_rl.distributed.named_sharding import NamedSharding
 from nemo_rl.distributed.virtual_cluster import RayVirtualCluster
 from nemo_rl.distributed.worker_groups import RayWorkerBuilder, RayWorkerGroup
-from nemo_rl.models.generation.interfaces import (
-    GenerationDatumSpec,
-    GenerationInterface,
-    GenerationOutputSpec,
-)
+from nemo_rl.models.generation.interfaces import GenerationDatumSpec, GenerationInterface, GenerationOutputSpec
 from nemo_rl.models.policy import PolicyConfig
 from nemo_rl.models.policy.interfaces import (
     ColocatablePolicyInterface,
@@ -35,11 +31,7 @@ from nemo_rl.models.policy.interfaces import (
     TopkLogitsOutputSpec,
 )
 from nemo_rl.utils.checkpoint import CheckpointingConfig
-from nemo_rl.utils.flops_tracker import (
-    FLOPTracker,
-    get_default_hf_config,
-    get_theoretical_tflops,
-)
+from nemo_rl.utils.flops_tracker import FLOPTracker, get_default_hf_config, get_theoretical_tflops
 from nemo_rl.utils.timer import Timer
 
 PathLike = Union[str, "os.PathLike[Any]"]
@@ -108,10 +100,9 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
                         "if you are running a custom container or baremetal, you may need to set this variable manually. Example: export TORCH_CUDA_ARCH_LIST='9.0 10.0'"
                     )
             else:
-                assert (
-                    config["dtensor_cfg"].get("lora_cfg", {}).get("enabled", False)
-                    is False
-                ), "LoRA is not supported for DTensorPolicyWorker V1"
+                assert config["dtensor_cfg"].get("lora_cfg", {}).get("enabled", False) is False, (
+                    "LoRA is not supported for DTensorPolicyWorker V1"
+                )
                 worker_builder_cls = "nemo_rl.models.policy.workers.dtensor_policy_worker.DTensorPolicyWorker"
 
             tp_size = config["dtensor_cfg"]["tensor_parallel_size"]
@@ -123,11 +114,7 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
         model_parallel_size = pp_size * cp_size * tp_size
         actual_world_size = cluster.world_size()
 
-        if (
-            not bool(os.environ.get("NRL_IGNORE_TP_ACCURACY_CHECK"))
-            and "logprob_batch_size" in config
-            and tp_size >= 4
-        ):
+        if not bool(os.environ.get("NRL_IGNORE_TP_ACCURACY_CHECK")) and "logprob_batch_size" in config and tp_size >= 4:
             sep_line = "\n" + ("-" * 80)
             assert config["train_micro_batch_size"] == config["logprob_batch_size"], (
                 f"{sep_line}\n"
@@ -166,12 +153,7 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
                 cp_size,  # CP
                 tp_size,  # TP
             ),
-            names=[
-                "pipeline_parallel",
-                "data_parallel",
-                "context_parallel",
-                "tensor_parallel",
-            ],
+            names=["pipeline_parallel", "data_parallel", "context_parallel", "tensor_parallel"],
         )
 
         pre_init_queue = RayQueue()
@@ -193,8 +175,7 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
             # In this case, we need to create workers based on sorted bundle indices
             group_size = cluster.num_gpus_per_node
             tied_groups = [
-                (i // group_size, [bundle_idx])
-                for i, bundle_idx in enumerate(cluster._sorted_bundle_indices)
+                (i // group_size, [bundle_idx]) for i, bundle_idx in enumerate(cluster._sorted_bundle_indices)
             ]
 
             self.worker_group = RayWorkerGroup(
@@ -217,16 +198,12 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
             )
 
         if config["dynamic_batching"]["enabled"]:
-            assert pp_size == 1, (
-                "Dynamic batching is only supported for single pipeline parallel stage"
-            )
+            assert pp_size == 1, "Dynamic batching is only supported for single pipeline parallel stage"
             self.use_dynamic_batches = True
             self.dynamic_batching_args: DynamicBatchingArgs = {
                 "input_key": "input_ids",
                 "input_lengths_key": "input_lengths",
-                "sequence_length_round": config["dynamic_batching"][
-                    "sequence_length_round"
-                ],
+                "sequence_length_round": config["dynamic_batching"]["sequence_length_round"],
                 "max_tokens_per_microbatch": 0,  # Override this in each different call (presumably different sizes)
             }
             assert not config["sequence_packing"]["enabled"], (
@@ -246,9 +223,7 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
 
         if config["sequence_packing"]["enabled"]:
             self.use_sequence_packing = True
-            sequence_length_pad_multiple = (
-                cp_size * 2 * tp_size if cp_size > 1 else tp_size
-            )
+            sequence_length_pad_multiple = cp_size * 2 * tp_size if cp_size > 1 else tp_size
             self.sequence_packing_args: SequencePackingArgs = {
                 "algorithm": config["sequence_packing"]["algorithm"],
                 "input_key": "input_ids",
@@ -263,31 +238,23 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
 
         self.cfg = config
 
-    def init_collective(
-        self, ip: str, port: int, world_size: int, *, train_world_size: int
-    ) -> list[ray.ObjectRef]:
+    def init_collective(self, ip: str, port: int, world_size: int, *, train_world_size: int) -> list[ray.ObjectRef]:
         """Initialize the collective communication."""
         futures = self.worker_group.run_all_workers_single_data(
-            "init_collective",
-            ip=ip,
-            port=port,
-            world_size=world_size,
-            train_world_size=train_world_size,
+            "init_collective", ip=ip, port=port, world_size=world_size, train_world_size=train_world_size
         )
         # this function should co-work with vllm, so we should wait for all futures to complete outside
         return futures
 
     def get_logprobs(
-        self,
-        data: BatchedDataDict[GenerationDatumSpec],
-        timer: Optional[Timer] = None,
+        self, data: BatchedDataDict[GenerationDatumSpec], timer: Optional[Timer] = None
     ) -> BatchedDataDict[LogprobOutputSpec]:
         """Get the logprobs of the model for a data dict.
 
         Returns:
-          a BatchedDataDict with key "logprobs" and shape [batch_size, sequence_length].
-          We use the convention that the logprob of the first token is 0 so that the sequence length is maintained.
-          The logprob of input token i is specified at position i in the output logprobs tensor.
+            a BatchedDataDict with key "logprobs" and shape [batch_size, sequence_length]. We use the convention that
+            the logprob of the first token is 0 so that the sequence length is maintained. The logprob of input token i
+            is specified at position i in the output logprobs tensor.
         """
         dp_size = self.sharding_annotations.get_axis_size("data_parallel")
         sharded_data: list[SlicedDataDict]
@@ -295,49 +262,32 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
 
         with timer.time("get_logprobs/shard_data") if timer else nullcontext():
             if self.use_dynamic_batches:
-                self.dynamic_batching_args["max_tokens_per_microbatch"] = self.cfg[
-                    "dynamic_batching"
-                ]["logprob_mb_tokens"]
+                self.dynamic_batching_args["max_tokens_per_microbatch"] = self.cfg["dynamic_batching"][
+                    "logprob_mb_tokens"
+                ]
                 sharded_data, unsorted_data_indices = data.shard_by_batch_size(  # type: ignore
-                    dp_size,
-                    batch_size=None,
-                    dynamic_batching_args=self.dynamic_batching_args,
+                    dp_size, batch_size=None, dynamic_batching_args=self.dynamic_batching_args
                 )
             elif self.use_sequence_packing:
-                self.sequence_packing_args["max_tokens_per_microbatch"] = self.cfg[
-                    "sequence_packing"
-                ]["logprob_mb_tokens"]
+                self.sequence_packing_args["max_tokens_per_microbatch"] = self.cfg["sequence_packing"][
+                    "logprob_mb_tokens"
+                ]
                 # we just shard into DP shards here as Sequence packing allows for CP.
                 sharded_data, unsorted_data_indices = data.shard_by_batch_size(
-                    dp_size,
-                    batch_size=None,
-                    sequence_packing_args=self.sequence_packing_args,
+                    dp_size, batch_size=None, sequence_packing_args=self.sequence_packing_args
                 )
             else:
                 sharded_data = data.shard_by_batch_size(  # type: ignore
-                    dp_size,
-                    batch_size=None,
+                    dp_size, batch_size=None
                 )
 
-        with (
-            timer.time("get_logprobs/submit_logprob_futures")
-            if timer
-            else nullcontext()
-        ):
+        with timer.time("get_logprobs/submit_logprob_futures") if timer else nullcontext():
             futures = self.worker_group.run_all_workers_sharded_data(
                 "get_logprobs",
                 data=sharded_data,
                 in_sharded_axes=["data_parallel"],
-                replicate_on_axes=[
-                    "context_parallel",
-                    "tensor_parallel",
-                    "pipeline_parallel",
-                ],
-                output_is_replicated=[
-                    "context_parallel",
-                    "tensor_parallel",
-                    "pipeline_parallel",
-                ],
+                replicate_on_axes=["context_parallel", "tensor_parallel", "pipeline_parallel"],
+                output_is_replicated=["context_parallel", "tensor_parallel", "pipeline_parallel"],
             )
         del sharded_data
         gc.collect()
@@ -367,39 +317,28 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
         dp_size = self.sharding_annotations.get_axis_size("data_parallel")
         sharded_data: list[SlicedDataDict]
         unsorted_data_indices: list[int]
-        with (
-            timer.time("get_reference_policy_logprobs/shard_data")
-            if timer
-            else nullcontext()
-        ):
+        with timer.time("get_reference_policy_logprobs/shard_data") if timer else nullcontext():
             if self.use_dynamic_batches:
-                self.dynamic_batching_args["max_tokens_per_microbatch"] = self.cfg[
-                    "dynamic_batching"
-                ]["logprob_mb_tokens"]
+                self.dynamic_batching_args["max_tokens_per_microbatch"] = self.cfg["dynamic_batching"][
+                    "logprob_mb_tokens"
+                ]
                 sharded_data, unsorted_data_indices = data.shard_by_batch_size(  # type: ignore
-                    dp_size,
-                    batch_size=None,
-                    dynamic_batching_args=self.dynamic_batching_args,
+                    dp_size, batch_size=None, dynamic_batching_args=self.dynamic_batching_args
                 )
             elif self.use_sequence_packing:
-                self.sequence_packing_args["max_tokens_per_microbatch"] = self.cfg[
-                    "sequence_packing"
-                ]["logprob_mb_tokens"]
+                self.sequence_packing_args["max_tokens_per_microbatch"] = self.cfg["sequence_packing"][
+                    "logprob_mb_tokens"
+                ]
                 sharded_data, unsorted_data_indices = data.shard_by_batch_size(
-                    dp_size,
-                    batch_size=None,
-                    sequence_packing_args=self.sequence_packing_args,
+                    dp_size, batch_size=None, sequence_packing_args=self.sequence_packing_args
                 )
             else:
                 sharded_data = data.shard_by_batch_size(  # type: ignore
-                    dp_size,
-                    batch_size=None,
+                    dp_size, batch_size=None
                 )
 
         with (
-            timer.time(
-                "get_reference_policy_logprobs/submit_reference_policy_logprob_futures"
-            )
+            timer.time("get_reference_policy_logprobs/submit_reference_policy_logprob_futures")
             if timer
             else nullcontext()
         ):
@@ -407,24 +346,14 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
                 "get_reference_policy_logprobs",
                 data=sharded_data,
                 in_sharded_axes=["data_parallel"],
-                replicate_on_axes=[
-                    "context_parallel",
-                    "tensor_parallel",
-                    "pipeline_parallel",
-                ],
-                output_is_replicated=[
-                    "context_parallel",
-                    "tensor_parallel",
-                    "pipeline_parallel",
-                ],
+                replicate_on_axes=["context_parallel", "tensor_parallel", "pipeline_parallel"],
+                output_is_replicated=["context_parallel", "tensor_parallel", "pipeline_parallel"],
                 common_kwargs={"micro_batch_size": micro_batch_size},
             )
         del sharded_data
         gc.collect()
-        logprobs: BatchedDataDict[ReferenceLogprobOutputSpec] = (
-            BatchedDataDict.from_batches(
-                self.worker_group.get_all_worker_results(futures)
-            )
+        logprobs: BatchedDataDict[ReferenceLogprobOutputSpec] = BatchedDataDict.from_batches(
+            self.worker_group.get_all_worker_results(futures)
         )
         del futures
         gc.collect()
@@ -449,49 +378,32 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
         unsorted_data_indices: list[int]
         with timer.time("get_topk_logits/shard_data") if timer else nullcontext():
             if self.use_dynamic_batches:
-                self.dynamic_batching_args["max_tokens_per_microbatch"] = self.cfg[
-                    "dynamic_batching"
-                ]["logprob_mb_tokens"]
+                self.dynamic_batching_args["max_tokens_per_microbatch"] = self.cfg["dynamic_batching"][
+                    "logprob_mb_tokens"
+                ]
                 sharded_data, unsorted_data_indices = data.shard_by_batch_size(  # type: ignore
-                    dp_size,
-                    batch_size=None,
-                    dynamic_batching_args=self.dynamic_batching_args,
+                    dp_size, batch_size=None, dynamic_batching_args=self.dynamic_batching_args
                 )
             elif self.use_sequence_packing:
-                self.sequence_packing_args["max_tokens_per_microbatch"] = self.cfg[
-                    "sequence_packing"
-                ]["logprob_mb_tokens"]
+                self.sequence_packing_args["max_tokens_per_microbatch"] = self.cfg["sequence_packing"][
+                    "logprob_mb_tokens"
+                ]
                 # we just shard into DP shards here as Sequence packing allows for CP.
                 sharded_data, unsorted_data_indices = data.shard_by_batch_size(
-                    dp_size,
-                    batch_size=None,
-                    sequence_packing_args=self.sequence_packing_args,
+                    dp_size, batch_size=None, sequence_packing_args=self.sequence_packing_args
                 )
             else:
                 sharded_data = data.shard_by_batch_size(  # type: ignore
-                    dp_size,
-                    batch_size=None,
+                    dp_size, batch_size=None
                 )
 
-        with (
-            timer.time("get_topk_logits/submit_topk_logits_futures")
-            if timer
-            else nullcontext()
-        ):
+        with timer.time("get_topk_logits/submit_topk_logits_futures") if timer else nullcontext():
             futures = self.worker_group.run_all_workers_sharded_data(
                 "get_topk_logits",
                 data=sharded_data,
                 in_sharded_axes=["data_parallel"],
-                replicate_on_axes=[
-                    "context_parallel",
-                    "tensor_parallel",
-                    "pipeline_parallel",
-                ],
-                output_is_replicated=[
-                    "context_parallel",
-                    "tensor_parallel",
-                    "pipeline_parallel",
-                ],
+                replicate_on_axes=["context_parallel", "tensor_parallel", "pipeline_parallel"],
+                output_is_replicated=["context_parallel", "tensor_parallel", "pipeline_parallel"],
                 common_kwargs={"k": k, "micro_batch_size": micro_batch_size},
             )
         del sharded_data
@@ -532,28 +444,21 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
         dp_size = self.sharding_annotations.get_axis_size("data_parallel")
         with timer.time("policy_training/sharding_data") if timer else nullcontext():
             if self.use_dynamic_batches:
-                self.dynamic_batching_args["max_tokens_per_microbatch"] = self.cfg[
-                    "dynamic_batching"
-                ]["train_mb_tokens"]
+                self.dynamic_batching_args["max_tokens_per_microbatch"] = self.cfg["dynamic_batching"][
+                    "train_mb_tokens"
+                ]
                 sharded_data, _ = data.shard_by_batch_size(
-                    dp_size,
-                    batch_size=batch_size,
-                    dynamic_batching_args=self.dynamic_batching_args,
+                    dp_size, batch_size=batch_size, dynamic_batching_args=self.dynamic_batching_args
                 )
             elif self.use_sequence_packing:
-                self.sequence_packing_args["max_tokens_per_microbatch"] = self.cfg[
-                    "sequence_packing"
-                ]["train_mb_tokens"]
+                self.sequence_packing_args["max_tokens_per_microbatch"] = self.cfg["sequence_packing"][
+                    "train_mb_tokens"
+                ]
                 sharded_data, _ = data.shard_by_batch_size(
-                    dp_size,
-                    batch_size=batch_size,
-                    sequence_packing_args=self.sequence_packing_args,
+                    dp_size, batch_size=batch_size, sequence_packing_args=self.sequence_packing_args
                 )
             else:
-                sharded_data = data.shard_by_batch_size(
-                    dp_size,
-                    batch_size=batch_size,
-                )
+                sharded_data = data.shard_by_batch_size(dp_size, batch_size=batch_size)
 
         if self.flops_tracker is not None:
             self.flops_tracker.reset()
@@ -562,31 +467,14 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
                 self.flops_tracker.track_batch(input_lengths.tolist())
 
         # Train each shard in parallel
-        with (
-            timer.time("policy_training/submit_training_futures")
-            if timer
-            else nullcontext()
-        ):
+        with timer.time("policy_training/submit_training_futures") if timer else nullcontext():
             futures = self.worker_group.run_all_workers_sharded_data(
                 "train",
                 data=sharded_data,
                 in_sharded_axes=["data_parallel"],
-                replicate_on_axes=[
-                    "context_parallel",
-                    "tensor_parallel",
-                    "pipeline_parallel",
-                ],
-                output_is_replicated=[
-                    "context_parallel",
-                    "tensor_parallel",
-                    "pipeline_parallel",
-                ],
-                common_kwargs={
-                    "loss_fn": loss_fn,
-                    "eval_mode": eval_mode,
-                    "gbs": batch_size,
-                    "mbs": micro_batch_size,
-                },
+                replicate_on_axes=["context_parallel", "tensor_parallel", "pipeline_parallel"],
+                output_is_replicated=["context_parallel", "tensor_parallel", "pipeline_parallel"],
+                common_kwargs={"loss_fn": loss_fn, "eval_mode": eval_mode, "gbs": batch_size, "mbs": micro_batch_size},
             )
         del sharded_data
         gc.collect()
@@ -595,10 +483,7 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
         gc.collect()
 
         # Aggregate the results
-        aggregated_results = {
-            "loss": results[0]["global_loss"],
-            "grad_norm": results[0]["grad_norm"],
-        }
+        aggregated_results = {"loss": results[0]["global_loss"], "grad_norm": results[0]["grad_norm"]}
         if "moe_metrics" in results[0]:
             aggregated_results["moe_metrics"] = results[0]["moe_metrics"]
         if "mtp_metrics" in results[0]:
@@ -613,8 +498,7 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
 
             try:
                 aggregated_results["theoretical_tflops"] = gpus_per_worker * sum(
-                    get_theoretical_tflops(r["gpu_name"], r["model_dtype"])
-                    for r in results
+                    get_theoretical_tflops(r["gpu_name"], r["model_dtype"]) for r in results
                 )
             except Exception as e:
                 warnings.warn(f"Error getting theoretical flops: {e}")
@@ -633,12 +517,8 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
     ) -> BatchedDataDict[GenerationOutputSpec]:
         """Generate a batch of data using the policy."""
         # Verify input data is right-padded
-        assert isinstance(data, BatchedDataDict), (
-            f"data must be a BatchedDataDict, got type: {type(data)}"
-        )
-        assert "input_ids" in data and "input_lengths" in data, (
-            "Missing required input fields"
-        )
+        assert isinstance(data, BatchedDataDict), f"data must be a BatchedDataDict, got type: {type(data)}"
+        assert "input_ids" in data and "input_lengths" in data, "Missing required input fields"
 
         dp_size = self.sharding_annotations.get_axis_size("data_parallel")
         sharded_data = data.shard_by_batch_size(dp_size, batch_size=None)
@@ -657,31 +537,18 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
         )
 
         # Verify the output has all required fields
-        required_keys = [
-            "output_ids",
-            "generation_lengths",
-            "unpadded_sequence_lengths",
-            "logprobs",
-        ]
+        required_keys = ["output_ids", "generation_lengths", "unpadded_sequence_lengths", "logprobs"]
         missing_keys = [key for key in required_keys if key not in result]
         if missing_keys:
-            raise ValueError(
-                f"Missing required keys for GenerationOutputSpec: {missing_keys}"
-            )
+            raise ValueError(f"Missing required keys for GenerationOutputSpec: {missing_keys}")
 
         return result
 
-    def score(
-        self, data: BatchedDataDict[GenerationDatumSpec]
-    ) -> BatchedDataDict[ScoreOutputSpec]:
+    def score(self, data: BatchedDataDict[GenerationDatumSpec]) -> BatchedDataDict[ScoreOutputSpec]:
         """Score a batch of data using the policy."""
         # Verify input data is right-padded
-        assert isinstance(data, BatchedDataDict), (
-            f"data must be a BatchedDataDict, got type: {type(data)}"
-        )
-        assert "input_ids" in data and "input_lengths" in data, (
-            "Missing required input fields"
-        )
+        assert isinstance(data, BatchedDataDict), f"data must be a BatchedDataDict, got type: {type(data)}"
+        assert "input_ids" in data and "input_lengths" in data, "Missing required input fields"
 
         dp_size = self.sharding_annotations.get_axis_size("data_parallel")
         sharded_data = data.shard_by_batch_size(dp_size, batch_size=None)
@@ -689,30 +556,18 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
             "score",
             data=sharded_data,
             in_sharded_axes=["data_parallel"],
-            replicate_on_axes=[
-                "context_parallel",
-                "tensor_parallel",
-                "pipeline_parallel",
-            ],
-            output_is_replicated=[
-                "context_parallel",
-                "tensor_parallel",
-                "pipeline_parallel",
-            ],
+            replicate_on_axes=["context_parallel", "tensor_parallel", "pipeline_parallel"],
+            output_is_replicated=["context_parallel", "tensor_parallel", "pipeline_parallel"],
             common_kwargs={},
         )
 
         result: BatchedDataDict[ScoreOutputSpec] = BatchedDataDict.from_batches(
-            self.worker_group.get_all_worker_results(futures),
+            self.worker_group.get_all_worker_results(futures)
         )
-        required_keys = [
-            "scores",
-        ]
+        required_keys = ["scores"]
         missing_keys = [key for key in required_keys if key not in result]
         if missing_keys:
-            raise ValueError(
-                f"Missing required keys for ScoreOutputSpec: {missing_keys}"
-            )
+            raise ValueError(f"Missing required keys for ScoreOutputSpec: {missing_keys}")
 
         return result
 
@@ -726,9 +581,7 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
         ray.get(futures)
 
     def prepare_for_lp_inference(self, *args: Any, **kwargs: Any) -> None:
-        futures = self.worker_group.run_all_workers_single_data(
-            "prepare_for_lp_inference"
-        )
+        futures = self.worker_group.run_all_workers_single_data("prepare_for_lp_inference")
         ray.get(futures)
 
     def finish_generation(self, *args: Any, **kwargs: Any) -> bool:
@@ -764,49 +617,32 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
     ) -> dict[str, Any]:
         """Trigger KV-cache FP8 scale calibration across Megatron workers and return results.
 
-        Note: The backend `MegatronPolicyWorker.calibrate_qkv_fp8_scales` already implements
-        distributed reduction, returning results merged across ranks. Therefore, we shard the
-        input by DP and call in parallel, then take the result from the first worker.
+        Note: The backend `MegatronPolicyWorker.calibrate_qkv_fp8_scales` already implements distributed reduction,
+        returning results merged across ranks. Therefore, we shard the input by DP and call in parallel, then take the
+        result from the first worker.
         """
         dp_size = self.sharding_annotations.get_axis_size("data_parallel")
         if self.use_dynamic_batches:
-            self.dynamic_batching_args["max_tokens_per_microbatch"] = self.cfg[
-                "dynamic_batching"
-            ]["logprob_mb_tokens"]
+            self.dynamic_batching_args["max_tokens_per_microbatch"] = self.cfg["dynamic_batching"]["logprob_mb_tokens"]
             sharded_data, _ = data.shard_by_batch_size(  # type: ignore
-                dp_size,
-                batch_size=None,
-                dynamic_batching_args=self.dynamic_batching_args,
+                dp_size, batch_size=None, dynamic_batching_args=self.dynamic_batching_args
             )
         elif self.use_sequence_packing:
-            self.sequence_packing_args["max_tokens_per_microbatch"] = self.cfg[
-                "sequence_packing"
-            ]["logprob_mb_tokens"]
+            self.sequence_packing_args["max_tokens_per_microbatch"] = self.cfg["sequence_packing"]["logprob_mb_tokens"]
             sharded_data, _ = data.shard_by_batch_size(
-                dp_size,
-                batch_size=None,
-                sequence_packing_args=self.sequence_packing_args,
+                dp_size, batch_size=None, sequence_packing_args=self.sequence_packing_args
             )
         else:
             sharded_data = data.shard_by_batch_size(  # type: ignore
-                dp_size,
-                batch_size=None,
+                dp_size, batch_size=None
             )
 
         futures = self.worker_group.run_all_workers_sharded_data(
             "calibrate_qkv_fp8_scales",
             data=sharded_data,
             in_sharded_axes=["data_parallel"],
-            replicate_on_axes=[
-                "context_parallel",
-                "tensor_parallel",
-                "pipeline_parallel",
-            ],
-            output_is_replicated=[
-                "context_parallel",
-                "tensor_parallel",
-                "pipeline_parallel",
-            ],
+            replicate_on_axes=["context_parallel", "tensor_parallel", "pipeline_parallel"],
+            output_is_replicated=["context_parallel", "tensor_parallel", "pipeline_parallel"],
             common_kwargs={
                 "micro_batch_size": micro_batch_size,
                 "percentile": percentile,
@@ -829,20 +665,13 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
     ) -> list[ray.ObjectRef]:
         """Send the weights for IPC handles via ZMQ socket."""
         futures = self.worker_group.run_all_workers_single_data(
-            "stream_weights_via_ipc_zmq",
-            buffer_size_bytes=buffer_size_bytes,
-            kv_scales=kv_scales,
+            "stream_weights_via_ipc_zmq", buffer_size_bytes=buffer_size_bytes, kv_scales=kv_scales
         )
         return futures
 
-    def broadcast_weights_for_collective(
-        self, kv_scales: Optional[dict[str, float]] = None
-    ) -> list[ray.ObjectRef]:
+    def broadcast_weights_for_collective(self, kv_scales: Optional[dict[str, float]] = None) -> list[ray.ObjectRef]:
         """Broadcast the weights for collective communication."""
-        futures = self.worker_group.run_all_workers_single_data(
-            "broadcast_weights_for_collective",
-            kv_scales=kv_scales,
-        )
+        futures = self.worker_group.run_all_workers_single_data("broadcast_weights_for_collective", kv_scales=kv_scales)
         # this function should co-work with vllm, so we should wait for all futures to complete outside
         return futures
 
@@ -865,8 +694,8 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
     ) -> None:
         """Save a checkpoint of the model.
 
-        With Megatron async_save=True, this returns after D2H staging. The caller
-        must call finalize_async_save() before renaming the checkpoint directory.
+        With Megatron async_save=True, this returns after D2H staging. The caller must call finalize_async_save() before
+        renaming the checkpoint directory.
         """
         # Only pass checkpointing_cfg for DTensor v2
         use_v2 = self.cfg.get("dtensor_cfg", {}).get("_v2", False)
@@ -880,13 +709,8 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
                 checkpointing_cfg=checkpointing_cfg,
             )
         else:
-            if (
-                checkpointing_cfg is not None
-                and checkpointing_cfg.get("model_save_format", None) is not None
-            ):
-                raise ValueError(
-                    "model_save_format must be None or omitted if using DTensorPolicyWorker (_v2=False)."
-                )
+            if checkpointing_cfg is not None and checkpointing_cfg.get("model_save_format", None) is not None:
+                raise ValueError("model_save_format must be None or omitted if using DTensorPolicyWorker (_v2=False).")
             futures = self.worker_group.run_all_workers_single_data(
                 "save_checkpoint",
                 weights_path=weights_path,
@@ -898,8 +722,8 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
     def finalize_async_save(self) -> None:
         """Block until all workers' in-flight async checkpoint writes complete.
 
-        No-op when async_save is disabled. Must be called before the checkpoint
-        directory is renamed from tmp_step_N/ to step_N/.
+        No-op when async_save is disabled. Must be called before the checkpoint directory is renamed from tmp_step_N/ to
+        step_N/.
         """
         futures = self.worker_group.run_all_workers_single_data("finalize_async_save")
         ray.get(futures)
@@ -916,9 +740,9 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
     def __del__(self) -> None:
         """Shuts down the worker groups when the object is deleted or is garbage collected.
 
-        This is an extra safety net in case the user forgets to call worker_group.shutdown() and the pointer to
-        the object is lost due to leaving a function scope. It's always recommended that the
-        user calls worker_group.shutdown().
+        This is an extra safety net in case the user forgets to call worker_group.shutdown() and the pointer to the
+        object is lost due to leaving a function scope. It's always recommended that the user calls
+        worker_group.shutdown().
         """
         if hasattr(self, "worker_group"):
             self.worker_group.shutdown(cleanup_method="shutdown")
@@ -935,17 +759,11 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
 
     def print_node_ip_and_gpu_id(self) -> list[tuple[str, int]]:
         """Print the node IP and GPU ID of the current worker."""
-        results = ray.get(
-            self.worker_group.run_all_workers_single_data(
-                "report_node_ip_and_gpu_id",
-            )
-        )
+        results = ray.get(self.worker_group.run_all_workers_single_data("report_node_ip_and_gpu_id"))
         all_node_ips = sorted(set([result[0] for result in results]))
         all_gpu_ids = sorted(set([result[1] for result in results]))
 
-        worker_id_list = [
-            [list() for _ in range(len(all_gpu_ids))] for _ in range(len(all_node_ips))
-        ]
+        worker_id_list = [[list() for _ in range(len(all_gpu_ids))] for _ in range(len(all_node_ips))]
         for worker_id, (ip, gpu_id) in enumerate(results):
             node_idx = all_node_ips.index(ip)
             gpu_idx = all_gpu_ids.index(gpu_id)
@@ -955,9 +773,7 @@ class Policy(ColocatablePolicyInterface, GenerationInterface):
 
         table = PrettyTable()
         table.title = "Policy worker mapping to Nodes and GPUs"
-        table.field_names = ["Node_IP"] + [
-            "GPU_ID=" + str(gpu_id) for gpu_id in all_gpu_ids
-        ]
+        table.field_names = ["Node_IP"] + ["GPU_ID=" + str(gpu_id) for gpu_id in all_gpu_ids]
         for i, node_idx in enumerate(all_node_ips):
             row = [node_idx]
             for j in range(len(all_gpu_ids)):

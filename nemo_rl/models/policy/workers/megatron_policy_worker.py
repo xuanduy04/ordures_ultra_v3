@@ -9,10 +9,7 @@ from typing import Any, Iterator, Optional, TypeVar, cast
 
 import ray
 import torch
-from megatron.bridge.training.checkpointing import (
-    maybe_finalize_async_save,
-    save_checkpoint,
-)
+from megatron.bridge.training.checkpointing import maybe_finalize_async_save, save_checkpoint
 from megatron.bridge.training.utils.pg_utils import get_pg_collection
 from megatron.bridge.training.utils.train_utils import (
     logical_and_across_model_parallel_group,
@@ -21,25 +18,13 @@ from megatron.bridge.training.utils.train_utils import (
 from megatron.bridge.utils.common_utils import get_rank_safe
 from megatron.core import parallel_state
 from megatron.core.dist_checkpointing.strategies.async_utils import _disable_gc
-from megatron.core.dist_checkpointing.strategies.filesystem_async import (
-    FileSystemWriterAsync,
-    _write_item,
-)
+from megatron.core.dist_checkpointing.strategies.filesystem_async import FileSystemWriterAsync, _write_item
 from megatron.core.distributed import DistributedDataParallel
-from megatron.core.distributed.fsdp.mcore_fsdp_adapter import (
-    FullyShardedDataParallel as custom_FSDP,
-)
-from megatron.core.inference.model_inference_wrappers.inference_wrapper_config import (
-    InferenceWrapperConfig,
-)
-from megatron.core.inference.text_generation_controllers.text_generation_controller import (
-    TextGenerationController,
-)
+from megatron.core.distributed.fsdp.mcore_fsdp_adapter import FullyShardedDataParallel as custom_FSDP
+from megatron.core.inference.model_inference_wrappers.inference_wrapper_config import InferenceWrapperConfig
+from megatron.core.inference.text_generation_controllers.text_generation_controller import TextGenerationController
 from megatron.core.optimizer import ChainedOptimizer
-from megatron.core.parallel_state import (
-    get_pipeline_model_parallel_group,
-    is_pipeline_last_stage,
-)
+from megatron.core.parallel_state import get_pipeline_model_parallel_group, is_pipeline_last_stage
 from megatron.core.process_groups_config import ProcessGroupCollection
 from megatron.core.rerun_state_machine import get_rerun_state_machine
 from transformers import PreTrainedTokenizerBase
@@ -47,18 +32,11 @@ from transformers import PreTrainedTokenizerBase
 from nemo_rl.algorithms.interfaces import LossFunction
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
 from nemo_rl.distributed.named_sharding import NamedSharding
-from nemo_rl.models.generation.interfaces import (
-    GenerationDatumSpec,
-    GenerationOutputSpec,
-    verify_right_padding,
-)
+from nemo_rl.models.generation.interfaces import GenerationDatumSpec, GenerationOutputSpec, verify_right_padding
 from nemo_rl.models.generation.vllm.config import VllmConfig
 from nemo_rl.models.megatron.common import get_moe_metrics, get_mtp_metrics
 from nemo_rl.models.megatron.config import MegatronGenerationConfig
-from nemo_rl.models.megatron.data import (
-    get_microbatch_iterator,
-    process_global_batch,
-)
+from nemo_rl.models.megatron.data import get_microbatch_iterator, process_global_batch
 from nemo_rl.models.megatron.pipeline_parallel import (
     broadcast_loss_metrics_from_last_stage,
     broadcast_obj_from_pp_rank,
@@ -81,10 +59,7 @@ from nemo_rl.models.megatron.train import (
     megatron_forward_backward,
 )
 from nemo_rl.models.policy import PolicyConfig
-from nemo_rl.models.policy.interfaces import (
-    ColocatablePolicyInterface,
-    LogprobOutputSpec,
-)
+from nemo_rl.models.policy.interfaces import ColocatablePolicyInterface, LogprobOutputSpec
 from nemo_rl.models.policy.utils import get_runtime_env_for_policy_worker
 from nemo_rl.models.policy.workers.base_policy_worker import AbstractPolicyWorker
 from nemo_rl.utils.nsys import wrap_with_nvtx_name
@@ -100,13 +75,7 @@ def _nrl_stream_preload_tensors(write_buckets, non_blocking=True):
 
 @_disable_gc()
 def _nrl_stream_write_preloaded_data(
-    transform_list,
-    local_proc_idx,
-    write_bucket,
-    results_queue,
-    count_queue,
-    use_fsync,
-    **kwargs,
+    transform_list, local_proc_idx, write_bucket, results_queue, count_queue, use_fsync, **kwargs
 ):
     """Write a bucket, moving each GPU tensor to CPU immediately before it is written."""
     use_msc = kwargs.get("use_msc", False)
@@ -128,28 +97,14 @@ def _nrl_stream_write_preloaded_data(
         with open_file(file_name, "wb") as stream:
             for write_item, data in bytes_data:
                 local_results.append(
-                    _write_item(
-                        *transform_list,
-                        stream,
-                        data,
-                        write_item,
-                        storage_key,
-                        **extra_kwargs,
-                    )
+                    _write_item(*transform_list, stream, data, write_item, storage_key, **extra_kwargs)
                 )
 
             for write_item, tensor in tensor_data:
                 if not tensor.is_cpu:
                     tensor = tensor.to("cpu")
                 local_results.append(
-                    _write_item(
-                        *transform_list,
-                        stream,
-                        tensor,
-                        write_item,
-                        storage_key,
-                        **extra_kwargs,
-                    )
+                    _write_item(*transform_list, stream, tensor, write_item, storage_key, **extra_kwargs)
                 )
                 del tensor
 
@@ -175,9 +130,7 @@ FileSystemWriterAsync.write_preloaded_data = staticmethod(_nrl_stream_write_prel
 TokenizerType = TypeVar("TokenizerType", bound=PreTrainedTokenizerBase)
 
 
-@ray.remote(
-    runtime_env=get_runtime_env_for_policy_worker("megatron_policy_worker")
-)  # pragma: no cover
+@ray.remote(runtime_env=get_runtime_env_for_policy_worker("megatron_policy_worker"))  # pragma: no cover
 class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
     def __repr__(self):
         """Customizes the actor's prefix in the Ray logs.
@@ -219,13 +172,9 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         log_gpu_memory_diagnostics(label="after_nccl_init", worker_type="MegatronPolicyWorker")
 
         # Step 2: Validate and setup model paths
-        hf_model_name, pretrained_path, pt_checkpoint_exists = validate_model_paths(
-            config
-        )
+        hf_model_name, pretrained_path, pt_checkpoint_exists = validate_model_paths(config)
         # Handle model import if needed
-        handle_model_import(
-            config, hf_model_name, pretrained_path, pt_checkpoint_exists
-        )
+        handle_model_import(config, hf_model_name, pretrained_path, pt_checkpoint_exists)
         log_gpu_memory_diagnostics(label="after_hf_import", worker_type="MegatronPolicyWorker")
 
         # Store tokenizer
@@ -235,26 +184,19 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
 
         # Step 3: Setup model configuration
         runtime_config = validate_and_set_config(
-            config,
-            self.rank,
-            hf_model_name,
-            pretrained_path,
-            weights_path,
-            tokenizer,
+            config, self.rank, hf_model_name, pretrained_path, weights_path, tokenizer
         )
 
         self.megatron_cfg = runtime_config.megatron_cfg
         self.dtype = runtime_config.dtype
         self.optimizer_cpu_offload = runtime_config.optimizer_cpu_offload
-        self.offload_optimizer_for_logprob = (
-            runtime_config.offload_optimizer_for_logprob
-        )
+        self.offload_optimizer_for_logprob = runtime_config.offload_optimizer_for_logprob
         self.is_generation_colocated = runtime_config.is_generation_colocated
         self.final_padded_vocab_size = runtime_config.final_padded_vocab_size
 
-        self.defer_fp32_logits = self.cfg["megatron_cfg"].get(
-            "defer_fp32_logits", None
-        ) and (runtime_config.model_cfg.fp16 or runtime_config.model_cfg.bf16)
+        self.defer_fp32_logits = self.cfg["megatron_cfg"].get("defer_fp32_logits", None) and (
+            runtime_config.model_cfg.fp16 or runtime_config.model_cfg.bf16
+        )
 
         # Store FP8 config for later use
         self.fp8_cfg = config["megatron_cfg"].get("fp8_cfg", None)
@@ -263,9 +205,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         self.megatron_cfg.validate()
 
         # Step 4: Setup Megatron model and components
-        model_and_optimizer_state = setup_model_and_optimizer(
-            config, self.megatron_cfg, init_optimizer
-        )
+        model_and_optimizer_state = setup_model_and_optimizer(config, self.megatron_cfg, init_optimizer)
 
         self.mcore_state = model_and_optimizer_state.state
         self.model = model_and_optimizer_state.model
@@ -282,25 +222,15 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         # Step 5: Setup reference model if needed
         if init_reference_model:
             self.model = self.move_model(self.model, "cpu")
-            self.reference_state_dict = setup_reference_model_state(
-                config, self.megatron_cfg, pretrained_path
-            )
+            self.reference_state_dict = setup_reference_model_state(config, self.megatron_cfg, pretrained_path)
             self.model = self.move_model(self.model, "cuda")
             log_gpu_memory_diagnostics(label="after_ref_model", worker_type="MegatronPolicyWorker")
 
         # Step 6: Finalize setup
-        (
-            self.megatron_tokenizer,
-            self.megatron_bridge,
-            self.should_disable_forward_pre_hook,
-            self.dp_size,
-        ) = finalize_megatron_setup(
-            config,
-            self.megatron_cfg,
-            hf_model_name,
-            worker_sharding_annotations,
-            self.model,
-            self.optimizer,
+        (self.megatron_tokenizer, self.megatron_bridge, self.should_disable_forward_pre_hook, self.dp_size) = (
+            finalize_megatron_setup(
+                config, self.megatron_cfg, hf_model_name, worker_sharding_annotations, self.model, self.optimizer
+            )
         )
 
         # vars used for refit
@@ -356,9 +286,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         local_gbs = gbs // self.dp_size
         total_dataset_size = torch.tensor(data.size, device="cuda")
         torch.distributed.all_reduce(
-            total_dataset_size,
-            op=torch.distributed.ReduceOp.SUM,
-            group=parallel_state.get_data_parallel_group(),
+            total_dataset_size, op=torch.distributed.ReduceOp.SUM, group=parallel_state.get_data_parallel_group()
         )
         num_global_batches = int(total_dataset_size.item()) // gbs
 
@@ -395,25 +323,14 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
                         mtp_loss_mask = (batch["advantages"] > 0) * mtp_loss_mask
                     batch["mtp_loss_mask"] = mtp_loss_mask
 
-                (
-                    data_iterator,
-                    num_microbatches,
-                    micro_batch_size,
-                    seq_length,
-                    padded_seq_length,
-                ) = get_microbatch_iterator(
-                    batch,
-                    self.cfg,
-                    mbs,
-                    straggler_timer=self.mcore_state.straggler_timer,
+                (data_iterator, num_microbatches, micro_batch_size, seq_length, padded_seq_length) = (
+                    get_microbatch_iterator(batch, self.cfg, mbs, straggler_timer=self.mcore_state.straggler_timer)
                 )
                 # Track total microbatches for MoE aux-loss averaging
                 total_num_microbatches += int(num_microbatches)
 
                 loss_post_processor = LossPostProcessor(
-                    loss_fn=loss_fn,
-                    cfg=self.cfg,
-                    num_microbatches=num_microbatches,
+                    loss_fn=loss_fn, cfg=self.cfg, num_microbatches=num_microbatches
                 )
 
                 rerun_state_machine = get_rerun_state_machine()
@@ -452,9 +369,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
 
                 # Update parameters.
                 if not eval_mode:
-                    update_successful, grad_norm, num_zeros_in_grad = (
-                        self.optimizer.step()
-                    )
+                    update_successful, grad_norm, num_zeros_in_grad = self.optimizer.step()
                 else:
                     update_successful, grad_norm, num_zeros_in_grad = (True, 0.0, 0.0)
 
@@ -467,16 +382,12 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
                 )
                 # grad_norm and num_zeros_in_grad will be None on ranks without trainable params,
                 # so we must gather across mp ranks
-                grad_norm: float = reduce_max_stat_across_model_parallel_group(
-                    grad_norm, mp_group=pg_collection.mp
-                )
+                grad_norm: float = reduce_max_stat_across_model_parallel_group(grad_norm, mp_group=pg_collection.mp)
                 num_zeros_in_grad: float = reduce_max_stat_across_model_parallel_group(
                     num_zeros_in_grad, mp_group=pg_collection.mp
                 )
-                mtp_grad_norm = getattr(self.optimizer, 'mtp_grad_norm', None)
-                mtp_grad_norm = reduce_max_stat_across_model_parallel_group(
-                    mtp_grad_norm, mp_group=pg_collection.mp
-                )
+                mtp_grad_norm = getattr(self.optimizer, "mtp_grad_norm", None)
+                mtp_grad_norm = reduce_max_stat_across_model_parallel_group(mtp_grad_norm, mp_group=pg_collection.mp)
 
                 if update_successful:
                     skipped_iter = 0
@@ -511,9 +422,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
                     gb_loss_metrics = None
 
                 # Broadcast loss metrics from last stage to all stages
-                gb_loss_metrics = broadcast_loss_metrics_from_last_stage(
-                    gb_loss_metrics
-                )
+                gb_loss_metrics = broadcast_loss_metrics_from_last_stage(gb_loss_metrics)
                 if not parallel_state.is_pipeline_last_stage(ignore_virtual=True):
                     mb_losses = [x["loss"] for x in gb_loss_metrics]
 
@@ -528,9 +437,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
 
         # Aggregate metrics across all microbatches
         mb_metrics, global_loss = aggregate_training_statistics(
-            all_mb_metrics=all_mb_metrics,
-            losses=losses,
-            data_parallel_group=parallel_state.get_data_parallel_group(),
+            all_mb_metrics=all_mb_metrics, losses=losses, data_parallel_group=parallel_state.get_data_parallel_group()
         )
 
         metrics = {
@@ -548,8 +455,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         if num_moe_experts is not None and num_moe_experts > 1:
             moe_loss_scale = 1.0 / max(1, total_num_microbatches)
             moe_metrics = get_moe_metrics(
-                loss_scale=moe_loss_scale,
-                per_layer_logging=self.cfg["megatron_cfg"]["moe_per_layer_logging"],
+                loss_scale=moe_loss_scale, per_layer_logging=self.cfg["megatron_cfg"]["moe_per_layer_logging"]
             )
             if moe_metrics:
                 metrics["moe_metrics"] = moe_metrics
@@ -569,41 +475,26 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
     ) -> BatchedDataDict[LogprobOutputSpec]:
         """Get the logprobs of the model for a batch of data.
 
-        Uses the configured logprob_batch_size to do microbatching.
-        Input data is assumed to be right-padded. The method internally converts to
-        left-padded format for computation, and returns outputs in right-padded format.
-        If micro_batch_size is provided, it will be used instead of the configured
-        logprob_batch_size.
+        Uses the configured logprob_batch_size to do microbatching. Input data is assumed to be right-padded. The method
+        internally converts to left-padded format for computation, and returns outputs in right-padded format. If
+        micro_batch_size is provided, it will be used instead of the configured logprob_batch_size.
 
         Returns:
-          a BatchedDataDict with key "logprobs" and shape [batch_size, sequence_length].
-          We use the convention that the logprob of the first token is 0 so that the sequence length is maintained.
-          The logprob of input token i is specified at position i in the output logprobs tensor.
+            a BatchedDataDict with key "logprobs" and shape [batch_size, sequence_length]. We use the convention that
+            the logprob of the first token is 0 so that the sequence length is maintained. The logprob of input token i
+            is specified at position i in the output logprobs tensor.
         """
         self.timer.start("get_logprobs")
         no_grad = torch.no_grad()
         no_grad.__enter__()
-        logprob_batch_size = (
-            micro_batch_size
-            if micro_batch_size is not None
-            else self.cfg["logprob_batch_size"]
-        )
+        logprob_batch_size = micro_batch_size if micro_batch_size is not None else self.cfg["logprob_batch_size"]
 
         self.model.eval()
 
         pp_grp = get_pipeline_model_parallel_group()
 
-        (
-            mb_iterator,
-            num_microbatches,
-            micro_batch_size,
-            seq_length,
-            padded_seq_length,
-        ) = get_microbatch_iterator(
-            data,
-            self.cfg,
-            logprob_batch_size,
-            straggler_timer=self.mcore_state.straggler_timer,
+        (mb_iterator, num_microbatches, micro_batch_size, seq_length, padded_seq_length) = get_microbatch_iterator(
+            data, self.cfg, logprob_batch_size, straggler_timer=self.mcore_state.straggler_timer
         )
 
         list_of_logprobs = megatron_forward_backward(
@@ -626,9 +517,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
             for lp in all_logprobs:
                 padding_needed = seq_length - lp.shape[1]
                 if padding_needed > 0:
-                    lp = torch.nn.functional.pad(
-                        lp, (0, padding_needed), mode="constant", value=0.0
-                    )
+                    lp = torch.nn.functional.pad(lp, (0, padding_needed), mode="constant", value=0.0)
                 all_log_probs_padded.append(lp)
             del all_logprobs
             logprobs = torch.cat(all_log_probs_padded, dim=0)
@@ -650,8 +539,8 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
     def use_reference_model(self):
         """Context manager that temporarily swaps the reference model and active model.
 
-        On entry: Moves model to CPU, moves reference_model to CUDA. Swaps the references
-        On exit: Restores original references and re-flips cuda/cpu
+        On entry: Moves model to CPU, moves reference_model to CUDA. Swaps the references On exit: Restores original
+        references and re-flips cuda/cpu
         """
         self.timer.start("use_reference_model")
         ## disable overlap param gather when swapping weights
@@ -664,9 +553,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
                 model_state_dict = {}
                 for name, item in self.model.state_dict().items():
                     if isinstance(item, torch.Tensor):
-                        item = item.detach().to(
-                            device="cpu", non_blocking=True, copy=True
-                        )
+                        item = item.detach().to(device="cpu", non_blocking=True, copy=True)
                     model_state_dict[name] = item
 
                 self.model.load_state_dict(self.reference_state_dict, strict=True)
@@ -701,15 +588,12 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
 
     @wrap_with_nvtx_name("megatron_policy_worker/get_topk_logits")
     def get_topk_logits(
-        self,
-        *,
-        data: BatchedDataDict[GenerationDatumSpec],
-        k: int,
-        micro_batch_size: Optional[int] = None,
+        self, *, data: BatchedDataDict[GenerationDatumSpec], k: int, micro_batch_size: Optional[int] = None
     ):
         """Get the top-k logits and indices for a batch of data.
 
-        The major difference from get_logprobs is that we compute top-k logits and indices for each position in the sequence.
+        The major difference from get_logprobs is that we compute top-k logits and indices for each position in the
+        sequence.
 
         Returns:
             BatchedDataDict containing:
@@ -720,27 +604,14 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         no_grad = torch.no_grad()
         no_grad.__enter__()
 
-        logprob_batch_size = (
-            micro_batch_size
-            if micro_batch_size is not None
-            else self.cfg["logprob_batch_size"]
-        )
+        logprob_batch_size = micro_batch_size if micro_batch_size is not None else self.cfg["logprob_batch_size"]
 
         self.model.eval()
 
         pp_grp = get_pipeline_model_parallel_group()
 
-        (
-            mb_iterator,
-            num_microbatches,
-            micro_batch_size,
-            seq_length,
-            padded_seq_length,
-        ) = get_microbatch_iterator(
-            data,
-            self.cfg,
-            logprob_batch_size,
-            straggler_timer=self.mcore_state.straggler_timer,
+        (mb_iterator, num_microbatches, micro_batch_size, seq_length, padded_seq_length) = get_microbatch_iterator(
+            data, self.cfg, logprob_batch_size, straggler_timer=self.mcore_state.straggler_timer
         )
 
         list_of_outputs = megatron_forward_backward(
@@ -772,15 +643,9 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
             topk_logits = torch.cat(logits_chunks, dim=0)
             topk_indices = torch.cat(indices_chunks, dim=0)
 
-            tensors_to_broadcast = {
-                "topk_logits": topk_logits,
-                "topk_indices": topk_indices,
-            }
+            tensors_to_broadcast = {"topk_logits": topk_logits, "topk_indices": topk_indices}
         else:
-            tensors_to_broadcast = {
-                "topk_logits": None,
-                "topk_indices": None,
-            }
+            tensors_to_broadcast = {"topk_logits": None, "topk_indices": None}
 
         # Broadcast tensors from last stage to all stages
         broadcasted = broadcast_tensors_from_last_stage(tensors_to_broadcast)
@@ -789,9 +654,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
 
         no_grad.__exit__(None, None, None)
         self.timer.stop("get_topk_logits")
-        result = BatchedDataDict.from_batches(
-            [{"topk_logits": topk_logits.cpu(), "topk_indices": topk_indices.cpu()}]
-        )
+        result = BatchedDataDict.from_batches([{"topk_logits": topk_logits.cpu(), "topk_indices": topk_indices.cpu()}])
         gc.collect()
         torch.cuda.empty_cache()
         return result
@@ -816,23 +679,15 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         no_grad.__enter__()
         self.model.config.flash_decode = False
         if self.should_disable_forward_pre_hook:
-            self.model = self.move_model(
-                self.model, "cuda", move_params=True, move_grads=False
-            )
+            self.model = self.move_model(self.model, "cuda", move_params=True, move_grads=False)
         # Verify input is right padded
-        assert isinstance(data, BatchedDataDict), (
-            f"data must be a BatchedDataDict, got type: {type(data)}"
-        )
+        assert isinstance(data, BatchedDataDict), f"data must be a BatchedDataDict, got type: {type(data)}"
         assert "input_ids" in data and "input_lengths" in data, (
             f"input_ids and input_lengths must be present in the BatchedDataDict, got keys: {data.keys()}"
         )
-        is_right_padded, error_msg = verify_right_padding(
-            data, pad_value=self.tokenizer.pad_token_id
-        )
+        is_right_padded, error_msg = verify_right_padding(data, pad_value=self.tokenizer.pad_token_id)
         if not is_right_padded:
-            warnings.warn(
-                f"Input to Megatron Generation worker is not properly right-padded: {error_msg}"
-            )
+            warnings.warn(f"Input to Megatron Generation worker is not properly right-padded: {error_msg}")
 
         model_cfg = self.megatron_cfg.model
         inference_wrapper_config = InferenceWrapperConfig(
@@ -845,27 +700,17 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
             inference_max_requests=self.cfg["generation_batch_size"],
         )
 
-        from megatron.core.inference.contexts.dynamic_context import (
-            DynamicInferenceContext,
-        )
-        from megatron.core.inference.engines.dynamic_engine import (
-            DynamicInferenceEngine,
-        )
-        from megatron.core.inference.model_inference_wrappers.gpt.gpt_inference_wrapper import (
-            GPTInferenceWrapper,
-        )
+        from megatron.core.inference.contexts.dynamic_context import DynamicInferenceContext
+        from megatron.core.inference.engines.dynamic_engine import DynamicInferenceEngine
+        from megatron.core.inference.model_inference_wrappers.gpt.gpt_inference_wrapper import GPTInferenceWrapper
         from megatron.core.inference.sampling_params import SamplingParams
 
-        mcore_generation_config = cast(
-            MegatronGenerationConfig, self.cfg["generation"]["mcore_generation_config"]
-        )
+        mcore_generation_config = cast(MegatronGenerationConfig, self.cfg["generation"]["mcore_generation_config"])
         buffer_size_gb = mcore_generation_config["buffer_size_gb"]
 
         num_cuda_graphs = mcore_generation_config["num_cuda_graphs"]
         block_size_tokens = mcore_generation_config["block_size_tokens"]
-        use_cuda_graphs_for_non_decode_steps = mcore_generation_config[
-            "use_cuda_graphs_for_non_decode_steps"
-        ]
+        use_cuda_graphs_for_non_decode_steps = mcore_generation_config["use_cuda_graphs_for_non_decode_steps"]
         enable_chunked_prefill = mcore_generation_config["enable_chunked_prefill"]
         unified_memory_level = mcore_generation_config["unified_memory_level"]
         max_tokens = mcore_generation_config["max_tokens"]
@@ -883,17 +728,13 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
             materialize_only_last_token_logits=False,
             num_cuda_graphs=num_cuda_graphs,
             block_size_tokens=block_size_tokens,
-            tensor_model_parallel_size=self.cfg["megatron_cfg"][
-                "tensor_model_parallel_size"
-            ],
+            tensor_model_parallel_size=self.cfg["megatron_cfg"]["tensor_model_parallel_size"],
             use_cuda_graphs_for_non_decode_steps=use_cuda_graphs_for_non_decode_steps,
             use_flashinfer_fused_rope=False,
             unified_memory_level=unified_memory_level,
             max_tokens=max_tokens,
         )
-        inference_wrapped_model = GPTInferenceWrapper(
-            self.model, inference_wrapper_config, dynamic_context
-        )
+        inference_wrapped_model = GPTInferenceWrapper(self.model, inference_wrapper_config, dynamic_context)
 
         inference_wrapped_model.prep_model_for_inference()
         # Set pipeline parallel flag
@@ -902,8 +743,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         )
 
         text_generation_controller = TextGenerationController(
-            inference_wrapped_model=inference_wrapped_model,
-            tokenizer=self.megatron_tokenizer,
+            inference_wrapped_model=inference_wrapped_model, tokenizer=self.megatron_tokenizer
         )
 
         # Calculate seed based on node and rank to ensure reproducibility across workers
@@ -928,9 +768,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         top_k_val = 1 if greedy else (int(top_k_cfg) if top_k_cfg is not None else 0)
 
         top_p_cfg = self.cfg["generation"]["top_p"]
-        top_p_val = (
-            0.0 if greedy else (float(top_p_cfg) if top_p_cfg is not None else 0.0)
-        )
+        top_p_val = 0.0 if greedy else (float(top_p_cfg) if top_p_cfg is not None else 0.0)
 
         # New API: SamplingParams now includes termination_id and uses num_tokens_total
         sampling_params = SamplingParams(
@@ -950,14 +788,8 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         request_id = 0
 
         # New API: add_request now takes sampling_params as a parameter
-        for p, prompt_len in zip(
-            prompt_tokens_tensor, prompt_lengths_tensor, strict=True
-        ):
-            dynamic_engine.add_request(
-                request_id,
-                p[:prompt_len],
-                sampling_params=sampling_params,
-            )
+        for p, prompt_len in zip(prompt_tokens_tensor, prompt_lengths_tensor, strict=True):
+            dynamic_engine.add_request(request_id, p[:prompt_len], sampling_params=sampling_params)
             request_id += 1
 
         result = []
@@ -969,14 +801,8 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         result.sort(key=lambda x: x.request_id)
 
         out = {
-            "tokens": [
-                x.requests[0].prompt_tokens.tolist() + x.requests[0].generated_tokens
-                for x in result
-            ],
-            "logprobs": [
-                x.requests[0].prompt_log_probs + x.requests[0].generated_log_probs
-                for x in result
-            ],
+            "tokens": [x.requests[0].prompt_tokens.tolist() + x.requests[0].generated_tokens for x in result],
+            "logprobs": [x.requests[0].prompt_log_probs + x.requests[0].generated_log_probs for x in result],
         }
 
         input_lengths = data["input_lengths"]
@@ -988,25 +814,14 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         max_seq_len = padded_input_length + max_gen_seq_len
         # Create padded tensors for tokens and logprobs
         output_ids_padded = torch.full(
-            (batch_size, max_seq_len),
-            self.tokenizer.pad_token_id,
-            dtype=torch.long,
-            device=data["input_ids"].device,
+            (batch_size, max_seq_len), self.tokenizer.pad_token_id, dtype=torch.long, device=data["input_ids"].device
         )
 
-        logprobs_padded = torch.zeros(
-            (batch_size, max_seq_len),
-            dtype=torch.float,
-            device=data["input_ids"].device,
-        )
+        logprobs_padded = torch.zeros((batch_size, max_seq_len), dtype=torch.float, device=data["input_ids"].device)
 
         # Fill in the padded tensors with actual values
-        generation_lengths = torch.zeros(
-            batch_size, dtype=torch.long, device=data["input_ids"].device
-        )
-        unpadded_sequence_lengths = torch.zeros(
-            batch_size, dtype=torch.long, device=data["input_ids"].device
-        )
+        generation_lengths = torch.zeros(batch_size, dtype=torch.long, device=data["input_ids"].device)
+        unpadded_sequence_lengths = torch.zeros(batch_size, dtype=torch.long, device=data["input_ids"].device)
         for i in range(batch_size):
             seq_len = len(out["tokens"][i])
             output_ids_padded[i, :seq_len] = torch.tensor(
@@ -1016,9 +831,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
             unpadded_sequence_lengths[i] = seq_len
             logprob_len = len(out["logprobs"][i])
             logprobs_padded[i, 1 : logprob_len + 1] = torch.tensor(
-                out["logprobs"][i],
-                dtype=torch.float,
-                device=data["input_ids"].device,
+                out["logprobs"][i], dtype=torch.float, device=data["input_ids"].device
             )
 
         out_dict = {
@@ -1077,9 +890,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         Returns:
             List of (parameter_name, size_in_bytes) tuples.
         """
-        self.refit_conversion_tasks = self.megatron_bridge.get_conversion_tasks(
-            [self.model]
-        )
+        self.refit_conversion_tasks = self.megatron_bridge.get_conversion_tasks([self.model])
         param_info = []
 
         def calculate_size_in_bytes(param, tp_size, ep_size):
@@ -1088,15 +899,9 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
                 size_in_bytes = None
             else:
                 # Calculate size for this parameter
-                prec_to_bytes = {
-                    torch.bfloat16: 2,
-                    torch.float16: 2,
-                    torch.float32: 4,
-                }
+                prec_to_bytes = {torch.bfloat16: 2, torch.float16: 2, torch.float32: 4}
                 scale = prec_to_bytes[self.dtype] / prec_to_bytes[param.dtype]
-                size_in_bytes = (
-                    param.element_size() * param.numel() * tp_size * ep_size * scale
-                )
+                size_in_bytes = param.element_size() * param.numel() * tp_size * ep_size * scale
 
             # Broadcast size_in_bytes across pipeline parallel ranks
             return broadcast_obj_from_pp_rank(size_in_bytes)
@@ -1106,26 +911,21 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
                 (
                     task.param_name,
                     calculate_size_in_bytes(
-                        task.param_weight,
-                        task.mapping.tp_size,
-                        task.mapping.ep_size if task.mapping.is_expert else 1,
+                        task.param_weight, task.mapping.tp_size, task.mapping.ep_size if task.mapping.is_expert else 1
                     ),
                 )
             )
         return param_info
 
     def _iter_params_with_optional_kv_scales(
-        self,
-        kv_scales: Optional[dict[str, float]] = None,
+        self, kv_scales: Optional[dict[str, float]] = None
     ) -> Iterator[tuple[str, torch.Tensor]]:
         """Yield exported HF parameters and optionally append FP8 KV/Q scale tensors.
 
-        This helper is used by both IPC-based streaming and collective broadcast
-        so that the logic for adding KV scales stays consistent in one place.
+        This helper is used by both IPC-based streaming and collective broadcast so that the logic for adding KV scales
+        stays consistent in one place.
         """
-        from nemo_rl.models.generation.vllm.quantization.fp8_train_utils import (
-            get_vllm_qkv_scale_names,
-        )
+        from nemo_rl.models.generation.vllm.quantization.fp8_train_utils import get_vllm_qkv_scale_names
 
         base_iter = self.megatron_bridge.export_hf_weights(
             [self.model],
@@ -1167,9 +967,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
                 scale_value = kv_scales[param_name]
             else:
                 scale_value = 1.0
-            scale_tensor = torch.tensor(
-                scale_value, dtype=torch.float32, device="cuda"
-            ).reshape(1)
+            scale_tensor = torch.tensor(scale_value, dtype=torch.float32, device="cuda").reshape(1)
             yield param_name, scale_tensor
 
     @torch.no_grad()
@@ -1184,9 +982,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
 
         # Use the shared implementation to append optional KV scales.
         stream_weights_via_ipc_zmq_impl(
-            params_generator=self._iter_params_with_optional_kv_scales(
-                kv_scales=kv_scales
-            ),
+            params_generator=self._iter_params_with_optional_kv_scales(kv_scales=kv_scales),
             buffer_size_bytes=buffer_size_bytes,
             zmq_socket=self.zmq_socket,
             rank=self.rank,
@@ -1194,9 +990,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         )
 
     @torch.no_grad()
-    def broadcast_weights_for_collective(
-        self, kv_scales: Optional[dict[str, float]] = None
-    ) -> None:
+    def broadcast_weights_for_collective(self, kv_scales: Optional[dict[str, float]] = None) -> None:
         """Broadcast the weights for collective communication."""
         # param_iterator will return (name, tensor), we only need tensor.
         packed_broadcast_producer(
@@ -1215,9 +1009,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         self.model.eval()
 
         # offload grads to cpu
-        self.model = self.move_model(
-            self.model, "cpu", move_params=False, move_grads=True
-        )  # get rid of grad buffers
+        self.model = self.move_model(self.model, "cpu", move_params=False, move_grads=True)  # get rid of grad buffers
 
         # offload optimizer to cpu
         torch.randn(1).cuda()  # wake up torch allocator
@@ -1238,18 +1030,12 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         torch.cuda.empty_cache()
 
         # onload models and optimizer state to cuda
-        self.model = self.move_model(
-            self.model, "cuda", move_grads=True, move_params=True
-        )
+        self.model = self.move_model(self.model, "cuda", move_grads=True, move_params=True)
         self.model.train()
 
         # Move optimizer state to CUDA if it exists
         # colocated generation will always offload optimizer to cuda before refit
-        if (
-            hasattr(self, "optimizer")
-            and self.optimizer is not None
-            and not self.optimizer_cpu_offload
-        ):
+        if hasattr(self, "optimizer") and self.optimizer is not None and not self.optimizer_cpu_offload:
             self.move_optimizer("cuda")
 
         if self.cfg["megatron_cfg"]["empty_unused_memory_level"] >= 1:
@@ -1265,18 +1051,10 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         torch.cuda.empty_cache()
         allocated = torch.cuda.memory_allocated() / (1024**3)  # Convert to GB
         reserved = torch.cuda.memory_reserved() / (1024**3)  # Convert to GB
-        print(
-            f"GPU Memory before optimizer offload: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved"
-        )
-        self.model = self.move_model(
-            self.model, "cpu", move_params=False, move_grads=True
-        )  # get rid of grad buffers
+        print(f"GPU Memory before optimizer offload: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
+        self.model = self.move_model(self.model, "cpu", move_params=False, move_grads=True)  # get rid of grad buffers
         torch.randn(1).cuda()  # wake up torch allocator
-        if (
-            hasattr(self, "optimizer")
-            and self.optimizer is not None
-            and not self.optimizer_cpu_offload
-        ):
+        if hasattr(self, "optimizer") and self.optimizer is not None and not self.optimizer_cpu_offload:
             self.move_optimizer("cpu")
 
         gc.collect()
@@ -1285,9 +1063,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         # Print memory stats after offloading
         allocated = torch.cuda.memory_allocated() / (1024**3)  # Convert to GB
         reserved = torch.cuda.memory_reserved() / (1024**3)  # Convert to GB
-        print(
-            f"GPU Memory after optimizer offload: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved"
-        )
+        print(f"GPU Memory after optimizer offload: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
         no_grad.__exit__(None, None, None)
         self.timer.stop("offload_before_refit")
 
@@ -1304,19 +1080,13 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
 
         allocated = torch.cuda.memory_allocated() / (1024**3)  # Convert to GB
         reserved = torch.cuda.memory_reserved() / (1024**3)  # Convert to GB
-        print(
-            f"GPU Memory after refit complete: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved"
-        )
+        print(f"GPU Memory after refit complete: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved")
         no_grad.__exit__(None, None, None)
         self.timer.stop("offload_after_refit")
 
     @torch.no_grad()
     def move_model(
-        self,
-        model: torch.nn.Module,
-        device: str,
-        move_params: bool = True,
-        move_grads: bool = True,
+        self, model: torch.nn.Module, device: str, move_params: bool = True, move_grads: bool = True
     ) -> torch.nn.Module:
         # move all param and grad buffers to the device
         if isinstance(model, DistributedDataParallel):
@@ -1324,37 +1094,25 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
             for buffers in [model.buffers, model.expert_parallel_buffers]:
                 for buffer_idx in range(len(buffers)):
                     if device == "cpu":
-                        buffers[buffer_idx].offload_to_cpu(
-                            move_params=move_params, move_grads=move_grads
-                        )
+                        buffers[buffer_idx].offload_to_cpu(move_params=move_params, move_grads=move_grads)
                     elif device == "cuda":
-                        buffers[buffer_idx].reload_from_cpu(
-                            move_params=move_params, move_grads=move_grads
-                        )
+                        buffers[buffer_idx].reload_from_cpu(move_params=move_params, move_grads=move_grads)
                     else:
-                        raise ValueError(
-                            f"Invalid device: {device}. Only strings 'cpu' and 'cuda' are supported."
-                        )
+                        raise ValueError(f"Invalid device: {device}. Only strings 'cpu' and 'cuda' are supported.")
         elif isinstance(model, custom_FSDP):
             if device == "cpu":
                 model.param_and_grad_buffer.offload_to_cpu(move_params, move_grads)
             elif device == "cuda":
-                model.param_and_grad_buffer.reload_from_cpu(
-                    move_params=move_params, move_grads=move_grads
-                )
+                model.param_and_grad_buffer.reload_from_cpu(move_params=move_params, move_grads=move_grads)
             else:
-                raise ValueError(
-                    f"Invalid device: {device}. Only strings 'cpu' and 'cuda' are supported."
-                )
+                raise ValueError(f"Invalid device: {device}. Only strings 'cpu' and 'cuda' are supported.")
         else:
             # Ordinary offload case
             if move_params:
                 new_state_dict = {}
                 for name, item in model.state_dict().items():
                     if isinstance(item, torch.Tensor):
-                        item = item.detach().to(
-                            device=device, non_blocking=True, copy=True
-                        )
+                        item = item.detach().to(device=device, non_blocking=True, copy=True)
                     new_state_dict[name] = item
                 model.load_state_dict(new_state_dict)
         return model
@@ -1378,22 +1136,14 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
                         if not v.is_cuda:
                             state[k] = v.to("cuda")
                     else:
-                        raise ValueError(
-                            f"Invalid device: {device}. Only strings 'cpu' and 'cuda' are supported."
-                        )
+                        raise ValueError(f"Invalid device: {device}. Only strings 'cpu' and 'cuda' are supported.")
 
-    def save_checkpoint(
-        self,
-        weights_path: str,
-        optimizer_path: Optional[str] = None,
-        **kwargs,
-    ):
+    def save_checkpoint(self, weights_path: str, optimizer_path: Optional[str] = None, **kwargs):
         """Save a training checkpoint.
 
-        With async_save=True, this method returns after D2H staging.
-        The actual disk write continues in a background persistent worker process.
-        Callers must call finalize_async_save() before renaming the directory or
-        starting another save.
+        With async_save=True, this method returns after D2H staging. The actual disk write continues in a background
+        persistent worker process. Callers must call finalize_async_save() before renaming the directory or starting
+        another save.
 
         With async_save=False (default), this blocks until the write is complete.
 
@@ -1403,14 +1153,10 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         """
         self.timer.start("save_checkpoint")
         if not torch.distributed.is_initialized():
-            raise RuntimeError(
-                "Distributed process group is not initialized. Cannot save checkpoint."
-            )
+            raise RuntimeError("Distributed process group is not initialized. Cannot save checkpoint.")
 
         if self.mcore_state is None or self.model is None:
-            raise RuntimeError(
-                "Megatron core state or model is not initialized. Cannot save checkpoint."
-            )
+            raise RuntimeError("Megatron core state or model is not initialized. Cannot save checkpoint.")
 
         original_save_path = self.mcore_state.cfg.checkpoint.save
         is_async = self.mcore_state.cfg.checkpoint.async_save
@@ -1419,11 +1165,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
             gc.collect()
             # Block until any previous async save is fully written to disk.
             # With sync save this is a no-op.
-            maybe_finalize_async_save(
-                self.mcore_state,
-                ckpt_cfg=self.mcore_state.cfg.checkpoint,
-                blocking=True,
-            )
+            maybe_finalize_async_save(self.mcore_state, ckpt_cfg=self.mcore_state.cfg.checkpoint, blocking=True)
             self.mcore_state.cfg.checkpoint.save = weights_path
 
             optimizer_to_save = None
@@ -1455,11 +1197,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
 
             if not is_async:
                 # Sync path: finalize immediately (runs finalize_fns + barrier).
-                maybe_finalize_async_save(
-                    self.mcore_state,
-                    ckpt_cfg=self.mcore_state.cfg.checkpoint,
-                    blocking=True,
-                )
+                maybe_finalize_async_save(self.mcore_state, ckpt_cfg=self.mcore_state.cfg.checkpoint, blocking=True)
             if self.should_disable_forward_pre_hook:
                 self.enable_forward_pre_hook()
 
@@ -1478,23 +1216,18 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
     def finalize_async_save(self):
         """Block until the in-flight async write completes and run finalize_fns.
 
-        Safe to call when async_save is disabled (no-op).
-        Does NOT terminate the persistent worker — it stays alive for the next save.
+        Safe to call when async_save is disabled (no-op). Does NOT terminate the persistent worker — it stays alive for
+        the next save.
         """
-        maybe_finalize_async_save(
-            self.mcore_state,
-            ckpt_cfg=self.mcore_state.cfg.checkpoint,
-            blocking=True,
-        )
+        maybe_finalize_async_save(self.mcore_state, ckpt_cfg=self.mcore_state.cfg.checkpoint, blocking=True)
         gc.collect()
         torch.cuda.empty_cache()
 
     def terminate_async_checkpoint_worker(self):
         """Block until any in-flight write completes, then shut down the persistent worker.
 
-        Directly closes the async queue on GlobalState, bypassing
-        maybe_finalize_async_save's early-return guard on ckpt_cfg.async_save.
-        Safe to call regardless of whether async_save is enabled.
+        Directly closes the async queue on GlobalState, bypassing maybe_finalize_async_save's early-return guard on
+        ckpt_cfg.async_save. Safe to call regardless of whether async_save is enabled.
         """
         async_queue = getattr(self.mcore_state, "async_calls_queue", None)
         if async_queue is not None:
@@ -1505,8 +1238,8 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
 
         Args:
             weights_path: The exact directory path from which to load the checkpoint.
-            optimizer_path: If not None, attempts to load optimizer and scheduler states
-                            if self.optimizer and self.scheduler are initialized.
+            optimizer_path: If not None, attempts to load optimizer and scheduler states if self.optimizer and
+                self.scheduler are initialized.
         """
         raise NotImplementedError(
             "Loading checkpoints outside of the init function is not yet implemented for Megatron policy."
@@ -1542,11 +1275,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
                 )
             else:
                 non_tp_params.append(
-                    {
-                        "name": name,
-                        "tensor_model_parallel": tensor_model_parallel,
-                        "shape": list(param.shape),
-                    }
+                    {"name": name, "tensor_model_parallel": tensor_model_parallel, "shape": list(param.shape)}
                 )
 
         return {
@@ -1568,8 +1297,10 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
     ) -> dict[str, Any]:
         """One-shot calibration of Q/K/V activation scales (for FP8 KV cache).
 
-        - Captures each layer's `query_key_value` output through forward hooks, splits Q/K/V, and computes percentile amax.
-        - In parallel (DP/TP/PP) environments, first computes local percentiles, then takes max across all ranks for conservativeness.
+        - Captures each layer's `query_key_value` output through forward hooks, splits Q/K/V, and computes percentile
+          amax.
+        - In parallel (DP/TP/PP) environments, first computes local percentiles, then takes max across all ranks for
+          conservativeness.
         - By default only returns and saves K/V scales, optionally returns Q.
 
         Args:
@@ -1584,9 +1315,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
             { "format": "fp8", "percentile": float, "margin": float,
               "layers": { layer_name: {"k_scale": float, "v_scale": float[, "q_scale": float] } } }
         """
-        from nemo_rl.models.generation.vllm.quantization.fp8_train_utils import (
-            convert_calibration_to_vllm_format,
-        )
+        from nemo_rl.models.generation.vllm.quantization.fp8_train_utils import convert_calibration_to_vllm_format
 
         # Allow overriding FP8 max for Q, K, V via environment variables for ease of testing.
         # Defaults align with FP8 e4m3 max magnitude.
@@ -1630,15 +1359,9 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
                 k = args[1]
                 v = args[2]
                 if include_q:
-                    layer_to_samples_q[layer_key].append(
-                        float(torch.amax(torch.abs(q)).item())
-                    )
-                layer_to_samples_k[layer_key].append(
-                    float(torch.amax(torch.abs(k)).item())
-                )
-                layer_to_samples_v[layer_key].append(
-                    float(torch.amax(torch.abs(v)).item())
-                )
+                    layer_to_samples_q[layer_key].append(float(torch.amax(torch.abs(q)).item()))
+                layer_to_samples_k[layer_key].append(float(torch.amax(torch.abs(k)).item()))
+                layer_to_samples_v[layer_key].append(float(torch.amax(torch.abs(v)).item()))
 
             return _pre_hook
 
@@ -1647,9 +1370,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         for name, module in self.model.named_modules():
             if "self_attention.core_attention" in name:
                 try:
-                    handle = module.register_forward_pre_hook(
-                        _pre_hook_builder_core_attention(name)
-                    )
+                    handle = module.register_forward_pre_hook(_pre_hook_builder_core_attention(name))
                     hook_handles.append(handle)
                     matched_modules.append((name, module.__class__.__name__, "pre"))
                 except Exception as e:
@@ -1676,9 +1397,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
             if not values:
                 return 0.0
             t = torch.tensor(sorted(values), device="cuda", dtype=torch.float32)
-            rank = max(
-                0, min(len(values) - 1, int(round((p / 100.0) * (len(values) - 1))))
-            )
+            rank = max(0, min(len(values) - 1, int(round((p / 100.0) * (len(values) - 1)))))
             return float(t[rank].item())
 
         local_layer_to_pamax = {}
@@ -1689,23 +1408,13 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
         ):
             entry = {}
             if include_q:
-                entry["q_amax_p"] = _percentile(
-                    layer_to_samples_q.get(layer_key, []), percentile
-                )
-            entry["k_amax_p"] = _percentile(
-                layer_to_samples_k.get(layer_key, []), percentile
-            )
-            entry["v_amax_p"] = _percentile(
-                layer_to_samples_v.get(layer_key, []), percentile
-            )
+                entry["q_amax_p"] = _percentile(layer_to_samples_q.get(layer_key, []), percentile)
+            entry["k_amax_p"] = _percentile(layer_to_samples_k.get(layer_key, []), percentile)
+            entry["v_amax_p"] = _percentile(layer_to_samples_v.get(layer_key, []), percentile)
             local_layer_to_pamax[layer_key] = entry
 
         # Merge across all ranks: take maximum of percentile amax (conservative approach)
-        world_size = (
-            torch.distributed.get_world_size()
-            if torch.distributed.is_initialized()
-            else 1
-        )
+        world_size = torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1
         gathered = [None for _ in range(world_size)] if world_size > 1 else None
         if world_size > 1:
             torch.distributed.all_gather_object(gathered, local_layer_to_pamax)
@@ -1736,12 +1445,7 @@ class MegatronPolicyWorker(AbstractPolicyWorker, ColocatablePolicyInterface):
 
         vllm_format_scales = convert_calibration_to_vllm_format(result_layers)
 
-        final_result = {
-            "format": "fp8",
-            "percentile": percentile,
-            "margin": margin,
-            "layers": vllm_format_scales,
-        }
+        final_result = {"format": "fp8", "percentile": percentile, "margin": margin, "layers": vllm_format_scales}
 
         # Sync results across all ranks (broadcast rank0's result)
         if world_size > 1:
