@@ -31,11 +31,12 @@ class AdvantageEstimatorConfig(TypedDict):
 
     name: str
 
+    minus_baseline: NotRequired[bool]  # whether to use the baseline defined in the algorithm formulation
+    batch_level_baseline: NotRequired[bool]  # NOTE: not properly implemented on all estimators (currently plain REINFORCE only)
+    use_leave_one_out_baseline: NotRequired[bool]  # NOTE: not properly implemented on all estimators
+
     # GRPO specific
-    normalize_rewards: NotRequired[bool]
-    use_leave_one_out_baseline: NotRequired[bool]
-    # Reinforce++ specific
-    minus_baseline: NotRequired[bool]
+    normalize_rewards: NotRequired[bool]  # False will turn it into DR.GRPO (default: True)
 
 
 class BaseAdvantageEstimator(ABC):
@@ -79,7 +80,10 @@ class GRPOAdvantageEstimator(BaseAdvantageEstimator):
 
     def __init__(self, estimator_config: dict, loss_config: dict):
         self.use_leave_one_out_baseline = estimator_config["use_leave_one_out_baseline"]
-        self.normalize_rewards = estimator_config["normalize_rewards"]
+        self.normalize_rewards = estimator_config.get("normalize_rewards", True)
+
+        if not self.normalize_rewards:
+            self.name = "DR.GRPO"
 
     def compute_advantage(self, prompt_ids, rewards, mask, **kwargs):
         """Compute GRPO advantages.
@@ -110,7 +114,7 @@ class GRPOAdvantageEstimator(BaseAdvantageEstimator):
         return advantages.expand(mask.shape)
 
 
-class ReinforceAdvantageEstimator(BaseAdvantageEstimator):
+class ReinforceAdvantageEstimator(BaseAdvantageEstimator):  # NOTE: in the future, this will be deprecated and folded into REINFORCE++, using the `normalize_rewards` flag to toggle between the two
     name = "REINFORCE (plain)"
     """Traditional REINFORCE advantage estimator.
 
@@ -119,7 +123,6 @@ class ReinforceAdvantageEstimator(BaseAdvantageEstimator):
     """
 
     def __init__(self, estimator_config: dict, loss_config: dict | None = None):
-        # We allow .get() here, this is an exception.
         self.minus_baseline = estimator_config.get("minus_baseline", False)
         self.leave_one_out_baseline = estimator_config.get("leave_one_out_baseline", False)
         self.batch_level_baseline = estimator_config.get("batch_level_baseline", False)
@@ -171,18 +174,26 @@ class ReinforcePlusPlusAdvantageEstimator(BaseAdvantageEstimator):
     Args:
         minus_baseline: If True, subtract per-prompt mean baseline from rewards.
         use_kl_in_reward: If True, add KL penalty to reward instead of loss.
+        per_environment (Optional, default False): If True, normalize each environment (samples sharing an
+            ``agent_ref["name"]``) with its own mean and std instead of across the whole batch. An environment with
+            no valid tokens gets zero advantages.
     """
 
     def __init__(self, estimator_config: dict, loss_config: dict):
         self.minus_baseline = estimator_config["minus_baseline"]
+        self.per_environment = estimator_config.get("per_environment", False)
         self.use_kl_in_reward = loss_config["use_kl_in_reward"]
         self.kl_coef = loss_config["reference_policy_kl_penalty"]
         self.kl_type = loss_config["reference_policy_kl_type"]
 
         if self.minus_baseline:
             self.name += " w/ baseline"
+        if self.per_environment:
+            self.name += "(Per-environment)"
 
-    def compute_advantage(self, prompt_ids, rewards, mask, logprobs_policy=None, logprobs_reference=None, **kwargs):
+    def compute_advantage(
+        self, prompt_ids, rewards, mask, logprobs_policy=None, logprobs_reference=None, agent_refs=None, **kwargs
+    ):
         """Compute REINFORCE++ advantages with optional KL penalty.
 
         Args:
@@ -194,6 +205,7 @@ class ReinforcePlusPlusAdvantageEstimator(BaseAdvantageEstimator):
             logprobs_policy: Policy log probabilities of shape [batch_size, seq_len], required if use_kl_in_reward.
             logprobs_reference: Reference policy log probabilities of shape [batch_size, seq_len], required if
                 use_kl_in_reward.
+            agent_refs: List of batch_size NeMo-Gym agent references, required if `per_environment` is True.
             **kwargs: Additional arguments (unused).
 
         Returns:
@@ -216,13 +228,30 @@ class ReinforcePlusPlusAdvantageEstimator(BaseAdvantageEstimator):
             kl = calculate_kl(logprobs_policy, logprobs_reference, kl_type=self.kl_type)
             adv = adv - self.kl_coef * kl
 
-        # global normalization across the batch
-        adv_mean = (adv * mask).sum() / mask.sum()
-        adv_var = ((adv - adv_mean).pow(2) * mask).sum() / mask.sum()
-        adv_rstd = adv_var.clamp(min=1e-8).rsqrt()
-        adv = (adv - adv_mean) * adv_rstd
+        if self.per_environment:
+            if agent_refs is None:
+                raise ValueError("REINFORCE++ per_environment requires agent_refs")
 
-        return adv
+            env_of_name = {}
+            env_ids = torch.tensor(
+                [env_of_name.setdefault(agent_ref["name"], len(env_of_name)) for agent_ref in agent_refs],
+                device=adv.device,
+            )
+            zeros_per_env = adv.new_zeros(len(env_of_name))
+            num_tokens = zeros_per_env.index_add(0, env_ids, mask.sum(-1, dtype=adv.dtype))
+            adv_mean = (zeros_per_env.index_add(0, env_ids, (adv * mask).sum(-1)) / num_tokens)[env_ids].unsqueeze(-1)
+            adv_var = zeros_per_env.index_add(0, env_ids, ((adv - adv_mean).pow(2) * mask).sum(-1)) / num_tokens
+            adv_rstd = adv_var.clamp(min=1e-8).rsqrt()[env_ids].unsqueeze(-1)
+            adv = (adv - adv_mean) * adv_rstd
+
+            return adv.masked_fill((num_tokens == 0)[env_ids].unsqueeze(-1), 0.0)
+        else:
+            # global normalization across the batch
+            adv_mean = (adv * mask).sum() / mask.sum()
+            adv_var = ((adv - adv_mean).pow(2) * mask).sum() / mask.sum()
+            adv_rstd = adv_var.clamp(min=1e-8).rsqrt()
+            adv = (adv - adv_mean) * adv_rstd
+            return adv
 
 
 class OPDAdvantageEstimator(BaseAdvantageEstimator):
