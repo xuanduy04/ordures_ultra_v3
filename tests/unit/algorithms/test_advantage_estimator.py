@@ -6,7 +6,7 @@ import torch
 from nemo_rl.algorithms.advantage_estimator import (
     BaseAdvantageEstimator,
     OPDAdvantageEstimator,
-    ReinforceAdvantageEstimator,
+    ReinforcePlusPlusAdvantageEstimator,
 )
 
 
@@ -40,7 +40,7 @@ def _make_estimator(
             "orm_estimator_name": orm_estimator_name,
             **(orm_estimator_kwargs or {}),
         }
-    loss_config = {}
+    loss_config = {"use_kl_in_reward": False, "reference_policy_kl_penalty": 0.0, "reference_policy_kl_type": "k3"}
     return OPDAdvantageEstimator(estimator_config, loss_config)
 
 
@@ -81,7 +81,7 @@ def test_opd_teacher_equals_student():
 def test_opd_with_orm_advantage():
     """ORM blending with weight=0.5, ORM computed internally (reinforce)."""
     estimator = _make_estimator(
-        orm_advantage_weight=0.5, orm_estimator_name="reinforce"
+        orm_advantage_weight=0.5, orm_estimator_name="reinforce++", orm_estimator_kwargs={"normalize_rewards": False}
     )
     B, S = 2, 4
     teacher_lp = torch.zeros(B, S)
@@ -503,12 +503,14 @@ def _make_reinforce_estimator(
     leave_one_out_baseline=False,
     batch_level_baseline=False,
 ):
-    return ReinforceAdvantageEstimator(
+    return ReinforcePlusPlusAdvantageEstimator(
         {
             "minus_baseline": minus_baseline,
-            "leave_one_out_baseline": leave_one_out_baseline,
+            "use_leave_one_out_baseline": leave_one_out_baseline,
             "batch_level_baseline": batch_level_baseline,
-        }
+            "normalize_rewards": False,
+        },
+        {"use_kl_in_reward": False, "reference_policy_kl_penalty": 0.0, "reference_policy_kl_type": "k3"},
     )
 
 
@@ -572,7 +574,7 @@ def test_reinforce_batch_level_baseline():
 def test_reinforce_batch_level_leave_one_out():
     """batch_level_baseline + leave_one_out_baseline uses global leave-one-out."""
     estimator = _make_reinforce_estimator(
-        leave_one_out_baseline=True, batch_level_baseline=True
+        minus_baseline=True, leave_one_out_baseline=True, batch_level_baseline=True
     )
     B, S = 4, 4
     prompt_ids = torch.tensor([[0], [0], [1], [1]])
@@ -594,7 +596,7 @@ def test_reinforce_batch_level_leave_one_out():
 def test_reinforce_batch_level_leave_one_out_single_sample():
     """Global leave-one-out with a single sample in the batch yields zero advantage."""
     estimator = _make_reinforce_estimator(
-        leave_one_out_baseline=True, batch_level_baseline=True
+        minus_baseline=True, leave_one_out_baseline=True, batch_level_baseline=True
     )
     B, S = 1, 3
     prompt_ids = torch.arange(B).unsqueeze(1)
