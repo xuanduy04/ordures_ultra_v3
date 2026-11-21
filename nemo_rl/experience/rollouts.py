@@ -937,6 +937,62 @@ def _make_histogram(values: list[float], num_buckets: int = 20) -> TensorBoardHi
     }
 
 
+def merge_histograms(histograms: list[TensorBoardHistogram], num_buckets: int = 20) -> TensorBoardHistogram:
+    """Merge several TensorBoardHistograms (e.g. one per trajectory group) into one.
+
+    ``min``, ``max``, ``num``, ``sum`` and ``sum_squares`` are merged exactly. Since each input has its own bucket
+    edges, counts are re-binned onto ``num_buckets`` uniform buckets spanning the global [min, max], splitting each
+    source bucket's count by overlap (values assumed uniform within a source bucket). Inputs whose values are all
+    identical, and zero-width source buckets, go to the target bucket containing them.
+
+    Args:
+        histograms: Histograms to merge. Empty ones (``num == 0``) are ignored.
+        num_buckets: Number of uniform buckets in the merged histogram.
+
+    Returns:
+        The merged TensorBoardHistogram; same empty layout as ``_make_histogram([])`` when every input is empty.
+    """
+    non_empty = [h for h in histograms if h["num"] > 0]
+    if not non_empty:
+        return _make_histogram([], num_buckets)
+
+    vmin = min(h["min"] for h in non_empty)
+    vmax = max(h["max"] for h in non_empty)
+    if vmin == vmax:
+        # All values identical: widen to a single non-degenerate bucket, as _make_histogram does.
+        edges = np.array([vmin, vmin + 1.0])
+    else:
+        edges = np.linspace(vmin, vmax, num_buckets + 1)
+    counts = np.zeros(edges.size - 1)
+
+    def _bucket_index(value: float) -> int:
+        return min(max(int(np.searchsorted(edges, value, side="right")) - 1, 0), counts.size - 1)
+
+    for h in non_empty:
+        if h["min"] == h["max"]:
+            # All values of this input are identical: place them exactly instead of smearing its widened bucket.
+            counts[_bucket_index(h["min"])] += h["num"]
+            continue
+        for lo, hi, count in zip(h["bins"][:-1], h["bins"][1:], h["counts"]):
+            if count == 0:
+                continue
+            overlap = np.clip(np.minimum(edges[1:], hi) - np.maximum(edges[:-1], lo), 0.0, None)
+            if hi > lo and overlap.sum() > 0:
+                counts += count * overlap / overlap.sum()
+            else:
+                counts[_bucket_index(lo)] += count
+
+    return {
+        "bins": [float(edge) for edge in edges],
+        "counts": [float(count) for count in counts],
+        "min": vmin,
+        "max": vmax,
+        "num": sum(h["num"] for h in non_empty),
+        "sum": sum(h["sum"] for h in non_empty),
+        "sum_squares": sum(h["sum_squares"] for h in non_empty),
+    }
+
+
 def _calculate_single_metric(
     values: list[float], batch_size: int, key_name: str, *, percentile: list[int] | None = None, histogram: bool = False
 ) -> dict[str, float | TensorBoardHistogram]:
@@ -963,11 +1019,11 @@ def _calculate_single_metric(
         f"{key_name}/min": min(values),
         f"{key_name}/max": max(values),
         f"{key_name}/mean": sum(values) / batch_size,
-        f"{key_name}/median": statistics.median(values),
-        f"{key_name}/stddev": statistics.stdev(values) if len(values) > 1 else math.nan,
+        f"{key_name}/median_approx": statistics.median(values),  # median values are later averaged
+        f"{key_name}/stddev_approx": statistics.stdev(values) if len(values) > 1 else math.nan,  # std values are later averaged
     }
     if percentile:
-        metrics.update({f"{key_name}/p{p}": _pct(values, p) for p in percentile if 0 <= p <= 100})
+        metrics.update({f"{key_name}/p{p}_approx": _pct(values, p) for p in percentile if 0 <= p <= 100})   # percentiles are later averaged
     if histogram:
         metrics[f"{key_name}/histogram"] = _make_histogram(values)
     return metrics

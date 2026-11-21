@@ -52,7 +52,7 @@ from nemo_rl.distributed.virtual_cluster import (
 )
 from nemo_rl.environments.interfaces import EnvironmentInterface
 from nemo_rl.environments.nemo_gym import NemoGym, NemoGymConfig, get_nemo_gym_uv_cache_dir, get_nemo_gym_venv_dir
-from nemo_rl.experience.rollouts import _calculate_single_metric
+from nemo_rl.experience.rollouts import _calculate_single_metric, merge_histograms
 from nemo_rl.models.generation.interfaces import GenerationInterface
 from nemo_rl.models.generation.vllm import VllmConfig, VllmGeneration
 from nemo_rl.models.policy import PolicyConfig
@@ -1650,7 +1650,10 @@ def async_grpo_train(
                     # Aggregate metrics properly based on their semantics
                     aggregated_rollout_metrics = {}
                     for k, v in rollout_metrics.items():
-                        if not isinstance(v[0], (int, float)):
+                        if k.endswith("/histogram") and isinstance(v[0], dict):
+                            # Per-group TensorBoardHistograms: merge into one so the loggers can render it.
+                            aggregated_rollout_metrics[k] = merge_histograms(v)
+                        elif not isinstance(v[0], (int, float)):
                             aggregated_rollout_metrics[k] = v
                         elif k.endswith("/min") or (k.startswith("min_") and not k.endswith("_rate")):
                             # For min metrics, take the actual minimum
@@ -1673,7 +1676,7 @@ def async_grpo_train(
                                 sorted_v[p95_idx] if sorted_v else 0
                             )
                         else:
-                            # For mean/rate metrics, take the average
+                            # For all other metrics (expected to just be mean/rate), take the average
                             aggregated_rollout_metrics[k] = sum(v) / len(v)
                     rollout_metrics = aggregated_rollout_metrics
                     del sample_result, trajectories, per_prompt_batches
@@ -1927,6 +1930,9 @@ def async_grpo_train(
 
                     # Apply advantage-level penalties (GDPO-style)
                     advantage_penalty_metrics: dict[str, Any] = {}  # helper variable for logging
+                    # Penalties write in-place into token slices; estimators may return a stride-0 .expand() view
+                    # (e.g. GRPO), which rejects in-place writes, so materialize it first.
+                    train_data["advantages"] = train_data["advantages"].contiguous()
                     advantage_penalties_log = apply_advantage_penalties(
                         advantages=train_data["advantages"],
                         batch=repeated_batch,
