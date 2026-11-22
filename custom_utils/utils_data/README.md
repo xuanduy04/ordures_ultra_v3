@@ -78,6 +78,12 @@ Writes rows with `agent_ref`, `responses_create_params` (`parallel_tool_calls: f
 - `--principle-script PATH`: a `.py` file defining `get_principle(entry: dict) -> str`,
   called once per entry to produce that row's principle
 
+3. `convert_to_genrm_with_ground_truth.py`
+
+Writes rows with `responses_create_params` (`parallel_tool_calls: false`), `ground_truth`, `agent_ref` (the single `genrm_with_ground_truth_simple_agent` variant; there is no `--no-reasoning`), and optional `dataset`. Extra flags:
+
+- `--ground-truth-field`: Default `ground_truth`
+
 ### Other Converters
 
 Implemented other converters:

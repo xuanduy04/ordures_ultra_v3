@@ -72,15 +72,25 @@ def _convert_chat_template_to_nemo_gym(turns: list[dict[str, Any]]) -> list[dict
     return out
 
 
-def _convert_tools_to_nemo_gym(tools: list[dict]) -> list[dict]:
+_OPENAI_FUNCTION_TOOL_KEYS = frozenset({"type", "name", "description", "parameters", "strict"})
+
+
+def _convert_tools_to_nemo_gym(tools: list[dict], allow_unknown_tool_keys: bool) -> list[dict]:
     """Normalize tool definitions to the NeMo-Gym Responses API shape.
 
     Accepts both the chat-template form (``{"type": "function", "function": {...}}``) and the already-unwrapped form
     (``{"name": ..., "parameters": ...}``). OpenAI 2.7.2 (pinned by NeMo Gym) requires ``type: "function"`` and
     ``strict`` on function tools, so both are added when missing.
+
+    NeMo Gym validates the whole row with ``extra="forbid"``, so any remaining top-level key outside the OpenAI
+    function-tool schema (``type``, ``name``, ``description``, ``parameters``, ``strict``) would make the row fail with
+    a 422 at rollout time. A top-level ``required`` is relocated into ``parameters["required"]`` when possible; other
+    unknown keys raise a ``ValueError`` unless *allow_unknown_tool_keys* is set, in which case they are dropped. A
+    ``parameters`` given as a JSON string is parsed into a dict. The contents of ``parameters`` are otherwise left
+    untouched.
     """
     out = []
-    for tool in tools:
+    for idx, tool in enumerate(tools):
         if "function" in tool:
             tool = tool["function"]
         else:
@@ -88,12 +98,56 @@ def _convert_tools_to_nemo_gym(tools: list[dict]) -> list[dict]:
         tool.setdefault("type", "function")
         if tool.get("type") == "function":
             tool.setdefault("strict", True)
+
+            parameters = tool.get("parameters")
+            if isinstance(parameters, str):
+                try:
+                    parameters = json.loads(parameters)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(
+                        f"Entry has invalid tool 'parameters' field at index {idx}: expected valid JSON when a string"
+                    ) from exc
+                if not isinstance(parameters, dict):
+                    raise ValueError(
+                        f"Entry has invalid tool 'parameters' field at index {idx}: expected a dict after JSON parsing"
+                    )
+                tool["parameters"] = parameters
+
+            required = tool.pop("required", None)
+            if required is not None:
+                parameters = tool.get("parameters")
+                if isinstance(parameters, dict):
+                    parameters.setdefault("required", required)
+                elif not allow_unknown_tool_keys:
+                    raise ValueError(
+                        f"Entry has a top-level 'required' tool key at index {idx} "
+                        "but 'parameters' is not a dict to relocate it into "
+                        "(use --allow-unknown-tool-keys to drop it)"
+                    )
+
+            unknown_keys = sorted(key for key in tool if key not in _OPENAI_FUNCTION_TOOL_KEYS)
+            if unknown_keys:
+                if allow_unknown_tool_keys:
+                    for key in unknown_keys:
+                        tool.pop(key, None)
+                else:
+                    raise ValueError(
+                        f"Entry has unknown tool key(s) at index {idx}: {unknown_keys}: "
+                        "not allowed by the OpenAI Responses API function-tool schema "
+                        "(use --allow-unknown-tool-keys to drop them)"
+                    )
         out.append(tool)
     return out
 
 
 def _convert_entry(
-    entry: dict, prompt_field: str, tools_field: str, no_reasoning: bool, dataset: str, principle: str
+    entry: dict,
+    prompt_field: str,
+    tools_field: str,
+    no_reasoning: bool,
+    dataset: str,
+    principle: str,
+    allow_unknown_tool_keys: bool,
 ) -> dict:
     """Convert one raw entry to the genrm_compare JSONL schema."""
     prompt = entry.get(prompt_field, "")
@@ -117,7 +171,7 @@ def _convert_entry(
     if tools:
         if not isinstance(tools, list) or not all(isinstance(tool, dict) for tool in tools):
             raise ValueError(f"Entry has invalid '{tools_field}' field: expected a list of dicts")
-        responses_create_params["tools"] = _convert_tools_to_nemo_gym(tools)
+        responses_create_params["tools"] = _convert_tools_to_nemo_gym(tools, allow_unknown_tool_keys)
     responses_create_params["parallel_tool_calls"] = False
 
     out: dict = {
@@ -209,6 +263,12 @@ def main() -> None:
         "per entry are treated as row failures (honored by --skip-on-error).",
     )
     parser.add_argument(
+        "--allow-unknown-tool-keys",
+        action="store_true",
+        default=False,
+        help="Drop unknown top-level keys in function tool definitions instead of raising an error (default: raise).",
+    )
+    parser.add_argument(
         "--skip-on-error",
         action="store_true",
         default=False,
@@ -226,6 +286,7 @@ def main() -> None:
     no_reasoning: bool = args.no_reasoning
     dataset: str = args.dataset.strip()
     skip_on_error: bool = args.skip_on_error
+    allow_unknown_tool_keys: bool = args.allow_unknown_tool_keys
 
     principle: str = ""
     principle_getter: Any = None
@@ -293,7 +354,9 @@ def main() -> None:
                     row_principle = result.strip()
                     if not row_principle:
                         raise ValueError(f"Principle script '{principle_script_path}' returned an empty principle")
-                converted_entry = _convert_entry(entry, prompt_field, tools_field, no_reasoning, dataset, row_principle)
+                converted_entry = _convert_entry(
+                    entry, prompt_field, tools_field, no_reasoning, dataset, row_principle, allow_unknown_tool_keys
+                )
             except Exception as exc:
                 if skip_on_error:
                     logger.warning(f"Skipping line {lineno}: {exc}")
