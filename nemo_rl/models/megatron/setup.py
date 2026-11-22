@@ -479,6 +479,9 @@ def _apply_performance_config(model_cfg: Any, config: PolicyConfig) -> None:
     model_cfg.apply_rope_fusion = config["megatron_cfg"]["apply_rope_fusion"]
     model_cfg.bias_activation_fusion = config["megatron_cfg"]["bias_activation_fusion"]
     model_cfg.use_fused_weighted_squared_relu = config["megatron_cfg"].get("use_fused_weighted_squared_relu", False)
+    # Optional; when unset, the value from the converted checkpoint's run_config.yaml is kept
+    if "gradient_accumulation_fusion" in config["megatron_cfg"]:
+        model_cfg.gradient_accumulation_fusion = config["megatron_cfg"]["gradient_accumulation_fusion"]
 
     # FP8 configuration
     fp8_cfg = config["megatron_cfg"].get("fp8_cfg", None)

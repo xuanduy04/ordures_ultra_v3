@@ -178,6 +178,8 @@ class MegatronConfig(TypedDict):
     apply_rope_fusion: bool
     # gives ~25% training perf speedup with sequence packing and apply_rope_fusion
     bias_activation_fusion: bool
+    # Overrides the value stored in the converted checkpoint's run_config.yaml
+    gradient_accumulation_fusion: NotRequired[bool]
     # Force overwrite of the initial checkpoint even if it exists (default: False)
     force_overwrite_initial_ckpt: NotRequired[bool]
     moe_per_layer_logging: bool
