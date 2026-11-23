@@ -1,3 +1,4 @@
+import os
 import sys
 import yaml
 
@@ -7,14 +8,14 @@ def get_config_value(config_path: str, dotted_key: str) -> str:
         config = yaml.safe_load(f)
 
     value = config
-    prefix = []
     for key in dotted_key.strip().strip(".").split("."):
         try:
             value = value[key]
-            prefix.append(key)
         except (KeyError, TypeError):
-            parent_path = ".".join(prefix) if prefix else "root"
-            raise KeyError(f"'{key}' not in {parent_path} (full key: '{dotted_key}')")
+            default = config.get("defaults")
+            if not default:
+                raise KeyError(f"'{dotted_key}' not in '{config_path}'")
+            return get_config_value(os.path.join(os.path.dirname(config_path), default), dotted_key)
     return value
 
 
