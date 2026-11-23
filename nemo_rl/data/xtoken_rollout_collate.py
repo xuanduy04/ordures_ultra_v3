@@ -4,7 +4,7 @@ import json
 import torch
 
 from nemo_rl.distributed.batched_data_dict import BatchedDataDict
-from nemo_rl.data.xtoken_response_text import response_control_tokens, response_for_alignment
+from nemo_rl.data.xtoken_response_text import response_control_tokens, response_for_alignment, uses_byte_level_decoder
 
 
 class PromptCollator:
@@ -66,6 +66,7 @@ class RolloutCrossTokenizerCollator:
         stop_token_ids,
     ):
         self.student_tokenizer = student_tokenizer
+        self._student_uses_byte_level_decoder = uses_byte_level_decoder(student_tokenizer)
         self.teacher_tokenizers = teacher_tokenizers
         self.aligners = aligners
         self.student_limit = student_limit
@@ -85,6 +86,8 @@ class RolloutCrossTokenizerCollator:
         rows, responses, texts, prompt_lengths = [], [], [], []
         masked_responses = []
         control_tokens = []
+        clipped_responses = clipped_tokens = 0
+        needs_text = any(aligner is not None for aligner in self.aligners)
 
         def inspect_controls(tokenizer, response, index, start, side, teacher_index):
             events = response_control_tokens(tokenizer, response)
@@ -116,7 +119,7 @@ class RolloutCrossTokenizerCollator:
                 response, text, reason = [], "", "unexpected_student_control_token"
             else:
                 response, text, reason = response_for_alignment(
-                    self.student_tokenizer, response, any(aligner is not None for aligner in self.aligners)
+                    self.student_tokenizer, response, needs_text, byte_level=self._student_uses_byte_level_decoder
                 )
             if reason is not None:
                 masked_responses.append(
@@ -127,6 +130,9 @@ class RolloutCrossTokenizerCollator:
                         "reason": reason,
                     }
                 )
+            elif len(response) < sampled_response_length:
+                clipped_responses += 1
+                clipped_tokens += sampled_response_length - len(response)
             rows.append(row)
             responses.append(response)
             texts.append(text)
@@ -203,6 +209,20 @@ class RolloutCrossTokenizerCollator:
                         "batch_size": len(rows),
                         "sampled_ids_preserved": True,
                         "samples": masked_responses,
+                    }
+                ),
+                flush=True,
+            )
+        if clipped_responses:
+            print(
+                "XTOKEN_RESPONSE_CLIP="
+                + json.dumps(
+                    {
+                        "policy_version": policy_version,
+                        "rollout_id": rollout_id,
+                        "clipped_count": clipped_responses,
+                        "masked_tokens": clipped_tokens,
+                        "batch_size": len(rows),
                     }
                 ),
                 flush=True,
