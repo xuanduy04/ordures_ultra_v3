@@ -4,7 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-from tokenizers import Tokenizer, models, pre_tokenizers
+from tokenizers import Tokenizer, decoders, models, pre_tokenizers
 from transformers import PreTrainedTokenizerFast
 
 from nemo_rl.algorithms import async_utils, grpo
@@ -174,3 +174,65 @@ def test_collector_turns_the_teacher_scores_into_opd_advantages(rollout_group, m
     )
     # Every aligned response token gets teacher minus policy logprob; the unscored <eos> gets zero.
     torch.testing.assert_close(advantages, torch.tensor([[0.0, 0.0, 0.0, -0.3, -0.4, 0.0]] * 2))
+
+
+def byte_level_tokenizer(pieces, template):
+    """Byte-level BPE without merges whose vocabulary is ``pieces``."""
+    core = Tokenizer(models.BPE({piece: i for i, piece in enumerate(pieces)}, [], unk_token="<unk>"))
+    core.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+    core.decoder = decoders.ByteLevel()
+    return PreTrainedTokenizerFast(
+        tokenizer_object=core, unk_token="<unk>", pad_token="<pad>", eos_token="<eos>", chat_template=template
+    )
+
+
+# Sampled pieces of a byte-level response, the response text the teacher scores, and how many policy tokens it covers.
+UTF8_CASES = [
+    # A character split over two tokens is valid.
+    (["a", "Â", "¢"], "a¢", 3),
+    # A literal U+FFFD is valid UTF-8 and is scored.
+    (["a", "ï", "¿", "½"], "a�", 4),
+    # A lead byte that never completes, at the end or followed by more tokens.
+    (["a", "ð"], "a", 1),
+    (["a", "ð", "!"], "a", 1),
+    (["a", "ï", "¿", "½", "ð", "!"], "a�", 4),
+    # The prefix cannot end inside "¢", whose last byte is in the token of the bad byte.
+    (["a", "Â", "¢ð", "!"], "a", 1),
+    # A token that starts valid and ends with a bad byte is cut whole.
+    (["a", "að", "!"], "a", 1),
+    # Without a valid prefix, the rollout is skipped.
+    (["ð", "a"], "", 0),
+]
+
+
+def test_byte_level_policy_with_invalid_utf8_keeps_the_valid_prefix(monkeypatch, capsys):
+    vocab = ["<unk>", "<pad>", "<eos>", "p", "q", "Ġ", "a", "!", "Â", "¢", "ï", "¿", "½", "ð", "¢ð", "að"]
+    student = byte_level_tokenizer(vocab, "{{ messages[0]['content'] }} ")
+    teacher = byte_level_tokenizer(vocab[::-1], "q ")
+    monkeypatch.setattr(teacher_view, "get_tokenizer", lambda tokenizer_cfg: teacher)
+    prompt = [{"role": "user", "content": "p"}]
+    prompt_ids = list(student.apply_chat_template(prompt, tokenize=True, add_generation_prompt=True))
+    responses = [student.convert_tokens_to_ids([*pieces, "<eos>"]) for pieces, _, _ in UTF8_CASES]
+    batch = BatchedDataDict(
+        message_log=[
+            [
+                {"role": "user", "token_ids": torch.tensor(prompt_ids)},
+                {"role": "assistant", "token_ids": torch.tensor(ids)},
+            ]
+            for ids in responses
+        ],
+        full_result=[{"responses_create_params": {"input": prompt}} for _ in UTF8_CASES],
+    )
+    width = len(prompt_ids) + max(map(len, responses))
+    view = XTokenTeacherViewBuilder(student, XTOKEN_CFG, {"stop_token_ids": None})(batch, width)
+
+    start = len(prompt_ids)
+    for index, (_, text, count) in enumerate(UTF8_CASES):
+        expected = teacher.encode("q " + text, add_special_tokens=False) if count else []
+        assert view.input_ids[index, : view.input_lengths[index]].tolist() == expected
+        # Every policy token of the prefix is aligned; the ones after it and the stripped <eos> get no chunk.
+        chunk_ids = view.student_chunk_id[index].tolist()
+        assert [pos for pos, chunk in enumerate(chunk_ids) if chunk >= 0] == list(range(start, start + count))
+    out = capsys.readouterr().out
+    assert "valid UTF-8 prefix of 5/8 rollouts; 10 policy token(s)" in out
+    assert "skips 1/8 rollouts" in out and "7:student_undecodable" in out

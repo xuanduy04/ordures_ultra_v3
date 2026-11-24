@@ -1,8 +1,12 @@
+import json
+from bisect import bisect_right
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional, cast
 
 import torch
-from transformers import PreTrainedTokenizerBase
+from tokenizers.decoders import ByteLevel, Decoder
+from transformers import PreTrainedTokenizerBase, PreTrainedTokenizerFast
+from transformers.models.gpt2.tokenization_gpt2 import bytes_to_unicode
 
 from nemo_rl.algorithms.opd_outsource import XTokenOPDConfig
 from nemo_rl.algorithms.utils import get_tokenizer
@@ -16,12 +20,77 @@ _CONTENT_SPECIAL_TOKENS = frozenset({"<think>", "</think>"})
 # Request parameters the teacher's chat template cannot reproduce from the prompt messages alone.
 _UNSUPPORTED_REQUEST_KEYS = frozenset({"tools", "instructions", "previous_response_id"})
 
+# Raw byte behind each character of the ByteLevel alphabet.
+_BYTE_LEVEL_TO_BYTE = {char: byte for byte, char in cast(dict[int, str], bytes_to_unicode()).items()}
+
 
 def _has_structural_special_token(tokenizer: PreTrainedTokenizerBase, ids: list[int]) -> bool:
     """Whether ``ids`` contain a special token other than the reasoning delimiters."""
     special_ids = set(tokenizer.all_special_ids)
     special = [token for token in ids if token in special_ids]
     return any(piece not in _CONTENT_SPECIAL_TOKENS for piece in tokenizer.convert_ids_to_tokens(special))
+
+
+def _uses_byte_level_decoder(tokenizer: PreTrainedTokenizerBase) -> bool:
+    """Whether ``tokenizer`` is a fast tokenizer whose backend declares a ByteLevel decoder."""
+    if not isinstance(tokenizer, PreTrainedTokenizerFast):
+        return False
+    backend = tokenizer.backend_tokenizer
+    decoder = backend.decoder
+    if decoder is None or isinstance(decoder, Decoder):
+        return isinstance(decoder, ByteLevel)
+    # Accelerated backends can wrap the decoder. Inspect the declared pipeline once per builder.
+    try:
+        return json.loads(backend.to_str())["decoder"]["type"] == "ByteLevel"
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return False
+
+
+def _byte_level_response_prefix(
+    tokenizer: PreTrainedTokenizerBase, response: list[int], text: str
+) -> Optional[tuple[list[int], str]]:
+    """The longest prefix of ``response`` that ends at a sampled token boundary and decodes to valid UTF-8.
+
+    A byte-level policy can sample bytes that never complete a character, which its decode shows as a replacement
+    character. A replacement character can also be literal UTF-8 (``EF BF BD``); then the whole response is kept.
+
+    Args:
+        tokenizer: Byte-level policy tokenizer.
+        response: Policy token IDs of one response.
+        text: ``tokenizer``'s decode of ``response``.
+
+    Returns:
+        The prefix token IDs and their text, or ``None`` if no non-empty prefix can be verified against ``tokenizer``.
+    """
+    # ByteLevel decodes the joined bytes lossily. A replacement character can also be literal UTF-8.
+    raw = bytearray()
+    token_ends = []
+    for piece in tokenizer.convert_ids_to_tokens(response):
+        if piece is None:
+            return None
+        try:
+            raw.extend(bytes(_BYTE_LEVEL_TO_BYTE[char] for char in piece))
+        except KeyError:
+            # ByteLevel treats the entire piece as literal UTF-8 if it contains a character outside its alphabet.
+            raw.extend(piece.encode("utf-8"))
+        token_ends.append(len(raw))
+    if raw.decode("utf-8", errors="replace") != text:
+        return None
+    try:
+        return response, raw.decode("utf-8")
+    except UnicodeDecodeError as error:
+        valid_end = error.start
+
+    # The token before the first bad byte can itself end inside a valid character completed by the next token.
+    count = bisect_right(token_ends, valid_end)
+    while count and token_ends[count - 1] < valid_end and raw[token_ends[count - 1]] & 0xC0 == 0x80:
+        count -= 1
+    if not count or not token_ends[count - 1]:
+        return None
+    prefix, prefix_text = response[:count], raw[: token_ends[count - 1]].decode("utf-8")
+    if tokenizer.decode(prefix, skip_special_tokens=False, clean_up_tokenization_spaces=False) != prefix_text:
+        return None
+    return prefix, prefix_text
 
 
 def _pad(rows: list[list[int]], pad_token_id: int) -> torch.Tensor:
@@ -117,6 +186,9 @@ class XTokenTeacherViewBuilder:
         if "stop_token_ids" in generation_config and generation_config["stop_token_ids"] is not None:
             stop_token_ids.update(generation_config["stop_token_ids"])
         self.stop_token_ids = frozenset(token for token in stop_token_ids if token is not None)
+        # A byte-level policy response with invalid UTF-8 keeps its valid prefix for the teacher; with any other policy
+        # tokenizer, the rollout is skipped.
+        self._student_byte_level = _uses_byte_level_decoder(student_tokenizer)
         self.student_tokenizer = student_tokenizer
         self.teacher_tokenizer = teacher_tokenizer
         self.aligner = TokenAligner(
@@ -134,10 +206,12 @@ class XTokenTeacherViewBuilder:
             student_width: Width of the group's flattened policy tokens.
 
         Returns:
-            The group's :class:`TeacherView`. Skipped rollouts and their reasons are printed.
+            The group's :class:`TeacherView`. Skipped rollouts and their reasons are printed, and so is the number of
+            policy tokens left after a valid UTF-8 prefix.
         """
         prompt_lengths, student_responses, teacher_rows, teacher_starts = [], [], [], []
         skipped: dict[int, str] = {}
+        num_clipped_rollouts = num_clipped_tokens = 0
         for index, messages in enumerate(batch["message_log"]):
             params = batch["full_result"][index]["responses_create_params"]
             response = messages[1]["token_ids"].tolist() if len(messages) == 2 else []
@@ -150,7 +224,17 @@ class XTokenTeacherViewBuilder:
                 text = self.student_tokenizer.decode(
                     response, skip_special_tokens=False, clean_up_tokenization_spaces=False
                 )
-                if "�" in text:
+                undecodable = "�" in text
+                if undecodable and self._student_byte_level:
+                    clipped = _byte_level_response_prefix(self.student_tokenizer, response, text)
+                    if clipped is not None:
+                        undecodable = False
+                        # The policy tokens after the prefix keep their sampled IDs but get no teacher logprob.
+                        if len(clipped[0]) < len(response):
+                            num_clipped_rollouts += 1
+                            num_clipped_tokens += len(response) - len(clipped[0])
+                        response, text = clipped
+                if undecodable:
                     reason = "student_undecodable"
                 else:
                     prefix = cast(
@@ -180,6 +264,12 @@ class XTokenTeacherViewBuilder:
             student_responses.append(response)
             teacher_rows.append(teacher_ids)
             teacher_starts.append(start)
+        if num_clipped_rollouts:
+            print(
+                f"[X-OPD] Teacher scores the valid UTF-8 prefix of {num_clipped_rollouts}/{len(teacher_rows)} rollouts; "
+                f"{num_clipped_tokens} policy token(s) after it get zero OPD advantage",
+                flush=True,
+            )
         if skipped:
             reasons = ", ".join(f"{index}:{reason}" for index, reason in sorted(skipped.items()))
             print(
