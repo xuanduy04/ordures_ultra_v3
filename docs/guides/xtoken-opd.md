@@ -40,8 +40,11 @@ token without a teacher logprob gets zero OPD advantage (the ORM part is unaffec
   teacher scores only the longest prefix of the response that is valid UTF-8 and ends at a sampled token boundary (a
   literal U+FFFD is valid UTF-8 and is scored). The policy's token IDs are unchanged, and the number of such tokens is
   printed;
-- every token of a rollout the teacher skips: tools or instructions in the request, a non-text prompt, more than one
-  sampled turn, prompt token IDs that are not the policy's chat template of the prompt messages, an empty response, a
+- every token of a rollout the teacher skips: tools or instructions in the request, a non-text prompt (a string `input`
+  and `input_text` content parts count as text, joined as NeMo-Gym's vLLM model server joins them), more than one
+  sampled turn, prompt token IDs that are not the policy's chat template of the prompt messages (with the request's
+  `metadata.chat_template_kwargs`; the generation prompt may differ, e.g. through the model server's
+  `chat_template_kwargs`, as long as it has the same structural special tokens), an empty response, a
   structural special token (anything but `<think>` / `</think>`) on either side, or a response that does not decode
   cleanly (with a byte-level policy tokenizer, one without a valid UTF-8 prefix). Skipped rollouts are printed with
   their reasons and count towards `teacher_logprob_skipped`.

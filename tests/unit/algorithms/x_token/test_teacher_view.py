@@ -65,11 +65,48 @@ def test_teacher_scores_its_own_tokenization_aligned_to_the_policy_tokens(rollou
 
 
 @pytest.mark.parametrize(
+    "gym_input",
+    [
+        "hello",
+        [{"role": "user", "content": [{"type": "input_text", "text": "hello"}], "type": "message"}],
+    ],
+)
+def test_responses_api_text_prompts_are_scored_like_chat_messages(rollout_group, gym_input):
+    student, batch = rollout_group
+    for result in batch["full_result"]:
+        result["responses_create_params"]["input"] = deepcopy(gym_input)
+    view = XTokenTeacherViewBuilder(student, XTOKEN_CFG, {"stop_token_ids": None})(batch, len(STUDENT_ROW))
+    assert view.input_ids.tolist() == [TEACHER_ROW, TEACHER_ROW]
+    assert view.student_chunk_id.tolist() == [[-1, -1, -1, 0, 1, -1]] * 2
+
+
+def test_policy_prompt_may_use_other_generation_prompt_settings():
+    student = word_tokenizer(
+        ["<pad>", "<eos>", "<unk>", "user", "assistant", "hello", "a", "b"],
+        "user {{ messages[0]['content'] }} {% if add_generation_prompt %}assistant {% if think %}b {% endif %}{% endif %}",
+    )
+    builder = SimpleNamespace(student_tokenizer=student)
+    matches = XTokenTeacherViewBuilder._prompt_matches_chat_template
+    prompt = [{"role": "user", "content": "hello"}]
+    think = {"metadata": {"chat_template_kwargs": '{"think": true}'}}
+    assert matches(builder, {}, prompt, [3, 5, 4])
+    # The model server's own kwargs only change the generation prompt.
+    assert matches(builder, {}, prompt, [3, 5, 4, 7])
+    # Per-request kwargs are applied.
+    assert matches(builder, think, prompt, [3, 5, 4, 7])
+    # Other messages, or extra structural tokens after them, do not match.
+    assert not matches(builder, {}, prompt, [3, 6, 4])
+    assert not matches(builder, {}, prompt, [3, 5, 4, 1])
+
+
+@pytest.mark.parametrize(
     ("mutation", "reason"),
     [
         ("tools", "tools_or_instructions"),
         ("multi_turn", "multi_turn"),
         ("prompt", "prompt_not_chat_template"),
+        ("image", "non_text_prompt"),
+        ("reasoning_item", "non_text_prompt"),
         ("empty_response", "empty_response"),
         ("special_token", "student_special_token"),
         ("empty_log", "empty_message_log"),
@@ -83,6 +120,12 @@ def test_rollouts_the_teacher_cannot_reproduce_are_skipped(rollout_group, capsys
         batch["message_log"][0].append({"role": "tool", "token_ids": torch.tensor([6])})
     elif mutation == "prompt":
         batch["message_log"][0][0]["token_ids"][0] = 5
+    elif mutation == "image":
+        batch["full_result"][0]["responses_create_params"]["input"][0]["content"] = [
+            {"type": "input_image", "image_url": "data:image/png;base64,"}
+        ]
+    elif mutation == "reasoning_item":
+        batch["full_result"][0]["responses_create_params"]["input"] = [{"type": "reasoning", "summary": []}]
     elif mutation == "empty_response":
         batch["message_log"][0][1]["token_ids"] = torch.tensor([1])
     elif mutation == "special_token":

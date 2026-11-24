@@ -20,6 +20,9 @@ _CONTENT_SPECIAL_TOKENS = frozenset({"<think>", "</think>"})
 # Request parameters the teacher's chat template cannot reproduce from the prompt messages alone.
 _UNSUPPORTED_REQUEST_KEYS = frozenset({"tools", "instructions", "previous_response_id"})
 
+# Responses API (and chat) content part types that carry plain text.
+_TEXT_PART_TYPES = frozenset({"input_text", "output_text", "text"})
+
 # Raw byte behind each character of the ByteLevel alphabet.
 _BYTE_LEVEL_TO_BYTE = {char: byte for byte, char in cast(dict[int, str], bytes_to_unicode()).items()}
 
@@ -29,6 +32,61 @@ def _has_structural_special_token(tokenizer: PreTrainedTokenizerBase, ids: list[
     special_ids = set(tokenizer.all_special_ids)
     special = [token for token in ids if token in special_ids]
     return any(piece not in _CONTENT_SPECIAL_TOKENS for piece in tokenizer.convert_ids_to_tokens(special))
+
+
+def _structural_pieces(tokenizer: PreTrainedTokenizerBase, ids: list[int]) -> list[str]:
+    """The special tokens of ``ids`` other than the reasoning delimiters, in order, special added tokens included."""
+    special_ids = set(tokenizer.all_special_ids)
+    special_ids.update(token for token, added in tokenizer.added_tokens_decoder.items() if added.special)
+    pieces = tokenizer.convert_ids_to_tokens([token for token in ids if token in special_ids])
+    return [piece for piece in pieces if piece not in _CONTENT_SPECIAL_TOKENS]
+
+
+def _text_prompt(prompt: Any) -> Optional[list[dict[str, str]]]:
+    """The chat messages of a Responses API ``input`` with string content, or ``None`` if it holds anything but text.
+
+    Mirrors NeMo-Gym's vLLM model server: a string ``input`` is one user message, and the text parts of a message are
+    joined, with newlines (vLLM's string content format) or, for an assistant message, directly.
+
+    Args:
+        prompt: ``responses_create_params["input"]`` of one rollout.
+
+    Returns:
+        The ``role`` / ``content`` messages, or ``None`` for an item that is not a text message.
+    """
+    if isinstance(prompt, str):
+        return [{"role": "user", "content": prompt}]
+    if not isinstance(prompt, list):
+        return None
+    messages = []
+    for item in prompt:
+        if not isinstance(item, dict) or "role" not in item or "content" not in item:
+            return None
+        if "type" in item and item["type"] != "message":
+            return None
+        content = item["content"]
+        if isinstance(content, list):
+            if not all(
+                isinstance(part, dict)
+                and "type" in part
+                and part["type"] in _TEXT_PART_TYPES
+                and "text" in part
+                and isinstance(part["text"], str)
+                for part in content
+            ):
+                return None
+            content = ("" if item["role"] == "assistant" else "\n").join(part["text"] for part in content)
+        if not isinstance(content, str):
+            return None
+        messages.append({"role": item["role"], "content": content})
+    return messages
+
+
+def _request_chat_template_kwargs(params: Mapping[str, Any]) -> dict[str, Any]:
+    """The per-request chat template overrides (JSON in ``metadata``) NeMo-Gym's vLLM model server merges in."""
+    if "metadata" not in params or not params["metadata"] or "chat_template_kwargs" not in params["metadata"]:
+        return {}
+    return json.loads(params["metadata"]["chat_template_kwargs"])
 
 
 def _uses_byte_level_decoder(tokenizer: PreTrainedTokenizerBase) -> bool:
@@ -217,7 +275,8 @@ class XTokenTeacherViewBuilder:
             response = messages[1]["token_ids"].tolist() if len(messages) == 2 else []
             while response and response[-1] in self.stop_token_ids:
                 response = response[:-1]
-            reason = self._skip_reason(params, messages, response)
+            prompt = _text_prompt(params["input"])
+            reason = self._skip_reason(params, prompt, messages, response)
             teacher_ids: list[int] = []
             start = 0
             if reason is None:
@@ -240,7 +299,7 @@ class XTokenTeacherViewBuilder:
                     prefix = cast(
                         str,
                         self.teacher_tokenizer.apply_chat_template(
-                            params["input"], tokenize=False, add_generation_prompt=True
+                            cast(list[dict[str, str]], prompt), tokenize=False, add_generation_prompt=True
                         ),
                     )
                     encoded = self.teacher_tokenizer(
@@ -306,27 +365,63 @@ class XTokenTeacherViewBuilder:
         return TeacherView(input_ids, input_lengths, teacher_chunk_id, student_chunk_id)
 
     def _skip_reason(
-        self, params: Mapping[str, Any], messages: list[dict[str, Any]], response: list[int]
+        self,
+        params: Mapping[str, Any],
+        prompt: Optional[list[dict[str, str]]],
+        messages: list[dict[str, Any]],
+        response: list[int],
     ) -> Optional[str]:
-        """Why the teacher cannot reproduce this rollout, or ``None`` if it can."""
+        """Why the teacher cannot reproduce this rollout, or ``None`` if it can.
+
+        Args:
+            params: The rollout's ``responses_create_params``.
+            prompt: :func:`_text_prompt` of ``params["input"]``.
+            messages: The rollout's message log.
+            response: The policy response token IDs without trailing stop tokens.
+        """
         if not messages:
             return "empty_message_log"
         if _UNSUPPORTED_REQUEST_KEYS & set(params):
             return "tools_or_instructions"
-        prompt = params["input"]
-        if not isinstance(prompt, list) or not all(
-            isinstance(message, dict) and "content" in message and isinstance(message["content"], str)
-            for message in prompt
-        ):
+        if prompt is None:
             return "non_text_prompt"
         if len(messages) > 2 or (len(messages) == 2 and messages[1]["role"] != "assistant"):
             return "multi_turn"
-        # The teacher prompt is rebuilt from the prompt messages, so the policy must have seen exactly their template.
-        expected = self.student_tokenizer.apply_chat_template(prompt, tokenize=True, add_generation_prompt=True)
-        if messages[0]["token_ids"].tolist() != list(expected):
+        if not self._prompt_matches_chat_template(params, prompt, messages[0]["token_ids"].tolist()):
             return "prompt_not_chat_template"
         if not response:
             return "empty_response"
         if _has_structural_special_token(self.student_tokenizer, response):
             return "student_special_token"
         return None
+
+    def _prompt_matches_chat_template(
+        self, params: Mapping[str, Any], prompt: list[dict[str, str]], prompt_ids: list[int]
+    ) -> bool:
+        """Whether the policy saw the policy chat template of ``prompt``, up to the generation prompt's settings.
+
+        The teacher prompt is rebuilt from the prompt messages, so the policy must have seen exactly their template. The
+        model server's own chat template kwargs (e.g. ``enable_thinking``) are not part of the rollout and can change
+        the generation prompt, so the rendered messages followed by a generation prompt with the same structural tokens
+        as the default one also match.
+
+        Args:
+            params: The rollout's ``responses_create_params``.
+            prompt: The rollout's text prompt messages.
+            prompt_ids: The prompt token IDs the policy saw.
+        """
+        kwargs = _request_chat_template_kwargs(params)
+        expected = list(
+            self.student_tokenizer.apply_chat_template(prompt, tokenize=True, add_generation_prompt=True, **kwargs)
+        )
+        if prompt_ids == expected:
+            return True
+        turns = list(
+            self.student_tokenizer.apply_chat_template(prompt, tokenize=True, add_generation_prompt=False, **kwargs)
+        )
+        return (
+            expected[: len(turns)] == turns
+            and prompt_ids[: len(turns)] == turns
+            and _structural_pieces(self.student_tokenizer, prompt_ids[len(turns) :])
+            == _structural_pieces(self.student_tokenizer, expected[len(turns) :])
+        )
