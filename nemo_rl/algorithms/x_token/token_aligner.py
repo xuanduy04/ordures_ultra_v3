@@ -208,8 +208,9 @@ class TokenAligner:
         teacher_tokenizer: HF tokenizer for the teacher model.
         max_comb_len: Maximum span length considered when matching one token on one side against multiple tokens on the
             other.
-        num_workers: Spawned CPU processes for per-sample alignment. ``None`` (or a single sample) aligns in the calling
-            process; the result is identical either way.
+        num_workers: Size of one persistent pool of spawned CPU processes for per-sample alignment, shared by every
+            :meth:`align` call: concurrent calls (from several threads) spread their samples over all of it. ``None``
+            aligns in the calling process; the result is identical either way.
     """
 
     def __init__(self, student_tokenizer, teacher_tokenizer, max_comb_len: int, *, num_workers: Optional[int] = None):
@@ -219,6 +220,12 @@ class TokenAligner:
         self.student_tokenizer = student_tokenizer
         self.teacher_tokenizer = teacher_tokenizer
         self.max_combination_len = max_comb_len
+        # Spawned lazily, one process per submitted sample until ``num_workers`` processes are alive.
+        self._pool = (
+            None
+            if num_workers is None
+            else ProcessPoolExecutor(max_workers=num_workers, mp_context=get_context("spawn"))
+        )
 
     def align(
         self,
@@ -257,17 +264,15 @@ class TokenAligner:
             self.teacher_tokenizer.convert_ids_to_tokens(teacher_ids[i].tolist()) for i in range(b)
         ]
 
-        workers = 1 if self.num_workers is None else self.num_workers
-        if workers > b:  # never spawn more processes than samples
-            workers = b
-        if workers < 2:
+        if self._pool is None:
             per_sample_pairs = [self._align_single(s, t) for s, t in zip(student_token_lists, teacher_token_lists)]
         else:
             # Spawn keeps the CUDA/Ray driver state out of the children; map returns pairs in input order.
-            with ProcessPoolExecutor(max_workers=workers, mp_context=get_context("spawn")) as pool:
-                per_sample_pairs = list(
-                    pool.map(_align_sample, student_token_lists, teacher_token_lists, repeat(self.max_combination_len))
+            per_sample_pairs = list(
+                self._pool.map(
+                    _align_sample, student_token_lists, teacher_token_lists, repeat(self.max_combination_len)
                 )
+            )
 
         batch = self._pairs_to_batch(per_sample_pairs, b=b, t_s=t_s, t_t=t_t)
         self._drop_padding(

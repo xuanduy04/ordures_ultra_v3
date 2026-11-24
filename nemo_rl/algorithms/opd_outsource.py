@@ -53,6 +53,7 @@ class XTokenOPDConfig(TypedDict):
     # Longest run of tokens on one side that can match a single token of the other side during alignment.
     alignment_max_combination_length: int
     # Spawned CPU processes that align a rollout group; without it, alignment runs in the trajectory collector.
+    # The processes form one pool that every rollout group of every batch shares concurrently.
     alignment_workers: NotRequired[int]
 
 

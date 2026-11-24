@@ -3,8 +3,9 @@ from __future__ import annotations
 import statistics
 import threading as _threading
 import time
-from asyncio import create_task, gather, run as asyncio_run, sleep as asyncio_sleep
+from asyncio import create_task, gather, get_running_loop, run as asyncio_run, sleep as asyncio_sleep
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
 import ray
@@ -524,6 +525,14 @@ class AsyncTrajectoryCollector:
             if self._has_opd_teachers
             and "xtoken" in self.on_policy_distillation_cfg
             and self.on_policy_distillation_cfg["xtoken"]["enabled"]
+            else None
+        )
+        # Each group's alignment waits on the aligner's shared process pool from its own thread, so the groups of every
+        # batch keep the pool busy together. One thread per pool process; without a pool, ThreadPoolExecutor's
+        # default size.
+        self._xtoken_align_threads = (
+            ThreadPoolExecutor(max_workers=self._xtoken_teacher_views.aligner.num_workers)
+            if self._xtoken_teacher_views is not None
             else None
         )
         self.running = False
@@ -1157,7 +1166,13 @@ class AsyncTrajectoryCollector:
                     teacher_input_ids = flat_for_teacher["token_ids"]
                     teacher_view = None
                     if self._xtoken_teacher_views is not None:
-                        teacher_view = self._xtoken_teacher_views(final_batch_cpu, teacher_input_ids.shape[1])
+                        # Off the event loop, so the other groups' alignments and teacher requests run meanwhile.
+                        teacher_view = await get_running_loop().run_in_executor(
+                            self._xtoken_align_threads,
+                            self._xtoken_teacher_views,
+                            final_batch_cpu,
+                            teacher_input_ids.shape[1],
+                        )
                         teacher_input_ids, teacher_input_lengths = teacher_view.input_ids, teacher_view.input_lengths
                     teacher_logprobs, teacher_logprob_time = await self._compute_teacher_logprobs(
                         teacher_input_ids, agent_refs, input_lengths=teacher_input_lengths

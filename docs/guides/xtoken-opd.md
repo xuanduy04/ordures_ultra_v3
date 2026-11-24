@@ -15,7 +15,7 @@ the teacher mapping), then turn X-OPD on in an `on_policy_distillation.xtoken` s
 | `enabled` | `true` turns X-OPD on. With `false`, or without the section, OPD uses a teacher with the policy's tokenizer. |
 | `teacher_tokenizer` | Tokenizer config of the teacher (same schema as `policy.tokenizer`). It must be a fast tokenizer whose token IDs match the served teacher model. |
 | `alignment_max_combination_length` | Longest run of tokens on one side that can match a single token of the other side during alignment. |
-| `alignment_workers` | Optional. Spawned CPU processes that align a rollout group in parallel. Without it, alignment runs in the trajectory collector. The result is the same. |
+| `alignment_workers` | Optional. Size of one pool of spawned CPU processes that every rollout group shares: the samples of all groups awaiting alignment are spread over it in parallel. Without it, alignment runs in the trajectory collector. The result is the same. |
 
 All other OPD settings (`opd_advantage_weight`, the advantage clipping, the ORM blend, ...) apply unchanged.
 
