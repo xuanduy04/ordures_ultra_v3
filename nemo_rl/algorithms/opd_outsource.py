@@ -55,6 +55,7 @@ class XTokenOPDConfig(TypedDict):
     # Spawned CPU processes that align a rollout group; without it, alignment runs in the trajectory collector.
     # The processes form one pool that every rollout group of every batch shares concurrently.
     alignment_workers: NotRequired[int]
+    alignment_backend: NotRequired[Literal["python", "numba"]]
 
 
 class OnPolicyDistillationConfig(TypedDict):

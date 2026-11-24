@@ -248,7 +248,10 @@ UTF8_CASES = [
 ]
 
 
-def test_byte_level_policy_with_invalid_utf8_keeps_the_valid_prefix(monkeypatch, capsys):
+@pytest.mark.parametrize("backend", ["python", "numba"])
+def test_byte_level_policy_with_invalid_utf8_keeps_the_valid_prefix(monkeypatch, capsys, backend):
+    if backend == "numba":
+        pytest.importorskip("numba")
     vocab = ["<unk>", "<pad>", "<eos>", "p", "q", "Ġ", "a", "!", "Â", "¢", "ï", "¿", "½", "ð", "¢ð", "að"]
     student = byte_level_tokenizer(vocab, "{{ messages[0]['content'] }} ")
     teacher = byte_level_tokenizer(vocab[::-1], "q ")
@@ -267,7 +270,8 @@ def test_byte_level_policy_with_invalid_utf8_keeps_the_valid_prefix(monkeypatch,
         full_result=[{"responses_create_params": {"input": prompt}} for _ in UTF8_CASES],
     )
     width = len(prompt_ids) + max(map(len, responses))
-    view = XTokenTeacherViewBuilder(student, XTOKEN_CFG, {"stop_token_ids": None})(batch, width)
+    config = {**XTOKEN_CFG, "alignment_backend": backend}
+    view = XTokenTeacherViewBuilder(student, config, {"stop_token_ids": None})(batch, width)
 
     start = len(prompt_ids)
     for index, (_, text, count) in enumerate(UTF8_CASES):
@@ -279,3 +283,18 @@ def test_byte_level_policy_with_invalid_utf8_keeps_the_valid_prefix(monkeypatch,
     out = capsys.readouterr().out
     assert "valid UTF-8 prefix of 5/8 rollouts; 10 policy token(s)" in out
     assert "skips 1/8 rollouts" in out and "7:student_undecodable" in out
+
+
+def test_numba_preserves_sampled_token_teacher_logprobs(rollout_group):
+    pytest.importorskip("numba")
+    student, batch = rollout_group
+    batch["full_result"][0]["responses_create_params"]["input"] = "hello"
+    batch["full_result"][1]["responses_create_params"]["input"] = [{"role": "user", "content": [{"type": "input_image"}]}]
+    reference = XTokenTeacherViewBuilder(student, XTOKEN_CFG, {})(batch, len(STUDENT_ROW))
+    optimized = XTokenTeacherViewBuilder(student, {**XTOKEN_CFG, "alignment_backend": "numba"}, {})(
+        batch, len(STUDENT_ROW)
+    )
+    for name in ("input_ids", "input_lengths", "teacher_chunk_id", "student_chunk_id"):
+        assert torch.equal(getattr(reference, name), getattr(optimized, name))
+    logprobs = torch.arange(reference.input_ids.numel(), dtype=torch.float32).reshape_as(reference.input_ids) / -10
+    torch.testing.assert_close(optimized.to_student(logprobs), reference.to_student(logprobs), rtol=0, atol=0, equal_nan=True)

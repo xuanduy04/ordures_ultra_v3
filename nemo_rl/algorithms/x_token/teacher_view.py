@@ -254,6 +254,7 @@ class XTokenTeacherViewBuilder:
             teacher_tokenizer,
             cfg["alignment_max_combination_length"],
             num_workers=cfg["alignment_workers"] if "alignment_workers" in cfg else None,
+            backend=cfg["alignment_backend"] if "alignment_backend" in cfg else None,
         )
 
     def __call__(self, batch: BatchedDataDict, student_width: int) -> TeacherView:
