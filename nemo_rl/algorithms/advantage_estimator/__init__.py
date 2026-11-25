@@ -31,11 +31,19 @@ class AdvantageEstimatorConfig(TypedDict):
 
     name: str
 
-    minus_baseline: NotRequired[bool]  # whether to use the baseline defined in the algorithm formulation (default: depend on estimator)
-    use_leave_one_out_baseline: NotRequired[bool]  # enable LOO baseline (default: False)
-    batch_level_baseline: NotRequired[bool]  # enable 'larger-than-prompt'-level baselines (default: False) NOTE: only some environments have this option
+    # Baselines
+    # whether to use baselines (default: depend on estimator)
+    minus_baseline: NotRequired[bool]
+    # enable LOO baseline (default: False)
+    use_leave_one_out_baseline: NotRequired[bool]
+    # enable 'larger-than-prompt'-level baselines (default: False) NOTE: only some environments have this option
+    batch_level_baseline: NotRequired[bool]
 
+    # Normalization
     normalize_rewards: NotRequired[bool]  # (default: True), false would turn off normalization
+
+    # Per-environment
+    per_environment: NotRequired[bool]  # enable to use the "per-env" variant of the algorithm, if it is implemented
 
 
 ADVANTAGE_ESTIMATOR_MAPPING: dict[str, type[BaseAdvantageEstimator]] = {

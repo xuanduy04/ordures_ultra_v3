@@ -24,8 +24,9 @@ class ReinforcePlusPlusAdvantageEstimator(BaseAdvantageEstimator):
         return self.minus_baseline and not self.batch_level_baseline and not self.normalize_rewards
 
     def __init__(self, estimator_config: dict, loss_config: dict):
+        super().__init__(estimator_config, loss_config)
         # Baseline usage
-        self.minus_baseline = estimator_config.get("minus_baseline", False)
+        self.minus_baseline = estimator_config.get("minus_baseline", True)
         self.use_leave_one_out_baseline = estimator_config.get("use_leave_one_out_baseline", False)
         self.batch_level_baseline = estimator_config.get("batch_level_baseline", False)
 
