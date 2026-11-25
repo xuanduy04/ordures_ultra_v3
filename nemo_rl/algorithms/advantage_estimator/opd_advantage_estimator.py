@@ -38,6 +38,7 @@ class OPDAdvantageEstimator(BaseAdvantageEstimator):
     """
 
     def __init__(self, estimator_config: dict, loss_config: dict):
+        super().__init__(estimator_config, loss_config)
         self.opd_advantage_weight = float(estimator_config["opd_advantage_weight"])
         self.opd_advantage_clip_low = float(estimator_config.get("opd_advantage_clip_low", -6767))
         self.opd_advantage_clip_high = float(estimator_config.get("opd_advantage_clip_high", 6767))

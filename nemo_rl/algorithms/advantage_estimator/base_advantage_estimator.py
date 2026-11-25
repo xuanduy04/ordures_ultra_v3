@@ -8,14 +8,14 @@ if TYPE_CHECKING:
 
 
 class BaseAdvantageEstimator(ABC):
-    name: str = "[Unknown Name]"
+    name: str = "[Unknown Advantage Estimator Name]"
 
     @property
     def is_group_normalization(self) -> bool:
         return False
 
     def __init__(self, estimator_config: dict | None = None, loss_config: dict | None = None):
-        pass
+        self.estimator_config = estimator_config
 
     @abstractmethod
     def compute_advantage(self, prompt_ids: Tensor, rewards: "Tensor", mask: "Tensor", **kwargs) -> "Tensor":
@@ -33,3 +33,7 @@ class BaseAdvantageEstimator(ABC):
             Advantages tensor of shape [batch_size, seq_len], globally normalized across valid tokens.
         """
         ...
+
+    def _ignore_non_default(self, key: str, default: bool, reason: str):
+        if bool(self.estimator_config.get(key, default)) != default:
+            print(f"[WARNING] Ignoring {key}={not default}. {reason}")

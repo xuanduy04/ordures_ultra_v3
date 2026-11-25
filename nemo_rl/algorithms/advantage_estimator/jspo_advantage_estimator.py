@@ -25,18 +25,17 @@ class JamesSteinAdvantageEstimator(BaseAdvantageEstimator):
         return False
 
     def __init__(self, estimator_config: dict, loss_config: dict):
+        super().__init__(estimator_config, loss_config)
         self.last_metrics: dict[str, float] = {}
         # Baseline usage
-        if not estimator_config.get("use_leave_one_out_baseline", True):
-            print("[WARNING] Ignoring use_leave_one_out_baseline=False. JSPO without leave-one-out baseline is not implemented.")
-        if not estimator_config.get("minus_baseline", True):
-            print("[WARNING] Ignoring minus_baseline=False. JSPO without baseline is just 'REINFORCE (plain)'")
-        if estimator_config.get("batch_level_baseline", False):
-            print("[WARNING] Ignoring batch_level_baseline=True. JSPO already shrinks toward the batch-level baseline.")
+        self._ignore_non_default(
+            "use_leave_one_out_baseline", True, "JSPO without leave-one-out baseline is not defined."
+        )
+        self._ignore_non_default("minus_baseline", True, "JSPO without baseline is just 'REINFORCE (plain)'")
+        self._ignore_non_default("batch_level_baseline", False, "JSPO already shrinks toward the batch-level baseline.")
 
         # Normalization
-        if estimator_config.get("normalize_rewards", False):
-            print("[WARNING] Ignoring normalize_rewards=True. JSPO with reward normalization is not implemented.")
+        self._ignore_non_default("normalize_rewards", False, "JSPO with reward normalization is not defined.")
 
         # Per-environment
         self.per_environment = estimator_config.get("per_environment", False)

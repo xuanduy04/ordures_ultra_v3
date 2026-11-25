@@ -18,16 +18,18 @@ class GRPOAdvantageEstimator(BaseAdvantageEstimator):
         return True
 
     def __init__(self, estimator_config: dict, loss_config: dict):
+        super().__init__(estimator_config, loss_config)
         # Baseline usage
         self.use_leave_one_out_baseline = estimator_config.get("use_leave_one_out_baseline", False)
 
-        if not estimator_config.get("minus_baseline", True):
-            print("[WARNING] Ignoring minus_baseline=False. GRPO without baseline is unheard of.")
-        if estimator_config.get("batch_level_baseline", False):
-            print("[WARNING] Ignoring batch_level_baseline=True. GRPO with batch-level baseline is unheard of.")
+        self._ignore_non_default("minus_baseline", True, "GRPO without baseline is unheard of.")
+        self._ignore_non_default("batch_level_baseline", False, "GRPO with batch-level baseline is unheard of.")
 
         # Normalization
         self.normalize_rewards = estimator_config.get("normalize_rewards", True)
+
+        # Per-environment
+        self._ignore_non_default("per_environment", False, "GRPO is innately prompt-level.")
 
         # Name
         if not self.normalize_rewards:
