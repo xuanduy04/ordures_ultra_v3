@@ -81,7 +81,9 @@ def test_opd_teacher_equals_student():
 def test_opd_with_orm_advantage():
     """ORM blending with weight=0.5, ORM computed internally (reinforce)."""
     estimator = _make_estimator(
-        orm_advantage_weight=0.5, orm_estimator_name="reinforce++", orm_estimator_kwargs={"normalize_rewards": False}
+        orm_advantage_weight=0.5,
+        orm_estimator_name="reinforce++",
+        orm_estimator_kwargs={"minus_baseline": False, "normalize_rewards": False},
     )
     B, S = 2, 4
     teacher_lp = torch.zeros(B, S)
