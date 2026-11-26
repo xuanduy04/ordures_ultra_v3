@@ -9,6 +9,8 @@ This module provides different advantage estimation strategies:
 - KalmanFilterAdvantageEstimator: KRPO, GRPO with the group mean and std replaced by a per-prompt Kalman filter
 - ReinforceWithMovingAverageBaselineAdvantageEstimator: REINFORCE with the moving average of all past rewards as
   baseline
+- TMNAdvantageEstimator: TMN, prompt-centered rewards divided by a per-environment scale, with optional difficulty
+  reweighting (TMN-Reweight)
 Reference papers:
 - ProRLv2: https://developer.nvidia.com/blog/scaling-llm-reinforcement-learning-with-prolonged-training-using-prorl-v2/
 - REINFORCE++: https://arxiv.org/abs/2501.03262
@@ -16,6 +18,7 @@ Reference papers:
 - JSPO: https://arxiv.org/abs/2511.03710
 - KRPO: https://arxiv.org/abs/2505.07527
 - REINFORCE w/ moving average baseline: https://aclanthology.org/2024.acl-long.662
+- TMN: https://arxiv.org/abs/2605.19577
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ from nemo_rl.algorithms.advantage_estimator.reinforce_advantage_estimator import
 from nemo_rl.algorithms.advantage_estimator.reinforce_with_moving_average_baseline_advantage_estimator import (
     ReinforceWithMovingAverageBaselineAdvantageEstimator,
 )
+from nemo_rl.algorithms.advantage_estimator.tmn_advantage_estimator import TMNAdvantageEstimator
 
 
 class AdvantageEstimatorConfig(TypedDict):
@@ -54,6 +58,9 @@ class AdvantageEstimatorConfig(TypedDict):
     # Per-environment
     per_environment: NotRequired[bool]  # enable to use the "per-env" variant of the algorithm, if it is implemented
 
+    # TMN-specific args
+    use_reweight: NotRequired[bool]  # enable TMN-Reweight's difficulty reweighting (default: False)
+
 
 ADVANTAGE_ESTIMATOR_MAPPING: dict[str, type[BaseAdvantageEstimator]] = {
     "grpo": GRPOAdvantageEstimator,
@@ -65,6 +72,7 @@ ADVANTAGE_ESTIMATOR_MAPPING: dict[str, type[BaseAdvantageEstimator]] = {
     "krpo": KalmanFilterAdvantageEstimator,
     "kalman_filter": KalmanFilterAdvantageEstimator,
     "reinforce_with_moving_average_baseline": ReinforceWithMovingAverageBaselineAdvantageEstimator,
+    "tmn": TMNAdvantageEstimator,
     # "opd": OPDAdvantageEstimator,  # OPD is removed from this dict due to it requiring unique configurations
 }
 
