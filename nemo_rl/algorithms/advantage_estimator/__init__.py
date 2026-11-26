@@ -6,11 +6,13 @@ This module provides different advantage estimation strategies:
   reward
 - OPDAdvantageEstimator: On-Policy Distillation (MOPD) token-level distillation advantages
 - JamesSteinAdvantageEstimator: JSPO, RLOO baseline shrunk toward the leave-one-prompt-out batch mean
+- KalmanFilterAdvantageEstimator: KRPO, GRPO with the group mean and std replaced by a per-prompt Kalman filter
 Reference papers:
 - ProRLv2: https://developer.nvidia.com/blog/scaling-llm-reinforcement-learning-with-prolonged-training-using-prorl-v2/
 - REINFORCE++: https://arxiv.org/abs/2501.03262
 - MOPD: https://arxiv.org/abs/2601.02780
 - JSPO: https://arxiv.org/abs/2511.03710
+- KRPO: https://arxiv.org/abs/2505.07527
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from typing import Any, Mapping, NotRequired, TypedDict
 from nemo_rl.algorithms.advantage_estimator.base_advantage_estimator import BaseAdvantageEstimator
 from nemo_rl.algorithms.advantage_estimator.grpo_advantage_estimator import GRPOAdvantageEstimator
 from nemo_rl.algorithms.advantage_estimator.jspo_advantage_estimator import JamesSteinAdvantageEstimator
+from nemo_rl.algorithms.advantage_estimator.krpo_advantage_estimator import KalmanFilterAdvantageEstimator
 from nemo_rl.algorithms.advantage_estimator.opd_advantage_estimator import OPDAdvantageEstimator
 from nemo_rl.algorithms.advantage_estimator.reinforce_advantage_estimator import ReinforcePlusPlusAdvantageEstimator
 
@@ -53,6 +56,8 @@ ADVANTAGE_ESTIMATOR_MAPPING: dict[str, type[BaseAdvantageEstimator]] = {
     "reinforce_plus_plus": ReinforcePlusPlusAdvantageEstimator,
     "jspo": JamesSteinAdvantageEstimator,
     "james_stein": JamesSteinAdvantageEstimator,
+    "krpo": KalmanFilterAdvantageEstimator,
+    "kalman_filter": KalmanFilterAdvantageEstimator,
     # "opd": OPDAdvantageEstimator,  # OPD is removed from this dict due to it requiring unique configurations
 }
 
