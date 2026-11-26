@@ -11,6 +11,7 @@ This module provides different advantage estimation strategies:
   baseline
 - TMNAdvantageEstimator: TMN, prompt-centered rewards divided by a per-environment scale, with optional difficulty
   reweighting (TMN-Reweight)
+- TANAdvantageEstimator: TAN, GRPO advantages standardized per environment over their valid tokens
 Reference papers:
 - ProRLv2: https://developer.nvidia.com/blog/scaling-llm-reinforcement-learning-with-prolonged-training-using-prorl-v2/
 - REINFORCE++: https://arxiv.org/abs/2501.03262
@@ -19,6 +20,7 @@ Reference papers:
 - KRPO: https://arxiv.org/abs/2505.07527
 - REINFORCE w/ moving average baseline: https://aclanthology.org/2024.acl-long.662
 - TMN: https://arxiv.org/abs/2605.19577
+- TAN: https://arxiv.org/abs/2510.04206
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ from nemo_rl.algorithms.advantage_estimator.reinforce_advantage_estimator import
 from nemo_rl.algorithms.advantage_estimator.reinforce_with_moving_average_baseline_advantage_estimator import (
     ReinforceWithMovingAverageBaselineAdvantageEstimator,
 )
+from nemo_rl.algorithms.advantage_estimator.tan_advantage_estimator import TANAdvantageEstimator
 from nemo_rl.algorithms.advantage_estimator.tmn_advantage_estimator import TMNAdvantageEstimator
 
 
@@ -73,6 +76,7 @@ ADVANTAGE_ESTIMATOR_MAPPING: dict[str, type[BaseAdvantageEstimator]] = {
     "kalman_filter": KalmanFilterAdvantageEstimator,
     "reinforce_with_moving_average_baseline": ReinforceWithMovingAverageBaselineAdvantageEstimator,
     "tmn": TMNAdvantageEstimator,
+    "tan": TANAdvantageEstimator,
     # "opd": OPDAdvantageEstimator,  # OPD is removed from this dict due to it requiring unique configurations
 }
 
