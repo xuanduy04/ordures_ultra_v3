@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from nemo_rl.algorithms.advantage_estimator.base_advantage_estimator import BaseAdvantageEstimator
+from nemo_rl.algorithms.advantage_estimator.base import BaseAdvantageEstimator
 
 
 class ReinforceWithMovingAverageBaselineAdvantageEstimator(BaseAdvantageEstimator):

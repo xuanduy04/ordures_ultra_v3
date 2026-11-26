@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import torch
 
-from nemo_rl.algorithms.advantage_estimator.base_advantage_estimator import BaseAdvantageEstimator
+from nemo_rl.algorithms.advantage_estimator.base import BaseAdvantageEstimator
 
 EPSILON = 1e-6
 

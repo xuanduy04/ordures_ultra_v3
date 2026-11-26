@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import torch
 
-from nemo_rl.algorithms.advantage_estimator.base_advantage_estimator import BaseAdvantageEstimator
+from nemo_rl.algorithms.advantage_estimator.base import BaseAdvantageEstimator
 
 if TYPE_CHECKING:
     from torch import Tensor

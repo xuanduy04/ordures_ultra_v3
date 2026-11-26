@@ -29,17 +29,17 @@ import warnings
 
 from typing import Any, Mapping, NotRequired, TypedDict
 
-from nemo_rl.algorithms.advantage_estimator.base_advantage_estimator import BaseAdvantageEstimator
-from nemo_rl.algorithms.advantage_estimator.grpo_advantage_estimator import GRPOAdvantageEstimator
-from nemo_rl.algorithms.advantage_estimator.jspo_advantage_estimator import JamesSteinAdvantageEstimator
-from nemo_rl.algorithms.advantage_estimator.krpo_advantage_estimator import KalmanFilterAdvantageEstimator
-from nemo_rl.algorithms.advantage_estimator.opd_advantage_estimator import OPDAdvantageEstimator
-from nemo_rl.algorithms.advantage_estimator.reinforce_advantage_estimator import ReinforcePlusPlusAdvantageEstimator
-from nemo_rl.algorithms.advantage_estimator.reinforce_with_moving_average_baseline_advantage_estimator import (
+from nemo_rl.algorithms.advantage_estimator.base import BaseAdvantageEstimator
+from nemo_rl.algorithms.advantage_estimator.grpo import GRPOAdvantageEstimator
+from nemo_rl.algorithms.advantage_estimator.jspo import JamesSteinAdvantageEstimator
+from nemo_rl.algorithms.advantage_estimator.krpo import KalmanFilterAdvantageEstimator
+from nemo_rl.algorithms.advantage_estimator.opd import OPDAdvantageEstimator
+from nemo_rl.algorithms.advantage_estimator.reinforce import ReinforcePlusPlusAdvantageEstimator
+from nemo_rl.algorithms.advantage_estimator.reinforce_with_moving_average_baseline import (
     ReinforceWithMovingAverageBaselineAdvantageEstimator,
 )
-from nemo_rl.algorithms.advantage_estimator.tan_advantage_estimator import TANAdvantageEstimator
-from nemo_rl.algorithms.advantage_estimator.tmn_advantage_estimator import TMNAdvantageEstimator
+from nemo_rl.algorithms.advantage_estimator.tan import TANAdvantageEstimator
+from nemo_rl.algorithms.advantage_estimator.tmn import TMNAdvantageEstimator
 
 
 class AdvantageEstimatorConfig(TypedDict):
