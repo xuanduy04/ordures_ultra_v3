@@ -7,12 +7,15 @@ This module provides different advantage estimation strategies:
 - OPDAdvantageEstimator: On-Policy Distillation (MOPD) token-level distillation advantages
 - JamesSteinAdvantageEstimator: JSPO, RLOO baseline shrunk toward the leave-one-prompt-out batch mean
 - KalmanFilterAdvantageEstimator: KRPO, GRPO with the group mean and std replaced by a per-prompt Kalman filter
+- ReinforceWithMovingAverageBaselineAdvantageEstimator: REINFORCE with the moving average of all past rewards as
+  baseline
 Reference papers:
 - ProRLv2: https://developer.nvidia.com/blog/scaling-llm-reinforcement-learning-with-prolonged-training-using-prorl-v2/
 - REINFORCE++: https://arxiv.org/abs/2501.03262
 - MOPD: https://arxiv.org/abs/2601.02780
 - JSPO: https://arxiv.org/abs/2511.03710
 - KRPO: https://arxiv.org/abs/2505.07527
+- REINFORCE w/ moving average baseline: https://aclanthology.org/2024.acl-long.662
 """
 
 from __future__ import annotations
@@ -27,6 +30,9 @@ from nemo_rl.algorithms.advantage_estimator.jspo_advantage_estimator import Jame
 from nemo_rl.algorithms.advantage_estimator.krpo_advantage_estimator import KalmanFilterAdvantageEstimator
 from nemo_rl.algorithms.advantage_estimator.opd_advantage_estimator import OPDAdvantageEstimator
 from nemo_rl.algorithms.advantage_estimator.reinforce_advantage_estimator import ReinforcePlusPlusAdvantageEstimator
+from nemo_rl.algorithms.advantage_estimator.reinforce_with_moving_average_baseline_advantage_estimator import (
+    ReinforceWithMovingAverageBaselineAdvantageEstimator,
+)
 
 
 class AdvantageEstimatorConfig(TypedDict):
@@ -58,6 +64,7 @@ ADVANTAGE_ESTIMATOR_MAPPING: dict[str, type[BaseAdvantageEstimator]] = {
     "james_stein": JamesSteinAdvantageEstimator,
     "krpo": KalmanFilterAdvantageEstimator,
     "kalman_filter": KalmanFilterAdvantageEstimator,
+    "reinforce_with_moving_average_baseline": ReinforceWithMovingAverageBaselineAdvantageEstimator,
     # "opd": OPDAdvantageEstimator,  # OPD is removed from this dict due to it requiring unique configurations
 }
 

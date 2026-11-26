@@ -1335,6 +1335,8 @@ def async_grpo_train(
 
     # Initialize advantage estimator and advantage penalties
     advantage_estimator = create_advantage_estimator(master_config)
+    if hasattr(advantage_estimator, "load_state_dict"):
+        advantage_estimator.load_state_dict(grpo_save_state)  # pyrefly: ignore[missing-attribute]
     advantage_penalties = create_advantage_penalties(master_config["grpo"], cast(dict, master_config["loss_fn"]))
     for penalty in advantage_penalties:
         for config in penalty.penalties:
@@ -2131,6 +2133,8 @@ def async_grpo_train(
                     grpo_save_state["current_step"] = step + 1
                     grpo_save_state["total_valid_tokens"] = total_valid_tokens
                     grpo_save_state["consumed_samples"] = consumed_samples
+                    if hasattr(advantage_estimator, "state_dict"):
+                        grpo_save_state.update(advantage_estimator.state_dict())  # pyrefly: ignore[missing-attribute]
 
                     full_metric_name = master_config["checkpointing"]["metric_name"]
                     if full_metric_name is not None:
