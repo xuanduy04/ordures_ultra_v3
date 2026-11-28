@@ -24,8 +24,9 @@ fi
 python3 -c "
 from omegaconf import OmegaConf
 from pathlib import Path
+from nemo_rl.utils.config import load_config
 
-paths = OmegaConf.select(OmegaConf.load('${CONFIG}'), 'env.nemo_gym.config_paths') or []
+paths = OmegaConf.select(load_config('${CONFIG}'), 'env.nemo_gym.config_paths') or []
 for p in paths:
     if not p.startswith('resources_servers/'):
         continue
